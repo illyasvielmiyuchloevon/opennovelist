@@ -1,0 +1,2936 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from openai import OpenAI
+from pydantic import BaseModel, Field
+
+from core.files import (
+    extract_json_payload,
+    normalize_path,
+    now_iso,
+    read_text_if_exists,
+    write_markdown_data,
+    write_text,
+    write_text_if_changed,
+)
+from core.novel_source import (
+    build_chapter_source_bundle,
+    clip_for_context,
+    discover_volume_dirs,
+    get_chapter_material,
+    load_volume_material,
+)
+from core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
+import core.openai_config as openai_config
+import core.responses_runtime as llm_runtime
+
+
+PROJECT_MANIFEST_NAME = "00_project_manifest.md"
+LEGACY_PROJECT_MANIFEST_NAME = "00_project_manifest.json"
+REWRITE_MANIFEST_NAME = "00_chapter_rewrite_manifest.md"
+GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
+GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "config.json"
+GLOBAL_DIRNAME = "global_injection"
+VOLUME_DIR_SUFFIX = "_volume_injection"
+GROUP_DIR_SUFFIX = "_group_injection"
+CHAPTER_DIR_SUFFIX = "_chapter_outline"
+REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
+FIVE_CHAPTER_REVIEW_SIZE = 5
+MAX_CHAPTER_REWRITE_ATTEMPTS = 3
+MAX_VOLUME_REVIEW_ATTEMPTS = 3
+RUN_MODE_CHAPTER = "chapter"
+RUN_MODE_GROUP = "group"
+RUN_MODE_VOLUME = "volume"
+RUN_MODE_LABELS = {
+    RUN_MODE_CHAPTER: "按章节运行",
+    RUN_MODE_GROUP: "按组运行",
+    RUN_MODE_VOLUME: "按卷运行",
+}
+
+ADAPTATION_GLOBAL_FILE_NAMES = {
+    "book_outline": "01_book_outline.md",
+    "world_design": "02_world_design.md",
+    "style_guide": "03_style_guide.md",
+    "foreshadowing": "04_foreshadowing.md",
+}
+REWRITE_GLOBAL_FILE_NAMES = {
+    "character_status_cards": "05_character_status_cards.md",
+    "character_relationship_graph": "06_character_relationship_graph.md",
+    "global_plot_progress": "07_global_plot_progress.md",
+    "world_model": "08_world_model.md",
+    "world_state": "09_world_state.md",
+}
+
+COMMON_FUNCTION_OUTPUT_RULE = (
+    "不要直接输出普通文本答案。"
+    "你必须使用提供的函数工具提交最终结果，由程序负责写入文件。"
+)
+COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
+    "你是资深网络小说章节洗稿仿写作者、连续性编辑与审稿编辑。"
+    "用户拥有参考源文本权利。"
+    "每次只完成 1 个明确请求。"
+    "请严格根据输入中的 document_request 和当前阶段要求执行。"
+    + COMMON_FUNCTION_OUTPUT_RULE
+)
+COMMON_VOLUME_REVIEW_INSTRUCTIONS = (
+    "你是资深网络小说卷级统稿编辑与审校编辑。"
+    "用户拥有参考源文本权利。"
+    "当前任务只执行当前卷的卷级审核。"
+    + COMMON_FUNCTION_OUTPUT_RULE
+)
+COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS = (
+    "你是资深网络小说阶段性连续性编辑与校准审查编辑。"
+    "用户拥有参考源文本权利。"
+    "当前任务只执行当前五章区间的校准审查。"
+    + COMMON_FUNCTION_OUTPUT_RULE
+)
+
+WORKFLOW_SUBMISSION_TOOL_NAME = "submit_workflow_result"
+WORKFLOW_SUBMISSION_TOOL_DESCRIPTION = (
+    "提交当前工作流步骤的结果。"
+    "所有步骤都使用同一个函数工具 schema。"
+    "Markdown 正文放入 content_md；章节正文放入 chapter_txt；"
+    "审核结果使用 passed、review_md、blocking_issues、rewrite_targets、chapters_to_revise；"
+    "配套文档更新使用对应 *_md 字段。未使用的字段保留为空字符串、空数组或 null。"
+)
+FIVE_CHAPTER_REVIEW_NAME = "组审查"
+
+GLOBAL_DOC_LABELS = {
+    "book_outline": "全书大纲",
+    "world_design": "世界观设计",
+    "style_guide": "文笔写作风格",
+    "foreshadowing": "伏笔管理",
+    "character_status_cards": "人物状态卡",
+    "character_relationship_graph": "人物关系链",
+    "global_plot_progress": "全局剧情进程",
+    "world_model": "世界模型",
+    "world_state": "世界状态",
+}
+VOLUME_DOC_LABELS = {
+    "volume_outline": "卷级大纲",
+    "volume_plot_progress": "卷级剧情进程",
+    "volume_review": "卷级审核",
+}
+CHAPTER_DOC_LABELS = {
+    "chapter_outline": "章纲",
+    "chapter_review": "章级审核",
+    "rewritten_chapter": "仿写章节",
+}
+
+STABLE_INJECTION_KEYS = {
+    "global": ["book_outline", "world_design", "style_guide"],
+    "volume": ["volume_outline"],
+    "chapter": ["chapter_outline"],
+}
+
+PHASE_DOC_SELECTIONS = {
+    "phase1_outline": {
+        "global": [
+            "book_outline",
+            "world_design",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "global_plot_progress",
+            "world_model",
+            "world_state",
+        ],
+        "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
+        "chapter": ["chapter_outline", "chapter_review"],
+    },
+    "phase2_chapter_text": {
+        "global": [
+            "book_outline",
+            "world_design",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "global_plot_progress",
+            "world_model",
+            "world_state",
+        ],
+        "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
+        "chapter": ["chapter_outline", "chapter_review"],
+    },
+    "phase2_support_updates": {
+        "global": [
+            "book_outline",
+            "world_design",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "global_plot_progress",
+            "world_model",
+            "world_state",
+        ],
+        "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
+        "chapter": ["chapter_outline", "chapter_review", "rewritten_chapter"],
+    },
+    "phase3_review": {
+        "global": [
+            "book_outline",
+            "world_design",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "global_plot_progress",
+            "world_model",
+            "world_state",
+        ],
+        "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
+        "chapter": ["chapter_outline", "chapter_review", "rewritten_chapter"],
+    },
+}
+
+
+class WorkflowSubmissionPayload(BaseModel):
+    content_md: str = Field("", description="当前步骤需要写入的 Markdown 正文。")
+    chapter_txt: str = Field("", description="当前步骤需要写入的章节纯文本正文。")
+    character_status_cards_md: str = Field("", description="人物状态卡 Markdown；无变化则留空。")
+    character_relationship_graph_md: str = Field("", description="人物关系链 Markdown；无变化则留空。")
+    volume_plot_progress_md: str = Field("", description="卷级剧情进程 Markdown；无变化则留空。")
+    global_plot_progress_md: str = Field("", description="全局剧情进程 Markdown；无变化则留空。")
+    foreshadowing_md: str = Field("", description="伏笔管理 Markdown；无变化则留空。")
+    world_model_md: str = Field("", description="世界模型 Markdown；无变化则留空。")
+    world_state_md: str = Field("", description="世界状态 Markdown；无变化则留空。")
+    passed: bool | None = Field(None, description="当前审核步骤是否通过。")
+    review_md: str = Field("", description="审核 Markdown 正文。")
+    blocking_issues: list[str] = Field(default_factory=list, description="阻塞问题列表。")
+    rewrite_targets: list[str] = Field(default_factory=list, description="需要重写或更新的目标。")
+    chapters_to_revise: list[str] = Field(default_factory=list, description="需要返工的章节编号列表。")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "基于 novel_adaptation_cli 产出的工程目录，逐章生成仿写章节、配套状态文档与审核文档，"
+            "使用 OpenAI Responses API 与 core 运行时。"
+        )
+    )
+    parser.add_argument(
+        "input_root",
+        nargs="?",
+        help="已有小说工程目录路径，或 split_novel 的来源目录路径；不传则启动后提示输入。",
+    )
+    parser.add_argument("--base-url", help="OpenAI Responses API 的 base_url。")
+    parser.add_argument("--api-key", help="OpenAI API Key。")
+    parser.add_argument("--model", help="调用的模型名称。")
+    parser.add_argument("--volume", help="指定处理某一卷，例如 001。")
+    parser.add_argument("--chapter", help="指定处理某一章，例如 0001。")
+    parser.add_argument(
+        "--run-mode",
+        choices=(RUN_MODE_CHAPTER, RUN_MODE_GROUP, RUN_MODE_VOLUME),
+        help="运行模式：按章节运行、按组运行、按卷运行。",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只识别工程、卷状态和待处理章节，不调用 API。",
+    )
+    return parser.parse_args()
+
+
+def validate_source_root(source_root: Path) -> None:
+    if not source_root.exists():
+        raise FileNotFoundError(f"文件夹不存在：{source_root}")
+    if not source_root.is_dir():
+        raise NotADirectoryError(f"路径不是文件夹：{source_root}")
+    if not discover_volume_dirs(source_root):
+        fail("当前目录下未识别到 split_novel 产出的编号卷目录，例如 001、002。")
+
+
+def load_project_manifest(project_root: Path) -> dict[str, Any] | None:
+    manifest_path = project_root / PROJECT_MANIFEST_NAME
+    if manifest_path.exists():
+        return extract_json_payload(manifest_path.read_text(encoding="utf-8"))
+
+    legacy_path = project_root / LEGACY_PROJECT_MANIFEST_NAME
+    if legacy_path.exists():
+        return json.loads(legacy_path.read_text(encoding="utf-8"))
+    return None
+
+
+def manifest_matches_source_root(manifest: dict[str, Any], source_root: Path) -> bool:
+    manifest_source = manifest.get("source_root")
+    if not manifest_source:
+        return False
+    try:
+        return normalize_path(str(manifest_source)) == source_root.resolve()
+    except Exception:
+        return False
+
+
+def find_existing_project_for_source(source_root: Path) -> tuple[Path | None, dict[str, Any] | None]:
+    candidates: list[tuple[str, Path, dict[str, Any]]] = []
+
+    for child in source_root.parent.iterdir():
+        if not child.is_dir() or child.resolve() == source_root.resolve():
+            continue
+        manifest = load_project_manifest(child)
+        if manifest and manifest_matches_source_root(manifest, source_root):
+            candidates.append((str(manifest.get("updated_at", "")), child, manifest))
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, project_root, manifest = candidates[0]
+    return project_root, manifest
+
+
+def resolve_project_input(
+    raw_path: str | None,
+    global_config: dict[str, Any],
+) -> tuple[Path, Path, dict[str, Any]]:
+    default_path = (
+        global_config.get("last_chapter_rewrite_input_root")
+        or global_config.get("last_project_root")
+        or global_config.get("last_input_root")
+        or global_config.get("last_source_root")
+    )
+    if raw_path is None:
+        raw_path = prompt_text(
+            "请输入 novel_adaptation_cli 的工程目录路径，或 split_novel 的来源目录路径",
+            default=str(default_path) if default_path else None,
+        )
+
+    input_root = normalize_path(raw_path)
+    if not input_root.exists():
+        raise FileNotFoundError(f"文件夹不存在：{input_root}")
+    if not input_root.is_dir():
+        raise NotADirectoryError(f"路径不是文件夹：{input_root}")
+
+    manifest = load_project_manifest(input_root)
+    if manifest is not None:
+        source_root = normalize_path(str(manifest["source_root"]))
+        validate_source_root(source_root)
+        return input_root, source_root, manifest
+
+    source_root = input_root
+    validate_source_root(source_root)
+    project_root, manifest = find_existing_project_for_source(source_root)
+    if project_root is None or manifest is None:
+        fail(
+            "未在该来源目录旁边识别到 novel_adaptation_cli 的工程目录。"
+            "请传入已有工程目录，或先运行 novel_adaptation_cli。"
+        )
+    return project_root, source_root, manifest
+
+
+def resolve_run_mode(args: argparse.Namespace) -> str:
+    if args.run_mode:
+        return args.run_mode
+    return prompt_choice(
+        "请选择运行方式",
+        [
+            (RUN_MODE_CHAPTER, "按章节运行"),
+            (RUN_MODE_GROUP, "按组运行"),
+            (RUN_MODE_VOLUME, "按卷运行"),
+        ],
+    )
+
+
+def load_rewrite_manifest(project_root: Path) -> dict[str, Any] | None:
+    manifest_path = project_root / REWRITE_MANIFEST_NAME
+    if not manifest_path.exists():
+        return None
+    return extract_json_payload(manifest_path.read_text(encoding="utf-8"))
+
+
+def ensure_rewrite_dirs(project_root: Path) -> None:
+    (project_root / REWRITTEN_ROOT_DIRNAME).mkdir(parents=True, exist_ok=True)
+
+
+def save_rewrite_manifest(manifest: dict[str, Any]) -> None:
+    manifest["updated_at"] = now_iso()
+    write_markdown_data(
+        Path(manifest["project_root"]) / REWRITE_MANIFEST_NAME,
+        title="Chapter Rewrite Manifest",
+        payload=manifest,
+        summary_lines=[
+            f"new_book_title: {manifest['new_book_title']}",
+            f"source_root: {manifest['source_root']}",
+            f"rewrite_output_root: {manifest['rewrite_output_root']}",
+            f"processed_volumes: {', '.join(manifest.get('processed_volumes', [])) or 'none'}",
+            f"last_processed_volume: {manifest.get('last_processed_volume') or 'none'}",
+            f"last_processed_chapter: {manifest.get('last_processed_chapter') or 'none'}",
+        ],
+    )
+
+
+def init_or_load_rewrite_manifest(
+    project_root: Path,
+    source_root: Path,
+    project_manifest: dict[str, Any],
+    volume_dirs: list[Path],
+) -> dict[str, Any]:
+    existing = load_rewrite_manifest(project_root)
+    if existing is not None:
+        existing["total_volumes"] = len(volume_dirs)
+        existing["rewrite_output_root"] = str(project_root / REWRITTEN_ROOT_DIRNAME)
+        save_rewrite_manifest(existing)
+        return existing
+
+    manifest = {
+        "version": 1,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "project_root": str(project_root),
+        "source_root": str(source_root),
+        "new_book_title": project_manifest["new_book_title"],
+        "target_worldview": project_manifest.get("target_worldview", ""),
+        "rewrite_output_root": str(project_root / REWRITTEN_ROOT_DIRNAME),
+        "total_volumes": len(volume_dirs),
+        "processed_volumes": [],
+        "last_processed_volume": None,
+        "last_processed_chapter": None,
+        "chapter_states": {},
+        "volume_review_states": {},
+        "five_chapter_review_states": {},
+    }
+    save_rewrite_manifest(manifest)
+    return manifest
+
+
+def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | None = None) -> dict[str, Path]:
+    global_dir = project_root / GLOBAL_DIRNAME
+    volume_dir = project_root / f"{volume_number}{VOLUME_DIR_SUFFIX}"
+    rewritten_root = project_root / REWRITTEN_ROOT_DIRNAME
+    rewritten_volume_dir = rewritten_root / volume_number
+    paths: dict[str, Path] = {
+        "global_dir": global_dir,
+        "volume_dir": volume_dir,
+        "rewritten_root": rewritten_root,
+        "rewritten_volume_dir": rewritten_volume_dir,
+        "book_outline": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
+        "world_design": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
+        "style_guide": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["style_guide"],
+        "foreshadowing": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
+        "character_status_cards": global_dir / REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
+        "character_relationship_graph": global_dir / REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
+        "global_plot_progress": global_dir / REWRITE_GLOBAL_FILE_NAMES["global_plot_progress"],
+        "world_model": global_dir / REWRITE_GLOBAL_FILE_NAMES["world_model"],
+        "world_state": global_dir / REWRITE_GLOBAL_FILE_NAMES["world_state"],
+        "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
+        "volume_plot_progress": volume_dir / f"{volume_number}_volume_plot_progress.md",
+        "volume_review": volume_dir / f"{volume_number}_volume_review.md",
+    }
+    if chapter_number is not None:
+        chapter_dir = volume_dir / f"{chapter_number}{CHAPTER_DIR_SUFFIX}"
+        paths.update(
+            {
+                "chapter_dir": chapter_dir,
+                "chapter_outline": chapter_dir / f"{chapter_number}_chapter_outline.md",
+                "chapter_review": chapter_dir / f"{chapter_number}_chapter_review.md",
+                "chapter_stage_manifest": chapter_dir / "00_stage_manifest.md",
+                "chapter_response_debug": chapter_dir / "00_last_response_debug.md",
+                "rewritten_chapter": rewritten_volume_dir / f"{chapter_number}.txt",
+            }
+        )
+    else:
+        paths.update(
+            {
+                "volume_stage_manifest": volume_dir / "00_volume_rewrite_manifest.md",
+                "volume_response_debug": volume_dir / "00_volume_review_debug.md",
+            }
+        )
+    return paths
+
+
+def assess_volume_readiness(project_root: Path, source_root: Path, volume_number: str) -> dict[str, Any]:
+    paths = rewrite_paths(project_root, volume_number)
+    missing: list[str] = []
+
+    source_volume_dir = source_root / volume_number
+    if not source_volume_dir.exists():
+        missing.append(f"缺少来源卷目录：{source_volume_dir}")
+
+    for key, file_name in ADAPTATION_GLOBAL_FILE_NAMES.items():
+        if not paths[key].exists():
+            missing.append(f"缺少全局注入文档：{file_name}")
+
+    if not paths["volume_outline"].exists():
+        missing.append(f"缺少卷级大纲：{paths['volume_outline'].name}")
+
+    return {
+        "volume_number": volume_number,
+        "eligible": not missing,
+        "missing": missing,
+    }
+
+
+def print_volume_readiness_summary(readiness_map: dict[str, dict[str, Any]]) -> None:
+    print_progress("卷可进入章节工作流的检测结果：")
+    for volume_number in sorted(readiness_map):
+        info = readiness_map[volume_number]
+        if info["eligible"]:
+            print_progress(f"  第 {volume_number} 卷：可进入章节工作流。")
+        else:
+            print_progress(f"  第 {volume_number} 卷：暂不可进入章节工作流。")
+            for reason in info["missing"]:
+                print_progress(f"    - {reason}")
+
+
+def get_chapter_state(manifest: dict[str, Any], volume_number: str, chapter_number: str) -> dict[str, Any]:
+    chapter_states = manifest.setdefault("chapter_states", {})
+    volume_states = chapter_states.setdefault(volume_number, {})
+    return volume_states.setdefault(
+        chapter_number,
+        {
+            "status": "pending",
+            "attempts": 0,
+            "last_stage": None,
+            "updated_at": None,
+            "blocking_issues": [],
+        },
+    )
+
+
+def update_chapter_state(
+    manifest: dict[str, Any],
+    volume_number: str,
+    chapter_number: str,
+    **updates: Any,
+) -> dict[str, Any]:
+    state = get_chapter_state(manifest, volume_number, chapter_number)
+    state.update({key: value for key, value in updates.items() if value is not None})
+    state["updated_at"] = now_iso()
+    manifest["last_processed_volume"] = volume_number
+    manifest["last_processed_chapter"] = chapter_number
+    save_rewrite_manifest(manifest)
+    return state
+
+
+def get_volume_review_state(manifest: dict[str, Any], volume_number: str) -> dict[str, Any]:
+    review_states = manifest.setdefault("volume_review_states", {})
+    return review_states.setdefault(
+        volume_number,
+        {
+            "status": "pending",
+            "attempts": 0,
+            "chapters_to_revise": [],
+            "updated_at": None,
+            "blocking_issues": [],
+        },
+    )
+
+
+def update_volume_review_state(
+    manifest: dict[str, Any],
+    volume_number: str,
+    **updates: Any,
+) -> dict[str, Any]:
+    state = get_volume_review_state(manifest, volume_number)
+    state.update({key: value for key, value in updates.items() if value is not None})
+    state["updated_at"] = now_iso()
+    save_rewrite_manifest(manifest)
+    return state
+
+
+def get_five_chapter_review_state(
+    manifest: dict[str, Any],
+    volume_number: str,
+    batch_id: str,
+    chapter_numbers: list[str],
+) -> dict[str, Any]:
+    review_states = manifest.setdefault("five_chapter_review_states", {})
+    volume_states = review_states.setdefault(volume_number, {})
+    return volume_states.setdefault(
+        batch_id,
+        {
+            "status": "pending",
+            "attempts": 0,
+            "chapter_numbers": list(chapter_numbers),
+            "chapters_to_revise": [],
+            "updated_at": None,
+            "blocking_issues": [],
+        },
+    )
+
+
+def update_five_chapter_review_state(
+    manifest: dict[str, Any],
+    volume_number: str,
+    batch_id: str,
+    chapter_numbers: list[str],
+    **updates: Any,
+) -> dict[str, Any]:
+    state = get_five_chapter_review_state(manifest, volume_number, batch_id, chapter_numbers)
+    state.update({key: value for key, value in updates.items() if value is not None})
+    state["chapter_numbers"] = list(chapter_numbers)
+    state["updated_at"] = now_iso()
+    save_rewrite_manifest(manifest)
+    return state
+
+
+def build_five_chapter_groups(volume_material: dict[str, Any]) -> list[list[str]]:
+    chapter_numbers = [chapter["chapter_number"] for chapter in volume_material["chapters"]]
+    return [
+        chapter_numbers[index : index + FIVE_CHAPTER_REVIEW_SIZE]
+        for index in range(0, len(chapter_numbers), FIVE_CHAPTER_REVIEW_SIZE)
+    ]
+
+
+def five_chapter_batch_id(chapter_numbers: list[str]) -> str:
+    if not chapter_numbers:
+        fail("组审查区间不能为空。")
+    return f"{chapter_numbers[0]}_{chapter_numbers[-1]}"
+
+
+def group_injection_root(project_root: Path, volume_number: str) -> Path:
+    return project_root / f"{volume_number}{GROUP_DIR_SUFFIX}"
+
+
+def group_injection_dir(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
+    batch_id = five_chapter_batch_id(chapter_numbers)
+    return group_injection_root(project_root, volume_number) / f"{batch_id}_group_injection"
+
+
+def five_chapter_review_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
+    group_dir = group_injection_dir(project_root, volume_number, chapter_numbers)
+    return group_dir / f"{five_chapter_batch_id(chapter_numbers)}_group_review.md"
+
+
+def find_group_for_chapter(volume_material: dict[str, Any], chapter_number: str) -> list[str]:
+    normalized = chapter_number.zfill(4)
+    for group in build_five_chapter_groups(volume_material):
+        if normalized in group:
+            return group
+    fail(f"未找到章节 {normalized} 对应的五章区间。")
+
+
+def build_chapter_session_key(manifest: dict[str, Any], volume_number: str, chapter_number: str) -> str:
+    seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|{chapter_number}"
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+    return f"chapter-rewrite-{digest}"
+
+
+def build_volume_review_session_key(manifest: dict[str, Any], volume_number: str) -> str:
+    seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|volume-review"
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+    return f"volume-review-{digest}"
+
+
+def read_doc_catalog(project_root: Path, volume_number: str, chapter_number: str) -> dict[str, dict[str, Any]]:
+    paths = rewrite_paths(project_root, volume_number, chapter_number)
+    catalog: dict[str, dict[str, Any]] = {}
+
+    for key, label in GLOBAL_DOC_LABELS.items():
+        catalog[key] = {
+            "key": key,
+            "category": "global",
+            "label": label,
+            "path": paths[key],
+            "content": read_text_if_exists(paths[key]).strip(),
+        }
+
+    for key, label in VOLUME_DOC_LABELS.items():
+        catalog[key] = {
+            "key": key,
+            "category": "volume",
+            "label": label,
+            "path": paths[key],
+            "content": read_text_if_exists(paths[key]).strip(),
+        }
+
+    for key, label in CHAPTER_DOC_LABELS.items():
+        catalog[key] = {
+            "key": key,
+            "category": "chapter",
+            "label": label,
+            "path": paths[key],
+            "content": read_text_if_exists(paths[key]).strip(),
+        }
+
+    return catalog
+
+
+def serialize_doc_for_prompt(entry: dict[str, Any], *, limit: int = 120000) -> dict[str, Any]:
+    content = str(entry["content"]).strip()
+    return {
+        "label": entry["label"],
+        "file_name": Path(entry["path"]).name,
+        "file_path": str(entry["path"]),
+        "content": clip_for_context(content, limit=limit),
+    }
+
+
+def prepare_injected_docs(
+    catalog: dict[str, dict[str, Any]],
+    include_keys: list[str],
+    *,
+    category: str,
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
+    payload_docs: dict[str, dict[str, Any]] = {}
+    included: list[str] = []
+    omitted: list[str] = []
+
+    for key, entry in catalog.items():
+        if entry["category"] != category:
+            continue
+        label = f"[{entry['category']}] {entry['label']}"
+        if key not in include_keys:
+            omitted.append(f"{label}：本阶段不注入。")
+            continue
+        if not entry["content"]:
+            omitted.append(f"{label}：当前文件不存在或内容为空。")
+            continue
+        payload_docs[key] = serialize_doc_for_prompt(entry)
+        included.append(f"{label} -> {entry['path']}（字符数约 {len(entry['content'])}）")
+
+    return payload_docs, included, omitted
+
+
+def prepare_cache_ordered_injected_docs(
+    catalog: dict[str, dict[str, Any]],
+    include_keys: list[str],
+    *,
+    category: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str], list[str]]:
+    stable_docs: dict[str, dict[str, Any]] = {}
+    rolling_docs: dict[str, dict[str, Any]] = {}
+    included: list[str] = []
+    omitted: list[str] = []
+    stable_keys = set(STABLE_INJECTION_KEYS.get(category, []))
+
+    for key, entry in catalog.items():
+        if entry["category"] != category:
+            continue
+        label = f"[{entry['category']}] {entry['label']}"
+        if key not in include_keys:
+            omitted.append(f"{label}：本阶段不注入。")
+            continue
+        if not entry["content"]:
+            omitted.append(f"{label}：当前文件不存在或内容为空。")
+            continue
+        serialized = serialize_doc_for_prompt(entry)
+        if key in stable_keys:
+            stable_docs[key] = serialized
+        else:
+            rolling_docs[key] = serialized
+        included.append(f"{label} -> {entry['path']}（字符数约 {len(entry['content'])}）")
+
+    return stable_docs, rolling_docs, included, omitted
+
+
+def build_payload_with_trailing_docs(
+    *,
+    stable_fields: dict[str, Any],
+    trailing_doc_fields: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    payload.update(stable_fields)
+    payload.update(trailing_doc_fields)
+    return payload
+
+
+def build_payload_with_cache_layers(
+    *,
+    shared_prefix_fields: dict[str, Any],
+    request_fields: dict[str, Any],
+    trailing_doc_fields: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    payload.update(shared_prefix_fields)
+    payload.update(request_fields)
+    payload.update(trailing_doc_fields)
+    return payload
+
+
+def source_context_inventory(
+    volume_material: dict[str, Any],
+    chapter_number: str,
+) -> list[dict[str, Any]]:
+    chapter = get_chapter_material(volume_material, chapter_number)
+    inventory: list[dict[str, Any]] = []
+    for extra in volume_material["extras"]:
+        inventory.append(
+            {
+                "type": "extra",
+                "file_name": extra["file_name"],
+                "file_path": extra["file_path"],
+                "char_count": len(extra["text"]),
+            }
+        )
+    inventory.append(
+        {
+            "type": "chapter",
+            "file_name": chapter["file_name"],
+            "file_path": chapter["file_path"],
+            "chapter_number": chapter["chapter_number"],
+            "source_title": chapter["source_title"],
+            "char_count": len(chapter["text"]),
+        }
+    )
+    return inventory
+
+
+def build_chapter_shared_prompt(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_number: str,
+    source_bundle: str,
+    source_char_count: int,
+) -> str:
+    chapter = get_chapter_material(volume_material, chapter_number)
+    payload = {
+        "project": {
+            "new_book_title": manifest["new_book_title"],
+            "target_worldview": manifest.get("target_worldview", ""),
+            "current_volume": volume_material["volume_number"],
+            "current_chapter": chapter_number,
+            "source_title": chapter["source_title"],
+            "rewrite_output_root": manifest["rewrite_output_root"],
+        },
+        "workflow_rules": [
+            "当前章节的章纲生成、正文生成、配套文档更新、审核与返工属于同一个章节会话，请沿用同一会话上下文。",
+            "每一次请求都会重新附带当前章节参考源与本阶段要求注入的全局/卷级/章级文档。",
+            "全局注入是每卷每章都要看的资料；卷级注入只限当前卷；章级注入只限当前章。",
+            "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
+            "遇到旧审核意见时要显式吸收并修正，不要重复犯同样的问题。",
+        ],
+        "source_files": source_context_inventory(volume_material, chapter_number),
+        "source_char_count": source_char_count,
+        "current_chapter_source_bundle": source_bundle,
+    }
+    return (
+        "## Chapter Shared Context\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n\n"
+        + "## Dynamic Request\n"
+    )
+
+
+def build_volume_review_shared_prompt(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> str:
+    payload = {
+        "project": {
+            "new_book_title": manifest["new_book_title"],
+            "target_worldview": manifest.get("target_worldview", ""),
+            "current_volume": volume_material["volume_number"],
+            "rewrite_output_root": manifest["rewrite_output_root"],
+        },
+        "workflow_rules": [
+            "当前任务是卷级审核，只审核当前卷。",
+            "需要检查卷内章节彼此之间的逻辑连续性、角色状态一致性、设定一致性和风格一致性。",
+            "如果审核不通过，必须给出需要返工的章节编号。",
+        ],
+        "rewritten_chapter_inventory": [
+            {
+                "chapter_number": chapter_number,
+                "file_name": data["file_name"],
+                "file_path": data["file_path"],
+                "char_count": len(data["text"]),
+            }
+            for chapter_number, data in rewritten_chapters.items()
+        ],
+    }
+    return (
+        "## Volume Review Shared Context\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n\n"
+        + "## Dynamic Request\n"
+    )
+
+
+def build_five_chapter_source_bundle(
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+) -> tuple[str, int]:
+    selected = {item.zfill(4) for item in chapter_numbers}
+    blocks: list[str] = []
+
+    for extra in volume_material["extras"]:
+        blocks.append(
+            "\n".join(
+                [
+                    f"[补充文件 {extra['file_name']}]",
+                    f"文件路径：{extra['file_path']}",
+                    extra["text"],
+                ]
+            )
+        )
+
+    for chapter in volume_material["chapters"]:
+        if chapter["chapter_number"] not in selected:
+            continue
+        blocks.append(
+            "\n".join(
+                [
+                    f"[章节文件 {chapter['file_name']}]",
+                    f"章节编号：{chapter['chapter_number']}",
+                    f"文件路径：{chapter['file_path']}",
+                    chapter["text"],
+                ]
+            )
+        )
+
+    source_bundle = "\n\n".join(blocks)
+    return source_bundle, len(source_bundle)
+
+
+def build_five_chapter_review_shared_prompt(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+    source_bundle: str,
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> str:
+    payload = {
+        "project": {
+            "new_book_title": manifest["new_book_title"],
+            "target_worldview": manifest.get("target_worldview", ""),
+            "current_volume": volume_material["volume_number"],
+            "review_range": chapter_numbers,
+            "rewrite_output_root": manifest["rewrite_output_root"],
+        },
+        "workflow_rules": [
+            f"当前任务是{FIVE_CHAPTER_REVIEW_NAME}，只审查当前这一个五章区间。",
+            "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅、剧情是否偏离参考源、卷纲与全书大纲。",
+            "如果审核不通过，必须明确指出需要返工的章节编号。",
+        ],
+        "current_range_source_bundle": source_bundle,
+        "rewritten_chapters": rewritten_chapters,
+    }
+    return (
+        "## Five Chapter Alignment Review Context\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n\n"
+        + "## Dynamic Request\n"
+    )
+
+
+def load_relevant_five_chapter_review_docs(
+    project_root: Path,
+    volume_material: dict[str, Any],
+    chapter_number: str,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    group = find_group_for_chapter(volume_material, chapter_number)
+    path = five_chapter_review_path(project_root, volume_material["volume_number"], group)
+    content = read_text_if_exists(path).strip()
+    label = f"[group] {FIVE_CHAPTER_REVIEW_NAME}（{group[0]}-{group[-1]}）"
+    if content:
+        return (
+            [
+                {
+                    "label": f"{FIVE_CHAPTER_REVIEW_NAME}（{group[0]}-{group[-1]}）",
+                    "file_name": path.name,
+                    "file_path": str(path),
+                    "content": clip_for_context(content, limit=40000),
+                }
+            ],
+            [f"{label} -> {path}（字符数约 {len(content)}）"],
+            [],
+        )
+    return [], [], [f"{label}：当前无相关审查文档。"]
+
+
+def chapter_shared_prefix_summary_lines(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_number: str,
+    source_char_count: int,
+) -> list[str]:
+    chapter = get_chapter_material(volume_material, chapter_number)
+    return [
+        "共享前缀构造：COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + build_chapter_shared_prompt()。",
+        f"固定函数工具：{WORKFLOW_SUBMISSION_TOOL_NAME}（统一 workflow schema）。",
+        (
+            f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
+            f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前章：{chapter_number}。"
+        ),
+        f"固定工作流规则：章节工作流规则 {5} 条。",
+        f"固定参考源文件清单：补充文件 {len(volume_material['extras'])} 个 + 当前源章节 1 个（{chapter['file_name']}）。",
+        f"固定参考源原文：当前章 source bundle，字符数约 {source_char_count}。",
+    ]
+
+
+def group_review_shared_prefix_summary_lines(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+    source_char_count: int,
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> list[str]:
+    return [
+        "共享前缀构造：COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS + build_five_chapter_review_shared_prompt()。",
+        f"固定函数工具：{WORKFLOW_SUBMISSION_TOOL_NAME}（统一 workflow schema）。",
+        (
+            f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
+            f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前组："
+            f"{chapter_numbers[0]}-{chapter_numbers[-1]}。"
+        ),
+        f"固定工作流规则：{FIVE_CHAPTER_REVIEW_NAME}规则 3 条。",
+        f"固定参考源原文：当前组 source bundle，包含 {len(chapter_numbers)} 章参考源与 {len(volume_material['extras'])} 个补充文件，字符数约 {source_char_count}。",
+        f"固定已生成章节清单：当前组待审章节 {len(rewritten_chapters)} 章。",
+    ]
+
+
+def volume_review_shared_prefix_summary_lines(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> list[str]:
+    total_chars = sum(len(data.get("text", "")) for data in rewritten_chapters.values())
+    return [
+        "共享前缀构造：COMMON_VOLUME_REVIEW_INSTRUCTIONS + build_volume_review_shared_prompt()。",
+        f"固定函数工具：{WORKFLOW_SUBMISSION_TOOL_NAME}（统一 workflow schema）。",
+        (
+            f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
+            f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']}。"
+        ),
+        "固定工作流规则：卷级审核规则 3 条。",
+        f"固定已生成章节清单：当前卷 {len(rewritten_chapters)} 章，正文总字符数约 {total_chars}。",
+    ]
+
+
+def payload_prefix_doc_summary_lines(payload: dict[str, Any]) -> list[str]:
+    doc_bucket_labels = {
+        "stable_injected_global_docs": "稳定全局注入文档",
+        "stable_injected_volume_docs": "稳定卷级注入文档",
+        "stable_injected_chapter_docs": "稳定章级注入文档",
+    }
+    lines: list[str] = []
+    for key, label in doc_bucket_labels.items():
+        value = payload.get(key, {})
+        count = len(value) if isinstance(value, dict) else 0
+        lines.append(f"Dynamic Request 前段固定注入：{label} {count} 项。")
+    return lines
+
+
+def payload_dynamic_suffix_summary_lines(payload: dict[str, Any]) -> list[str]:
+    document_request = payload.get("document_request", {})
+    phase = str(document_request.get("phase", "unknown"))
+    role = str(document_request.get("role", "")).strip()
+    task = str(document_request.get("task", "")).strip()
+    required_file = str(document_request.get("required_file", "")).strip()
+    requirements = payload.get("requirements", [])
+    lines = [
+        f"动态请求构造：document_request.phase={phase}" + (f" / role={role}" if role else "") + "。",
+    ]
+    if task:
+        lines.append(f"本次动态任务：{task}")
+    if required_file:
+        lines.append(f"目标输出文件：{required_file}")
+    if isinstance(requirements, list):
+        lines.append(f"本次阶段要求：{len(requirements)} 条。")
+
+    doc_bucket_labels = {
+        "rolling_injected_global_docs": "滚动全局注入文档",
+        "rolling_injected_volume_docs": "滚动卷级注入文档",
+        "rolling_injected_chapter_docs": "滚动章级注入文档",
+        "rolling_injected_group_docs": "滚动组级注入文档",
+        "rewritten_chapters": "已生成章节正文清单",
+    }
+    for key, label in doc_bucket_labels.items():
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, dict):
+            count = len(value)
+        elif isinstance(value, list):
+            count = len(value)
+        else:
+            count = 1 if value else 0
+        lines.append(f"本次动态附带：{label} {count} 项。")
+
+    if "current_generated_chapter" in payload:
+        lines.append("本次动态附带：当前章节正文 1 项。")
+
+    return lines
+
+
+def print_request_context_summary(
+    *,
+    request_label: str,
+    volume_number: str,
+    chapter_number: str | None,
+    location_label: str | None = None,
+    source_summary_lines: list[str],
+    included_docs: list[str],
+    omitted_docs: list[str],
+    previous_response_id: str | None,
+    prompt_cache_key: str | None,
+    shared_prefix_lines: list[str],
+    dynamic_suffix_lines: list[str],
+) -> None:
+    print_progress(f"{request_label} 本次请求将携带以下内容：")
+    if location_label:
+        print_progress(f"  当前定位：{location_label}")
+    elif chapter_number is not None:
+        print_progress(f"  当前定位：第 {volume_number} 卷，第 {chapter_number} 章。")
+    else:
+        print_progress(f"  当前定位：第 {volume_number} 卷，卷级审核。")
+    if prompt_cache_key:
+        print_progress(f"  提示词缓存键：{prompt_cache_key}")
+    if previous_response_id:
+        print_progress(f"  会话：沿用 previous_response_id={previous_response_id}")
+    else:
+        print_progress("  会话：本轮首次请求，将创建新的会话。")
+
+    print_progress("  提示词缓存共享前缀：")
+    for line in shared_prefix_lines:
+        print_progress(f"    - {line}")
+
+    print_progress("  动态后缀（本次请求会变化）：")
+    for line in dynamic_suffix_lines:
+        print_progress(f"    - {line}")
+
+    print_progress("  参考源输入：")
+    for line in source_summary_lines:
+        print_progress(f"    - {line}")
+
+    print_progress("  已输入文档：")
+    if included_docs:
+        for line in included_docs:
+            print_progress(f"    - {line}")
+    else:
+        print_progress("    - 无。")
+
+    print_progress("  未输入文档：")
+    if omitted_docs:
+        for line in omitted_docs:
+            print_progress(f"    - {line}")
+    else:
+        print_progress("    - 无。")
+
+
+def call_workflow_submission_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    WorkflowSubmissionPayload,
+    str | None,
+    llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
+]:
+    result = llm_runtime.call_function_tool(
+        client,
+        model=model,
+        instructions=instructions,
+        user_input=user_input,
+        tool_model=WorkflowSubmissionPayload,
+        tool_name=WORKFLOW_SUBMISSION_TOOL_NAME,
+        tool_description=WORKFLOW_SUBMISSION_TOOL_DESCRIPTION,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    return result.parsed, result.response_id, result
+
+
+def call_markdown_tool_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[str, str | None, llm_runtime.FunctionToolResult[WorkflowSubmissionPayload]]:
+    payload, response_id, result = call_workflow_submission_response(
+        client,
+        model,
+        instructions,
+        user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    content_md = payload.content_md.strip()
+    if not content_md:
+        raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回 Markdown 正文。")
+    return content_md, response_id, result
+
+
+def call_chapter_text_tool_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[str, str | None, llm_runtime.FunctionToolResult[WorkflowSubmissionPayload]]:
+    payload, response_id, result = call_workflow_submission_response(
+        client,
+        model,
+        instructions,
+        user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    chapter_txt = payload.chapter_txt.strip()
+    if not chapter_txt:
+        raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回章节正文。")
+    return chapter_txt, response_id, result
+
+
+def call_support_updates_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    WorkflowSubmissionPayload,
+    str | None,
+    llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
+]:
+    payload, response_id, result = call_workflow_submission_response(
+        client,
+        model,
+        instructions,
+        user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    return payload, response_id, result
+
+
+def call_chapter_review_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    WorkflowSubmissionPayload,
+    str | None,
+    llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
+]:
+    payload, response_id, result = call_workflow_submission_response(
+        client,
+        model,
+        instructions,
+        user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    if payload.passed is None or not payload.review_md.strip():
+        raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回完整的章级审核结果。")
+    return payload, response_id, result
+
+
+def call_volume_review_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    WorkflowSubmissionPayload,
+    str | None,
+    llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
+]:
+    payload, response_id, result = call_workflow_submission_response(
+        client,
+        model,
+        instructions,
+        user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    if payload.passed is None or not payload.review_md.strip():
+        raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回完整的卷级审核结果。")
+    return payload, response_id, result
+
+
+def call_five_chapter_review_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    WorkflowSubmissionPayload,
+    str | None,
+    llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
+]:
+    payload, response_id, result = call_workflow_submission_response(
+        client,
+        model,
+        instructions,
+        user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    if payload.passed is None or not payload.review_md.strip():
+        raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回完整的组审查结果。")
+    return payload, response_id, result
+
+
+def write_response_debug_snapshot(
+    debug_path: Path,
+    *,
+    error_message: str,
+    preview: str,
+    raw_body_text: str = "",
+) -> None:
+    write_markdown_data(
+        debug_path,
+        title="Last Response Debug",
+        payload={
+            "generated_at": now_iso(),
+            "error_message": error_message,
+            "preview": preview,
+            "raw_body_text": raw_body_text,
+        },
+        summary_lines=[
+            f"error_message: {error_message}",
+            f"preview_length: {len(preview)}",
+            f"raw_body_length: {len(raw_body_text)}",
+        ],
+    )
+
+
+def write_chapter_stage_snapshot(
+    stage_manifest_path: Path,
+    *,
+    volume_number: str,
+    chapter_number: str,
+    status: str,
+    note: str,
+    attempt: int,
+    last_phase: str | None = None,
+    response_ids: list[str] | None = None,
+) -> None:
+    write_markdown_data(
+        stage_manifest_path,
+        title=f"Chapter Stage Manifest {volume_number}-{chapter_number}",
+        payload={
+            "generated_at": now_iso(),
+            "volume_number": volume_number,
+            "chapter_number": chapter_number,
+            "status": status,
+            "note": note,
+            "attempt": attempt,
+            "last_phase": last_phase,
+            "response_ids": response_ids or [],
+        },
+        summary_lines=[
+            f"volume_number: {volume_number}",
+            f"chapter_number: {chapter_number}",
+            f"status: {status}",
+            f"attempt: {attempt}",
+            f"last_phase: {last_phase or 'none'}",
+            f"note: {note}",
+        ],
+    )
+
+
+def write_volume_stage_snapshot(
+    stage_manifest_path: Path,
+    *,
+    volume_number: str,
+    status: str,
+    note: str,
+    attempt: int,
+    response_id: str | None = None,
+) -> None:
+    write_markdown_data(
+        stage_manifest_path,
+        title=f"Volume Rewrite Manifest {volume_number}",
+        payload={
+            "generated_at": now_iso(),
+            "volume_number": volume_number,
+            "status": status,
+            "note": note,
+            "attempt": attempt,
+            "response_id": response_id,
+        },
+        summary_lines=[
+            f"volume_number: {volume_number}",
+            f"status: {status}",
+            f"attempt: {attempt}",
+            f"response_id: {response_id or 'none'}",
+            f"note: {note}",
+        ],
+    )
+
+
+def apply_support_updates(paths: dict[str, Path], payload: WorkflowSubmissionPayload) -> list[str]:
+    field_map = {
+        "character_status_cards_md": "character_status_cards",
+        "character_relationship_graph_md": "character_relationship_graph",
+        "volume_plot_progress_md": "volume_plot_progress",
+        "global_plot_progress_md": "global_plot_progress",
+        "foreshadowing_md": "foreshadowing",
+        "world_model_md": "world_model",
+        "world_state_md": "world_state",
+    }
+    changed_docs: list[str] = []
+    for field_name, path_key in field_map.items():
+        content = getattr(payload, field_name).strip()
+        if not content:
+            continue
+        if write_text_if_changed(paths[path_key], content):
+            changed_docs.append(path_key)
+    return changed_docs
+
+
+def build_phase_request_payload(
+    *,
+    phase_key: str,
+    project_root: Path,
+    volume_material: dict[str, Any],
+    volume_number: str,
+    chapter_number: str,
+    catalog: dict[str, dict[str, Any]],
+    chapter_text: str = "",
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    selection = PHASE_DOC_SELECTIONS[phase_key]
+    five_chapter_review_docs, included_five_reviews, omitted_five_reviews = load_relevant_five_chapter_review_docs(
+        project_root,
+        volume_material=volume_material,
+        chapter_number=chapter_number,
+    )
+    stable_global_docs, rolling_global_docs, included_globals, omitted_globals = prepare_cache_ordered_injected_docs(
+        catalog,
+        selection["global"],
+        category="global",
+    )
+    stable_volume_docs, rolling_volume_docs, included_volumes, omitted_volumes = prepare_cache_ordered_injected_docs(
+        catalog,
+        selection["volume"],
+        category="volume",
+    )
+    stable_chapter_docs, rolling_chapter_docs, included_chapters, omitted_chapters = prepare_cache_ordered_injected_docs(
+        catalog,
+        selection["chapter"],
+        category="chapter",
+    )
+
+    included_docs = [*included_globals, *included_volumes, *included_chapters, *included_five_reviews]
+    omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_chapters, *omitted_five_reviews]
+
+    if phase_key == "phase1_outline":
+        payload = build_payload_with_cache_layers(
+            shared_prefix_fields={
+                "stable_injected_global_docs": stable_global_docs,
+                "stable_injected_volume_docs": stable_volume_docs,
+                "stable_injected_chapter_docs": stable_chapter_docs,
+            },
+            request_fields={
+                "document_request": {
+                    "phase": phase_key,
+                    "role": "章纲策划编辑",
+                    "task": "只生成当前章的章纲 Markdown。",
+                    "required_file": f"{chapter_number}_chapter_outline.md",
+                },
+                "requirements": [
+                    "章纲必须体现与参考源当前章的功能映射关系，但不能照搬原名词。",
+                    "章纲要能直接服务后续正文生成与审核返工。",
+                ],
+            },
+            trailing_doc_fields={
+                "rolling_injected_global_docs": rolling_global_docs,
+                "rolling_injected_volume_docs": rolling_volume_docs,
+                "rolling_injected_chapter_docs": rolling_chapter_docs,
+                "rolling_injected_group_docs": five_chapter_review_docs,
+            },
+        )
+        return payload, included_docs, omitted_docs
+
+    if phase_key == "phase2_chapter_text":
+        payload = build_payload_with_cache_layers(
+            shared_prefix_fields={
+                "stable_injected_global_docs": stable_global_docs,
+                "stable_injected_volume_docs": stable_volume_docs,
+                "stable_injected_chapter_docs": stable_chapter_docs,
+            },
+            request_fields={
+                "document_request": {
+                    "phase": phase_key,
+                    "role": "章节仿写作者",
+                    "task": "只生成当前章的完整仿写章节正文。",
+                    "required_file": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+                },
+                "requirements": [
+                    "正文必须符合全局文笔写作风格文档，不要写解释说明或提纲。",
+                    "不能把参考源的人名、地名、宗门、术语原样照搬。",
+                    "正文必须能承接章纲、卷纲、全局大纲与当前状态文档。",
+                ],
+            },
+            trailing_doc_fields={
+                "rolling_injected_global_docs": rolling_global_docs,
+                "rolling_injected_volume_docs": rolling_volume_docs,
+                "rolling_injected_chapter_docs": rolling_chapter_docs,
+                "rolling_injected_group_docs": five_chapter_review_docs,
+            },
+        )
+        return payload, included_docs, omitted_docs
+
+    if phase_key == "phase2_support_updates":
+        payload = build_payload_with_cache_layers(
+            shared_prefix_fields={
+                "stable_injected_global_docs": stable_global_docs,
+                "stable_injected_volume_docs": stable_volume_docs,
+                "stable_injected_chapter_docs": stable_chapter_docs,
+            },
+            request_fields={
+                "document_request": {
+                    "phase": phase_key,
+                    "role": "连续性编辑与状态维护编辑",
+                    "task": "根据刚写完的章节，更新人物状态卡、人物关系链、剧情进程、伏笔、世界模型、世界状态。",
+                },
+                "requirements": [
+                    "需要更新的文档请写完整 Markdown；无变化则返回空字符串。",
+                    "全局剧情进程要管理整本书主线、跨卷目标、反派线、终局线。",
+                    "卷级剧情进程只写当前卷内容。",
+                ],
+            },
+            trailing_doc_fields={
+                "rolling_injected_global_docs": rolling_global_docs,
+                "rolling_injected_volume_docs": rolling_volume_docs,
+                "rolling_injected_chapter_docs": rolling_chapter_docs,
+                "rolling_injected_group_docs": five_chapter_review_docs,
+                "current_generated_chapter": {
+                    "label": "当前章节正文",
+                    "file_name": f"{chapter_number}.txt",
+                    "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+                    "content": chapter_text.strip(),
+                },
+            },
+        )
+        return payload, included_docs, omitted_docs
+
+    if phase_key == "phase3_review":
+        payload = build_payload_with_cache_layers(
+            shared_prefix_fields={
+                "stable_injected_global_docs": stable_global_docs,
+                "stable_injected_volume_docs": stable_volume_docs,
+                "stable_injected_chapter_docs": stable_chapter_docs,
+            },
+            request_fields={
+                "document_request": {
+                    "phase": phase_key,
+                    "role": "章级审核编辑",
+                    "task": "审核当前章的全部产物，并判断是否需要返工。",
+                    "required_file": f"{chapter_number}_chapter_review.md",
+                },
+                "requirements": [
+                    "重点检查参考源原人名地名是否被照搬，若照搬则不合格。",
+                    "重点检查 AI 感、机械感、逻辑断裂、幻觉错位、风格偏移。",
+                    "重点检查是否出现过度修饰的排比、意象堆砌、诗化抒情过量、句式整齐得过头等问题；"
+                    "如果语言明显非常符合当前主流大模型常见腔调，例如像 Claude 或 GPT-4 常见的华丽总结式文风，也视为不合格。",
+                    "如果不通过，rewrite_targets 必须写出需要返工的对象，例如 chapter_text、world_state 等。",
+                ],
+            },
+            trailing_doc_fields={
+                "rolling_injected_global_docs": rolling_global_docs,
+                "rolling_injected_volume_docs": rolling_volume_docs,
+                "rolling_injected_chapter_docs": rolling_chapter_docs,
+                "rolling_injected_group_docs": five_chapter_review_docs,
+                "current_generated_chapter": {
+                    "label": "当前章节正文",
+                    "file_name": f"{chapter_number}.txt",
+                    "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+                    "content": chapter_text.strip(),
+                },
+            },
+        )
+        return payload, included_docs, omitted_docs
+
+    fail(f"不支持的阶段：{phase_key}")
+
+
+def build_volume_review_payload(
+    *,
+    project_root: Path,
+    volume_material: dict[str, Any],
+    volume_number: str,
+    catalog: dict[str, dict[str, Any]],
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    stable_global_docs, rolling_global_docs, included_globals, omitted_globals = prepare_cache_ordered_injected_docs(
+        catalog,
+        [
+            "book_outline",
+            "world_design",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "global_plot_progress",
+            "world_model",
+            "world_state",
+        ],
+        category="global",
+    )
+    stable_volume_docs, rolling_volume_docs, included_volumes, omitted_volumes = prepare_cache_ordered_injected_docs(
+        catalog,
+        ["volume_outline", "volume_plot_progress", "volume_review"],
+        category="volume",
+    )
+
+    payload = build_payload_with_cache_layers(
+        shared_prefix_fields={
+            "stable_injected_global_docs": stable_global_docs,
+            "stable_injected_volume_docs": stable_volume_docs,
+        },
+        request_fields={
+            "document_request": {
+                "phase": "volume_review",
+                "role": "卷级审核编辑",
+                "task": "审核当前卷所有已生成章节与卷级文档是否一致、合理、符合风格。",
+                "required_file": f"{volume_number}_volume_review.md",
+            },
+            "requirements": [
+                "需要检查与卷级大纲、世界观设计、文风规范、全局剧情进程是否一致。",
+                "如果不通过，chapters_to_revise 必须列出需要返工的章节编号。",
+            ],
+        },
+        trailing_doc_fields={
+            "rolling_injected_global_docs": rolling_global_docs,
+            "rolling_injected_volume_docs": rolling_volume_docs,
+            "rewritten_chapters": rewritten_chapters,
+        },
+    )
+    included_docs = [*included_globals, *included_volumes]
+    omitted_docs = [*omitted_globals, *omitted_volumes]
+    return payload, included_docs, omitted_docs
+
+
+def build_rewritten_chapters_payload(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> dict[str, dict[str, Any]]:
+    payload: dict[str, dict[str, Any]] = {}
+    for chapter_number in chapter_numbers:
+        chapter_path = rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]
+        chapter_text = read_text_if_exists(chapter_path).strip()
+        if not chapter_text:
+            fail(f"卷级审核时缺少章节正文：{chapter_path}")
+        payload[chapter_number] = {
+            "file_name": chapter_path.name,
+            "file_path": str(chapter_path),
+            "content": chapter_text,
+            "text": chapter_text,
+        }
+    return payload
+
+
+def five_chapter_review_source_summary_lines(
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+    source_char_count: int,
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> list[str]:
+    lines = [
+        f"当前审查区间：{chapter_numbers[0]}-{chapter_numbers[-1]}。",
+        f"当前区间参考源总字符数约 {source_char_count}。",
+        f"当前区间已生成章节数：{len(rewritten_chapters)}。",
+    ]
+    for chapter_number in chapter_numbers:
+        chapter = get_chapter_material(volume_material, chapter_number)
+        lines.append(
+            f"参考源章节：{chapter['file_name']}（标题：{chapter['source_title']}，字符数约 {len(chapter['text'])}）"
+        )
+    return lines
+
+
+def build_five_chapter_review_payload(
+    *,
+    project_root: Path,
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+    catalog: dict[str, dict[str, Any]],
+    rewritten_chapters: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    current_batch_id = five_chapter_batch_id(chapter_numbers)
+    current_batch_doc_name = f"{current_batch_id}_group_review.md"
+    current_review_path = five_chapter_review_path(project_root, volume_material["volume_number"], chapter_numbers)
+    current_review_content = read_text_if_exists(current_review_path).strip()
+    if current_review_content:
+        five_chapter_review_docs = [
+            {
+                "label": f"{FIVE_CHAPTER_REVIEW_NAME}（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
+                "file_name": current_review_path.name,
+                "file_path": str(current_review_path),
+                "content": clip_for_context(current_review_content, limit=40000),
+            }
+        ]
+        included_five_reviews = [
+            f"[group] {FIVE_CHAPTER_REVIEW_NAME}（{chapter_numbers[0]}-{chapter_numbers[-1]}） -> "
+            f"{current_review_path}（字符数约 {len(current_review_content)}）"
+        ]
+        omitted_five_reviews: list[str] = []
+    else:
+        five_chapter_review_docs = []
+        included_five_reviews = []
+        omitted_five_reviews = [
+            f"[group] {FIVE_CHAPTER_REVIEW_NAME}（{chapter_numbers[0]}-{chapter_numbers[-1]}）：当前无上一轮审查文档。"
+        ]
+    stable_global_docs, rolling_global_docs, included_globals, omitted_globals = prepare_cache_ordered_injected_docs(
+        catalog,
+        [
+            "book_outline",
+            "world_design",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "global_plot_progress",
+            "world_model",
+            "world_state",
+        ],
+        category="global",
+    )
+    stable_volume_docs, rolling_volume_docs, included_volumes, omitted_volumes = prepare_cache_ordered_injected_docs(
+        catalog,
+        ["volume_outline", "volume_plot_progress", "volume_review"],
+        category="volume",
+    )
+    payload = build_payload_with_cache_layers(
+        shared_prefix_fields={
+            "stable_injected_global_docs": stable_global_docs,
+            "stable_injected_volume_docs": stable_volume_docs,
+        },
+        request_fields={
+            "document_request": {
+                "phase": "five_chapter_alignment_review",
+                "role": FIVE_CHAPTER_REVIEW_NAME,
+                "task": f"审核当前这组章节 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。",
+                "required_file": current_batch_doc_name,
+            },
+            "requirements": [
+                "重点检查最近这组章节之间是否前后矛盾、逻辑是否通畅。",
+                "重点检查剧情是否和参考源发生重大偏移，是否和卷纲、全书大纲、世界观设计发生重大偏移。",
+                "如果不通过，chapters_to_revise 必须只列当前区间内需要返工的章节编号。",
+            ],
+        },
+        trailing_doc_fields={
+            "rolling_injected_global_docs": rolling_global_docs,
+            "rolling_injected_volume_docs": rolling_volume_docs,
+            "rolling_injected_group_docs": five_chapter_review_docs,
+            "rewritten_chapters": rewritten_chapters,
+        },
+    )
+    included_docs = [*included_globals, *included_volumes, *included_five_reviews]
+    omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_five_reviews]
+    return payload, included_docs, omitted_docs
+
+
+def chapter_source_summary_lines(volume_material: dict[str, Any], chapter_number: str, source_char_count: int) -> list[str]:
+    chapter = get_chapter_material(volume_material, chapter_number)
+    lines = [
+        f"当前源章节：{chapter['file_name']}（标题：{chapter['source_title']}，字符数约 {len(chapter['text'])}）",
+        f"当前卷补充文件：{len(volume_material['extras'])} 个，当前请求会一并注入。",
+        f"当前章节参考源总字符数约 {source_char_count}。",
+    ]
+    for extra in volume_material["extras"]:
+        lines.append(f"补充文件：{extra['file_name']}（字符数约 {len(extra['text'])}）")
+    lines.append("未输入的来源章节：同卷其他章节当前不注入。")
+    return lines
+
+
+def volume_review_source_summary_lines(rewritten_chapters: dict[str, dict[str, Any]]) -> list[str]:
+    lines = [f"当前卷已生成章节数：{len(rewritten_chapters)}。"]
+    for chapter_number, data in rewritten_chapters.items():
+        lines.append(f"已生成章节：{chapter_number}.txt（字符数约 {len(data['text'])}）")
+    return lines
+
+
+def mark_five_chapter_group_pending_for_chapter(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_number: str,
+) -> None:
+    group = find_group_for_chapter(volume_material, chapter_number)
+    batch_id = five_chapter_batch_id(group)
+    state = get_five_chapter_review_state(manifest, volume_material["volume_number"], batch_id, group)
+    if state.get("status") == "passed":
+        update_five_chapter_review_state(
+            manifest,
+            volume_material["volume_number"],
+            batch_id,
+            group,
+            status="pending",
+            chapters_to_revise=[],
+            blocking_issues=[],
+        )
+
+
+def all_group_chapters_passed(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+) -> bool:
+    for chapter_number in chapter_numbers:
+        state = get_chapter_state(manifest, volume_material["volume_number"], chapter_number)
+        if state.get("status") != "passed":
+            return False
+    return True
+
+
+def next_pending_group(volume_material: dict[str, Any], manifest: dict[str, Any]) -> list[str] | None:
+    for group in build_five_chapter_groups(volume_material):
+        batch_id = five_chapter_batch_id(group)
+        state = get_five_chapter_review_state(manifest, volume_material["volume_number"], batch_id, group)
+        if state.get("status") != "passed":
+            return group
+    return None
+
+
+def current_due_group_review(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+) -> list[str] | None:
+    group = next_pending_group(volume_material, manifest)
+    if group is None:
+        return None
+    if not all_group_chapters_passed(manifest, volume_material, group):
+        return None
+    return group
+
+
+def group_review_passed(
+    manifest: dict[str, Any],
+    volume_number: str,
+    chapter_numbers: list[str],
+) -> bool:
+    batch_id = five_chapter_batch_id(chapter_numbers)
+    state = get_five_chapter_review_state(manifest, volume_number, batch_id, chapter_numbers)
+    return state.get("status") == "passed"
+
+
+def next_group_after(
+    volume_material: dict[str, Any],
+    manifest: dict[str, Any],
+    current_group: list[str],
+) -> list[str] | None:
+    groups = build_five_chapter_groups(volume_material)
+    found_current = False
+    for group in groups:
+        if not found_current:
+            if group == current_group:
+                found_current = True
+            continue
+        if not group_review_passed(manifest, volume_material["volume_number"], group):
+            return group
+    return None
+
+
+def run_five_chapter_review(
+    *,
+    client: OpenAI,
+    model: str,
+    rewrite_manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+) -> bool:
+    project_root = Path(rewrite_manifest["project_root"])
+    volume_number = volume_material["volume_number"]
+    batch_id = five_chapter_batch_id(chapter_numbers)
+    review_path = five_chapter_review_path(project_root, volume_number, chapter_numbers)
+    rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
+    source_bundle, source_char_count = build_five_chapter_source_bundle(volume_material, chapter_numbers)
+    prompt_cache_key = f"{build_volume_review_session_key(rewrite_manifest, volume_number)}-{batch_id}"
+    shared_prompt = build_five_chapter_review_shared_prompt(
+        manifest=rewrite_manifest,
+        volume_material=volume_material,
+        chapter_numbers=chapter_numbers,
+        source_bundle=source_bundle,
+        rewritten_chapters=rewritten_chapters,
+    )
+
+    for attempt in range(1, MAX_VOLUME_REVIEW_ATTEMPTS + 1):
+        update_five_chapter_review_state(
+            rewrite_manifest,
+            volume_number,
+            batch_id,
+            chapter_numbers,
+            status="in_progress",
+            attempts=attempt,
+            chapters_to_revise=[],
+            blocking_issues=[],
+        )
+        catalog = read_doc_catalog(project_root, volume_number, chapter_numbers[0])
+        payload, included_docs, omitted_docs = build_five_chapter_review_payload(
+            project_root=project_root,
+            volume_material=volume_material,
+            chapter_numbers=chapter_numbers,
+            catalog=catalog,
+            rewritten_chapters=rewritten_chapters,
+        )
+        print_progress(
+            f"{FIVE_CHAPTER_REVIEW_NAME} 调用：审核第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。"
+        )
+        print_request_context_summary(
+            request_label=f"{FIVE_CHAPTER_REVIEW_NAME}（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
+            volume_number=volume_number,
+            chapter_number=None,
+            location_label=f"第 {volume_number} 卷，第 {chapter_numbers[0]}-{chapter_numbers[-1]} 组审查。",
+            source_summary_lines=five_chapter_review_source_summary_lines(
+                volume_material,
+                chapter_numbers,
+                source_char_count,
+                rewritten_chapters,
+            ),
+            included_docs=included_docs,
+            omitted_docs=omitted_docs,
+            previous_response_id=None,
+            prompt_cache_key=prompt_cache_key,
+            shared_prefix_lines=[
+                *group_review_shared_prefix_summary_lines(
+                    rewrite_manifest,
+                    volume_material,
+                    chapter_numbers,
+                    source_char_count,
+                    rewritten_chapters,
+                ),
+                *payload_prefix_doc_summary_lines(payload),
+            ],
+            dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+        )
+        review, response_id, _ = call_five_chapter_review_response(
+            client,
+            model,
+            COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
+            shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+            previous_response_id=None,
+            prompt_cache_key=prompt_cache_key,
+        )
+        write_text(review_path, review.review_md)
+
+        if review.passed:
+            update_five_chapter_review_state(
+                rewrite_manifest,
+                volume_number,
+                batch_id,
+                chapter_numbers,
+                status="passed",
+                attempts=attempt,
+                chapters_to_revise=[],
+                blocking_issues=[],
+            )
+            print_progress(
+                f"{FIVE_CHAPTER_REVIEW_NAME} 已通过：第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。"
+            )
+            return True
+
+        chapters_to_revise = [item.zfill(4) for item in review.chapters_to_revise if item]
+        update_five_chapter_review_state(
+            rewrite_manifest,
+            volume_number,
+            batch_id,
+            chapter_numbers,
+            status="needs_revision",
+            attempts=attempt,
+            chapters_to_revise=chapters_to_revise,
+            blocking_issues=review.blocking_issues,
+        )
+        for chapter_number in chapters_to_revise:
+            update_chapter_state(
+                rewrite_manifest,
+                volume_number,
+                chapter_number,
+                status="needs_revision",
+                blocking_issues=review.blocking_issues,
+            )
+        print_progress(
+            f"{FIVE_CHAPTER_REVIEW_NAME} 未通过，需要返工章节："
+            f"{'、'.join(chapters_to_revise) or '未返回明确章节，请人工检查审查文档。'}"
+        )
+        return False
+
+    fail(f"第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} 连续审查失败。")
+
+
+def run_due_five_chapter_reviews(
+    *,
+    client: OpenAI,
+    model: str,
+    rewrite_manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    target_group: list[str] | None = None,
+) -> bool:
+    while True:
+        if target_group is not None:
+            due_group = target_group if (
+                all_group_chapters_passed(rewrite_manifest, volume_material, target_group)
+                and not group_review_passed(
+                    rewrite_manifest,
+                    volume_material["volume_number"],
+                    target_group,
+                )
+            ) else None
+        else:
+            due_group = current_due_group_review(
+                rewrite_manifest,
+                volume_material,
+            )
+        if due_group is None:
+            return True
+        if not run_five_chapter_review(
+            client=client,
+            model=model,
+            rewrite_manifest=rewrite_manifest,
+            volume_material=volume_material,
+            chapter_numbers=due_group,
+        ):
+            return False
+        if target_group is not None:
+            return True
+
+
+def select_next_chapter(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    *,
+    requested_chapter: str | None = None,
+    allowed_chapters: list[str] | None = None,
+) -> str | None:
+    available = {chapter["chapter_number"] for chapter in volume_material["chapters"]}
+    allowed = {item.zfill(4) for item in (allowed_chapters or [])} or None
+    if requested_chapter:
+        normalized = requested_chapter.zfill(4)
+        if normalized not in available:
+            fail(f"未在第 {volume_material['volume_number']} 卷找到指定章节：{normalized}")
+        if allowed is not None and normalized not in allowed:
+            fail(f"指定章节 {normalized} 不在当前运行范围内。")
+        return normalized
+
+    volume_state = manifest.get("chapter_states", {}).get(volume_material["volume_number"], {})
+    review_state = get_volume_review_state(manifest, volume_material["volume_number"])
+    revision_targets = [item.zfill(4) for item in review_state.get("chapters_to_revise", []) if item]
+    for chapter_number in revision_targets:
+        if chapter_number in available and (allowed is None or chapter_number in allowed) and volume_state.get(chapter_number, {}).get("status") != "passed":
+            return chapter_number
+
+    five_review_states = manifest.get("five_chapter_review_states", {}).get(volume_material["volume_number"], {})
+    for group in build_five_chapter_groups(volume_material):
+        batch_id = five_chapter_batch_id(group)
+        state = five_review_states.get(batch_id, {})
+        for chapter_number in [item.zfill(4) for item in state.get("chapters_to_revise", []) if item]:
+            if chapter_number in available and (allowed is None or chapter_number in allowed) and volume_state.get(chapter_number, {}).get("status") != "passed":
+                return chapter_number
+
+    for chapter in volume_material["chapters"]:
+        chapter_number = chapter["chapter_number"]
+        if allowed is not None and chapter_number not in allowed:
+            continue
+        state = volume_state.get(chapter_number, {})
+        if state.get("status") != "passed":
+            return chapter_number
+    return None
+
+
+def all_chapters_passed(manifest: dict[str, Any], volume_material: dict[str, Any]) -> bool:
+    for chapter in volume_material["chapters"]:
+        state = get_chapter_state(manifest, volume_material["volume_number"], chapter["chapter_number"])
+        if state.get("status") != "passed":
+            return False
+    return True
+
+
+def select_volume_to_process(
+    volume_dirs: list[Path],
+    manifest: dict[str, Any],
+    readiness_map: dict[str, dict[str, Any]],
+    requested_volume: str | None,
+) -> Path | None:
+    volume_map = {volume_dir.name: volume_dir for volume_dir in volume_dirs}
+
+    if requested_volume:
+        normalized = requested_volume.zfill(3)
+        if normalized not in volume_map:
+            fail(f"未找到指定卷：{normalized}")
+        readiness = readiness_map.get(normalized)
+        if readiness and not readiness["eligible"]:
+            fail(
+                f"第 {normalized} 卷的 novel_adaptation_cli 产物尚不完善，暂不可进入章节工作流：\n"
+                + "\n".join(readiness["missing"])
+            )
+        return volume_map[normalized]
+
+    processed = set(manifest.get("processed_volumes", []))
+    for volume_dir in volume_dirs:
+        if volume_dir.name in processed:
+            continue
+        readiness = readiness_map.get(volume_dir.name, {})
+        if not readiness.get("eligible", False):
+            print_progress(f"第 {volume_dir.name} 卷暂不可进入章节工作流，已停止在这一卷。")
+            for reason in readiness.get("missing", []):
+                print_progress(f"  - {reason}")
+            return None
+        return volume_dir
+    return None
+
+
+def prompt_next_chapter(next_chapter: str | None) -> bool:
+    if next_chapter is None:
+        print_progress("当前卷没有新的待处理章节了；如需继续，请改用按组运行或按卷运行。")
+        return False
+    if not sys.stdin or not sys.stdin.isatty():
+        print_progress("当前章节已完成；当前环境无法交互确认，程序将退出。")
+        return False
+    choice = prompt_choice(
+        f"当前章节已完成。下一章是 {next_chapter}。请选择后续操作",
+        [
+            ("next", f"继续下一章（{next_chapter}）"),
+            ("exit", "退出程序"),
+        ],
+    )
+    return choice == "next"
+
+
+def prompt_next_volume(next_volume: Path | None) -> bool:
+    if next_volume is None:
+        print_progress("本书完整结束。")
+        return False
+    if not sys.stdin or not sys.stdin.isatty():
+        print_progress(
+            f"当前卷已通过审核，下一卷是第 {next_volume.name} 卷；当前环境无法交互确认，程序将退出。"
+        )
+        return False
+    choice = prompt_choice(
+        f"当前卷已通过审核。下一卷是第 {next_volume.name} 卷。请选择后续操作",
+        [
+            ("next", f"开始下一卷（第 {next_volume.name} 卷）"),
+            ("exit", "退出程序"),
+        ],
+    )
+    return choice == "next"
+
+
+def prompt_next_group(next_group: list[str] | None) -> bool:
+    if next_group is None:
+        return False
+    if not sys.stdin or not sys.stdin.isatty():
+        print_progress(
+            f"当前组已通过审查，下一组是 {next_group[0]}-{next_group[-1]}；当前环境无法交互确认，程序将退出。"
+        )
+        return False
+    choice = prompt_choice(
+        f"当前组已通过审查。下一组是 {next_group[0]}-{next_group[-1]}。请选择后续操作",
+        [
+            ("next", f"继续下一组（{next_group[0]}-{next_group[-1]}）"),
+            ("exit", "退出程序"),
+        ],
+    )
+    return choice == "next"
+
+
+def find_next_volume_after(
+    volume_dirs: list[Path],
+    current_volume_name: str,
+    readiness_map: dict[str, dict[str, Any]],
+) -> Path | None:
+    found_current = False
+    for volume_dir in volume_dirs:
+        if not found_current:
+            if volume_dir.name == current_volume_name:
+                found_current = True
+            continue
+        readiness = readiness_map.get(volume_dir.name, {})
+        if not readiness.get("eligible", False):
+            print_progress(f"第 {volume_dir.name} 卷暂不可进入章节工作流，无法继续下一卷。")
+            for reason in readiness.get("missing", []):
+                print_progress(f"  - {reason}")
+            return None
+        return volume_dir
+    return None
+
+
+def prompt_continue_same_mode_next_volume(run_mode: str, next_volume: Path | None) -> bool:
+    if next_volume is None:
+        print_progress("本书完整结束。")
+        return False
+    mode_label = RUN_MODE_LABELS.get(run_mode, run_mode)
+    if not sys.stdin or not sys.stdin.isatty():
+        print_progress(
+            f"当前卷已经没有可继续的内容，下一卷是第 {next_volume.name} 卷；"
+            f"当前环境无法交互确认，程序将退出。"
+        )
+        return False
+    choice = prompt_choice(
+        f"当前卷已处理到末尾。请选择后续操作",
+        [
+            ("next", f"继续下一卷（第 {next_volume.name} 卷，保持{mode_label}）"),
+            ("exit", "退出程序"),
+        ],
+    )
+    return choice == "next"
+
+
+def render_dry_run_summary(
+    rewrite_manifest: dict[str, Any],
+    readiness_map: dict[str, dict[str, Any]],
+    target_volume: Path | None,
+    target_chapter: str | None,
+    run_mode: str,
+) -> None:
+    print(f"工程目录：{rewrite_manifest['project_root']}")
+    print(f"重写输出目录：{rewrite_manifest['rewrite_output_root']}")
+    print(f"已处理完成的卷：{', '.join(rewrite_manifest.get('processed_volumes', [])) or 'none'}")
+    print("卷检测结果：")
+    for volume_number in sorted(readiness_map):
+        info = readiness_map[volume_number]
+        status = "ready" if info["eligible"] else "blocked"
+        print(f"  - {volume_number}: {status}")
+        for reason in info["missing"]:
+            print(f"      * {reason}")
+    if target_volume is not None:
+        print(f"本次准备处理卷：{target_volume.name}")
+    if target_chapter is not None:
+        print(f"本次准备处理章：{target_chapter}")
+    print(f"本次运行模式：{run_mode}")
+    print("本次 dry-run 不调用 API，也不会生成正文。")
+
+
+def run_chapter_workflow(
+    *,
+    client: OpenAI,
+    model: str,
+    rewrite_manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_number: str,
+) -> None:
+    project_root = Path(rewrite_manifest["project_root"])
+    paths = rewrite_paths(project_root, volume_material["volume_number"], chapter_number)
+    paths["chapter_dir"].mkdir(parents=True, exist_ok=True)
+    paths["rewritten_volume_dir"].mkdir(parents=True, exist_ok=True)
+
+    source_bundle, source_char_count = build_chapter_source_bundle(volume_material, chapter_number)
+    chapter_session_key = build_chapter_session_key(
+        rewrite_manifest,
+        volume_material["volume_number"],
+        chapter_number,
+    )
+
+    for attempt in range(1, MAX_CHAPTER_REWRITE_ATTEMPTS + 1):
+        response_ids: list[str] = []
+        previous_response_id: str | None = None
+        stage_shared_prompt = build_chapter_shared_prompt(
+            manifest=rewrite_manifest,
+            volume_material=volume_material,
+            chapter_number=chapter_number,
+            source_bundle=source_bundle,
+            source_char_count=source_char_count,
+        )
+        update_chapter_state(
+            rewrite_manifest,
+            volume_material["volume_number"],
+            chapter_number,
+            status="in_progress",
+            attempts=attempt,
+            last_stage="phase1_outline",
+            blocking_issues=[],
+        )
+        write_chapter_stage_snapshot(
+            paths["chapter_stage_manifest"],
+            volume_number=volume_material["volume_number"],
+            chapter_number=chapter_number,
+            status="in_progress",
+            note="开始当前章节工作流。",
+            attempt=attempt,
+            last_phase="phase1_outline",
+            response_ids=response_ids,
+        )
+
+        try:
+            catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
+            payload, included_docs, omitted_docs = build_phase_request_payload(
+                phase_key="phase1_outline",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                catalog=catalog,
+            )
+            print_progress(f"第 1/4 次调用：生成第 {chapter_number} 章章纲。")
+            print_request_context_summary(
+                request_label="第一阶段：章纲生成",
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                included_docs=included_docs,
+                omitted_docs=omitted_docs,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+                shared_prefix_lines=[
+                    *chapter_shared_prefix_summary_lines(
+                        rewrite_manifest,
+                        volume_material,
+                        chapter_number,
+                        source_char_count,
+                    ),
+                    *payload_prefix_doc_summary_lines(payload),
+                ],
+                dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+            )
+            outline_md, previous_response_id, outline_result = call_markdown_tool_response(
+                client,
+                model,
+                COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+            )
+            response_ids.append(str(outline_result.response_id or ""))
+            write_text(paths["chapter_outline"], outline_md)
+
+            update_chapter_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                chapter_number,
+                last_stage="phase2_chapter_text",
+            )
+            write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                status="in_progress",
+                note="章纲已完成，准备生成正文。",
+                attempt=attempt,
+                last_phase="phase2_chapter_text",
+                response_ids=response_ids,
+            )
+
+            catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
+            payload, included_docs, omitted_docs = build_phase_request_payload(
+                phase_key="phase2_chapter_text",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                catalog=catalog,
+            )
+            print_progress(f"第 2/4 次调用：生成第 {chapter_number} 章完整正文。")
+            print_request_context_summary(
+                request_label="第二阶段-第一部分：正文生成",
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                included_docs=included_docs,
+                omitted_docs=omitted_docs,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+                shared_prefix_lines=[
+                    *chapter_shared_prefix_summary_lines(
+                        rewrite_manifest,
+                        volume_material,
+                        chapter_number,
+                        source_char_count,
+                    ),
+                    *payload_prefix_doc_summary_lines(payload),
+                ],
+                dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+            )
+            chapter_txt, previous_response_id, chapter_text_result = call_chapter_text_tool_response(
+                client,
+                model,
+                COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+            )
+            response_ids.append(str(chapter_text_result.response_id or ""))
+            write_text(paths["rewritten_chapter"], chapter_txt)
+
+            update_chapter_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                chapter_number,
+                last_stage="phase2_support_updates",
+            )
+            write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                status="in_progress",
+                note="正文已完成，准备更新配套状态文档。",
+                attempt=attempt,
+                last_phase="phase2_support_updates",
+                response_ids=response_ids,
+            )
+
+            catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
+            payload, included_docs, omitted_docs = build_phase_request_payload(
+                phase_key="phase2_support_updates",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                catalog=catalog,
+                chapter_text=chapter_txt,
+            )
+            print_progress(f"第 3/4 次调用：更新第 {chapter_number} 章配套状态文档。")
+            print_request_context_summary(
+                request_label="第二阶段-第二部分：状态文档更新",
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                included_docs=included_docs,
+                omitted_docs=omitted_docs,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+                shared_prefix_lines=[
+                    *chapter_shared_prefix_summary_lines(
+                        rewrite_manifest,
+                        volume_material,
+                        chapter_number,
+                        source_char_count,
+                    ),
+                    *payload_prefix_doc_summary_lines(payload),
+                ],
+                dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+            )
+            support_updates, previous_response_id, support_result = call_support_updates_response(
+                client,
+                model,
+                COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+            )
+            response_ids.append(str(support_result.response_id or ""))
+            changed_docs = apply_support_updates(paths, support_updates)
+            print_progress(
+                "本轮配套文档更新结果："
+                + (", ".join(changed_docs) if changed_docs else "模型判定当前无需要落盘的文档更新。")
+            )
+
+            update_chapter_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                chapter_number,
+                last_stage="phase3_review",
+            )
+            write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                status="in_progress",
+                note="正文与状态文档已完成，准备进入章级审核。",
+                attempt=attempt,
+                last_phase="phase3_review",
+                response_ids=response_ids,
+            )
+
+            catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
+            payload, included_docs, omitted_docs = build_phase_request_payload(
+                phase_key="phase3_review",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                catalog=catalog,
+                chapter_text=read_text_if_exists(paths["rewritten_chapter"]).strip(),
+            )
+            print_progress(f"第 4/4 次调用：审核第 {chapter_number} 章全部产物。")
+            print_request_context_summary(
+                request_label="第三阶段：章级审核",
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                included_docs=included_docs,
+                omitted_docs=omitted_docs,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+                shared_prefix_lines=[
+                    *chapter_shared_prefix_summary_lines(
+                        rewrite_manifest,
+                        volume_material,
+                        chapter_number,
+                        source_char_count,
+                    ),
+                    *payload_prefix_doc_summary_lines(payload),
+                ],
+                dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+            )
+            chapter_review, previous_response_id, review_result = call_chapter_review_response(
+                client,
+                model,
+                COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                previous_response_id=previous_response_id,
+                prompt_cache_key=chapter_session_key,
+            )
+            response_ids.append(str(review_result.response_id or ""))
+            write_text(paths["chapter_review"], chapter_review.review_md)
+
+            if chapter_review.passed:
+                update_chapter_state(
+                    rewrite_manifest,
+                    volume_material["volume_number"],
+                    chapter_number,
+                    status="passed",
+                    attempts=attempt,
+                    last_stage="phase3_review",
+                    blocking_issues=[],
+                )
+                write_chapter_stage_snapshot(
+                    paths["chapter_stage_manifest"],
+                    volume_number=volume_material["volume_number"],
+                    chapter_number=chapter_number,
+                    status="passed",
+                    note="当前章节已通过章级审核。",
+                    attempt=attempt,
+                    last_phase="phase3_review",
+                    response_ids=response_ids,
+                )
+                mark_five_chapter_group_pending_for_chapter(
+                    rewrite_manifest,
+                    volume_material,
+                    chapter_number,
+                )
+                print_progress(f"第 {chapter_number} 章已通过章级审核。")
+                return
+
+            update_chapter_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                chapter_number,
+                status="needs_revision",
+                attempts=attempt,
+                last_stage="phase3_review",
+                blocking_issues=chapter_review.blocking_issues,
+            )
+            write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                status="needs_revision",
+                note="章级审核未通过，准备按审核意见重写/更新。",
+                attempt=attempt,
+                last_phase="phase3_review",
+                response_ids=response_ids,
+            )
+            print_progress(
+                f"第 {chapter_number} 章章级审核未通过，将按审核意见重试。"
+                f" 本轮问题：{'; '.join(chapter_review.blocking_issues) or '见审核文档'}"
+            )
+        except Exception as error:
+            if isinstance(error, llm_runtime.ModelOutputError):
+                write_response_debug_snapshot(
+                    paths["chapter_response_debug"],
+                    error_message=str(error),
+                    preview=error.preview,
+                    raw_body_text=getattr(error, "raw_body_text", ""),
+                )
+            update_chapter_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                chapter_number,
+                status="failed",
+                attempts=attempt,
+            )
+            write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                chapter_number=chapter_number,
+                status="failed",
+                note=str(error),
+                attempt=attempt,
+                last_phase=get_chapter_state(
+                    rewrite_manifest,
+                    volume_material["volume_number"],
+                    chapter_number,
+                ).get("last_stage"),
+            )
+            raise
+
+    fail(f"第 {volume_material['volume_number']} 卷第 {chapter_number} 章连续 {MAX_CHAPTER_REWRITE_ATTEMPTS} 次仍未通过章级审核。")
+
+
+def run_volume_review(
+    *,
+    client: OpenAI,
+    model: str,
+    rewrite_manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+) -> bool:
+    project_root = Path(rewrite_manifest["project_root"])
+    paths = rewrite_paths(project_root, volume_material["volume_number"])
+    chapter_numbers = [chapter["chapter_number"] for chapter in volume_material["chapters"]]
+    rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_material["volume_number"], chapter_numbers)
+    prompt_cache_key = build_volume_review_session_key(rewrite_manifest, volume_material["volume_number"])
+    shared_prompt = build_volume_review_shared_prompt(
+        manifest=rewrite_manifest,
+        volume_material=volume_material,
+        rewritten_chapters=rewritten_chapters,
+    )
+
+    for attempt in range(1, MAX_VOLUME_REVIEW_ATTEMPTS + 1):
+        update_volume_review_state(
+            rewrite_manifest,
+            volume_material["volume_number"],
+            status="in_progress",
+            attempts=attempt,
+            chapters_to_revise=[],
+            blocking_issues=[],
+        )
+        write_volume_stage_snapshot(
+            paths["volume_stage_manifest"],
+            volume_number=volume_material["volume_number"],
+            status="in_progress",
+            note="开始卷级审核。",
+            attempt=attempt,
+        )
+        try:
+            catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_numbers[0])
+            payload, included_docs, omitted_docs = build_volume_review_payload(
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number=volume_material["volume_number"],
+                catalog=catalog,
+                rewritten_chapters=rewritten_chapters,
+            )
+            print_progress(f"卷级审核调用：审核第 {volume_material['volume_number']} 卷。")
+            print_request_context_summary(
+                request_label="卷级审核",
+                volume_number=volume_material["volume_number"],
+                chapter_number=None,
+                location_label=f"第 {volume_material['volume_number']} 卷，卷级审核。",
+                source_summary_lines=volume_review_source_summary_lines(rewritten_chapters),
+                included_docs=included_docs,
+                omitted_docs=omitted_docs,
+                previous_response_id=None,
+                prompt_cache_key=prompt_cache_key,
+                shared_prefix_lines=[
+                    *volume_review_shared_prefix_summary_lines(
+                        rewrite_manifest,
+                        volume_material,
+                        rewritten_chapters,
+                    ),
+                    *payload_prefix_doc_summary_lines(payload),
+                ],
+                dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+            )
+            volume_review, response_id, review_result = call_volume_review_response(
+                client,
+                model,
+                COMMON_VOLUME_REVIEW_INSTRUCTIONS,
+                shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                previous_response_id=None,
+                prompt_cache_key=prompt_cache_key,
+            )
+            write_text(paths["volume_review"], volume_review.review_md)
+            write_volume_stage_snapshot(
+                paths["volume_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                status="completed",
+                note="卷级审核已完成。",
+                attempt=attempt,
+                response_id=response_id,
+            )
+
+            if volume_review.passed:
+                processed = set(rewrite_manifest.get("processed_volumes", []))
+                processed.add(volume_material["volume_number"])
+                rewrite_manifest["processed_volumes"] = sorted(processed)
+                rewrite_manifest["last_processed_volume"] = volume_material["volume_number"]
+                save_rewrite_manifest(rewrite_manifest)
+                update_volume_review_state(
+                    rewrite_manifest,
+                    volume_material["volume_number"],
+                    status="passed",
+                    attempts=attempt,
+                    chapters_to_revise=[],
+                    blocking_issues=[],
+                )
+                print_progress(f"第 {volume_material['volume_number']} 卷已通过卷级审核。")
+                return True
+
+            chapters_to_revise = [item.zfill(4) for item in volume_review.chapters_to_revise if item]
+            update_volume_review_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                status="needs_revision",
+                attempts=attempt,
+                chapters_to_revise=chapters_to_revise,
+                blocking_issues=volume_review.blocking_issues,
+            )
+            for chapter_number in chapters_to_revise:
+                update_chapter_state(
+                    rewrite_manifest,
+                    volume_material["volume_number"],
+                    chapter_number,
+                    status="needs_revision",
+                    blocking_issues=volume_review.blocking_issues,
+                )
+            print_progress(
+                f"第 {volume_material['volume_number']} 卷卷级审核未通过，需要返工章节："
+                f"{'、'.join(chapters_to_revise) or '未返回明确章节，请人工检查卷级审核文档。'}"
+            )
+            return False
+        except Exception as error:
+            if isinstance(error, llm_runtime.ModelOutputError):
+                write_response_debug_snapshot(
+                    paths["volume_response_debug"],
+                    error_message=str(error),
+                    preview=error.preview,
+                    raw_body_text=getattr(error, "raw_body_text", ""),
+                )
+            update_volume_review_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                status="failed",
+                attempts=attempt,
+            )
+            write_volume_stage_snapshot(
+                paths["volume_stage_manifest"],
+                volume_number=volume_material["volume_number"],
+                status="failed",
+                note=str(error),
+                attempt=attempt,
+            )
+            raise
+
+    fail(f"第 {volume_material['volume_number']} 卷连续 {MAX_VOLUME_REVIEW_ATTEMPTS} 次卷级审核未通过。")
+
+
+def process_volume_workflow(
+    *,
+    client: OpenAI,
+    model: str,
+    rewrite_manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    run_mode: str,
+    requested_chapter: str | None = None,
+) -> tuple[str, Any]:
+    manual_requested_chapter = requested_chapter
+    target_group = None
+    if run_mode == RUN_MODE_GROUP:
+        target_group = (
+            find_group_for_chapter(volume_material, requested_chapter)
+            if requested_chapter
+            else next_pending_group(volume_material, rewrite_manifest)
+        )
+
+    while True:
+        next_chapter = select_next_chapter(
+            rewrite_manifest,
+            volume_material,
+            requested_chapter=manual_requested_chapter,
+            allowed_chapters=target_group if run_mode == RUN_MODE_GROUP else None,
+        )
+        manual_requested_chapter = None
+
+        if next_chapter is None:
+            if run_mode == RUN_MODE_GROUP:
+                if target_group is None:
+                    return ("group", None)
+                if not all_group_chapters_passed(rewrite_manifest, volume_material, target_group):
+                    fail(f"当前组 {target_group[0]}-{target_group[-1]} 仍有章节未完成，但未识别到可处理章节。")
+                if not run_due_five_chapter_reviews(
+                    client=client,
+                    model=model,
+                    rewrite_manifest=rewrite_manifest,
+                    volume_material=volume_material,
+                    target_group=target_group,
+                ):
+                    continue
+                return ("group", next_group_after(volume_material, rewrite_manifest, target_group))
+
+            if not all_chapters_passed(rewrite_manifest, volume_material):
+                fail(f"第 {volume_material['volume_number']} 卷仍有章节未完成，但未识别到可处理章节。")
+            if not run_due_five_chapter_reviews(
+                client=client,
+                model=model,
+                rewrite_manifest=rewrite_manifest,
+                volume_material=volume_material,
+            ):
+                continue
+
+            if run_mode == RUN_MODE_CHAPTER:
+                return ("chapter", None)
+
+            review_passed = run_volume_review(
+                client=client,
+                model=model,
+                rewrite_manifest=rewrite_manifest,
+                volume_material=volume_material,
+            )
+            if review_passed:
+                return ("volume", None)
+            continue
+
+        print_progress(f"准备处理第 {volume_material['volume_number']} 卷第 {next_chapter} 章。")
+        run_chapter_workflow(
+            client=client,
+            model=model,
+            rewrite_manifest=rewrite_manifest,
+            volume_material=volume_material,
+            chapter_number=next_chapter,
+        )
+
+        if run_mode == RUN_MODE_CHAPTER:
+            return ("chapter", select_next_chapter(rewrite_manifest, volume_material))
+
+        if not run_due_five_chapter_reviews(
+            client=client,
+            model=model,
+            rewrite_manifest=rewrite_manifest,
+            volume_material=volume_material,
+            target_group=target_group if run_mode == RUN_MODE_GROUP else None,
+        ):
+            continue
+
+        if run_mode == RUN_MODE_GROUP and target_group is not None and group_review_passed(
+            rewrite_manifest,
+            volume_material["volume_number"],
+            target_group,
+        ):
+            return ("group", next_group_after(volume_material, rewrite_manifest, target_group))
+
+
+def main() -> int:
+    args = parse_args()
+    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
+
+    try:
+        print_progress("开始识别小说工程目录。")
+        project_root, source_root, project_manifest = resolve_project_input(args.input_root, global_config)
+        volume_dirs = discover_volume_dirs(source_root)
+        readiness_map = {
+            volume_dir.name: assess_volume_readiness(project_root, source_root, volume_dir.name)
+            for volume_dir in volume_dirs
+        }
+        print_volume_readiness_summary(readiness_map)
+
+        rewrite_manifest = init_or_load_rewrite_manifest(project_root, source_root, project_manifest, volume_dirs)
+        ensure_rewrite_dirs(project_root)
+        run_mode = resolve_run_mode(args)
+        global_config = openai_config.update_global_config(
+            GLOBAL_CONFIG_PATH,
+            global_config,
+            {
+                "last_chapter_rewrite_input_root": str(project_root),
+                "last_project_root": str(project_root),
+                "last_source_root": str(source_root),
+            },
+        )
+
+        target_volume = select_volume_to_process(volume_dirs, rewrite_manifest, readiness_map, args.volume)
+        target_chapter = args.chapter.zfill(4) if args.chapter else None
+        if args.dry_run:
+            render_dry_run_summary(rewrite_manifest, readiness_map, target_volume, target_chapter, run_mode)
+            return 0
+
+        if target_volume is None:
+            print_progress("当前没有可进入章节工作流的卷。")
+            return 0
+
+        print_progress(f"本次运行模式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
+        print_progress("开始准备 API 客户端。")
+        api_key, global_config = openai_config.resolve_api_key(
+            cli_api_key=args.api_key,
+            global_config=global_config,
+            config_path=GLOBAL_CONFIG_PATH,
+        )
+        openai_settings, _ = openai_config.resolve_openai_settings(
+            cli_base_url=args.base_url,
+            cli_model=args.model,
+            global_config=global_config,
+            config_path=GLOBAL_CONFIG_PATH,
+        )
+        print_progress(f"本次使用 base_url：{openai_settings['base_url']}")
+        print_progress(f"本次使用模型：{openai_settings['model']}")
+        client = openai_config.create_openai_client(
+            api_key=api_key,
+            base_url=openai_settings["base_url"],
+        )
+
+        requested_volume = target_volume.name
+        requested_chapter = target_chapter
+
+        while True:
+            current_volume = select_volume_to_process(volume_dirs, rewrite_manifest, readiness_map, requested_volume)
+            requested_volume = None
+            if current_volume is None:
+                print_progress("当前没有新的可处理卷。")
+                return 0
+
+            volume_material = load_volume_material(current_volume)
+            print_progress(
+                f"已加载第 {current_volume.name} 卷："
+                f"{len(volume_material['chapters'])} 个章节文件，"
+                f"{len(volume_material['extras'])} 个补充文件。"
+            )
+            completed_scope, next_target = process_volume_workflow(
+                client=client,
+                model=openai_settings["model"],
+                rewrite_manifest=rewrite_manifest,
+                volume_material=volume_material,
+                run_mode=run_mode,
+                requested_chapter=requested_chapter,
+            )
+            requested_chapter = None
+
+            if completed_scope == "chapter":
+                if next_target is not None:
+                    if not prompt_next_chapter(next_target):
+                        return 0
+                    requested_volume = current_volume.name
+                    requested_chapter = next_target
+                    continue
+                next_volume = find_next_volume_after(volume_dirs, current_volume.name, readiness_map)
+                if not prompt_continue_same_mode_next_volume(run_mode, next_volume):
+                    return 0
+                if next_volume is None:
+                    return 0
+                requested_volume = next_volume.name
+                requested_chapter = None
+                continue
+
+            if completed_scope == "group":
+                if next_target is not None:
+                    if not prompt_next_group(next_target):
+                        return 0
+                    requested_volume = current_volume.name
+                    requested_chapter = next_target[0]
+                    continue
+                next_volume = find_next_volume_after(volume_dirs, current_volume.name, readiness_map)
+                if not prompt_continue_same_mode_next_volume(run_mode, next_volume):
+                    return 0
+                if next_volume is None:
+                    return 0
+                requested_volume = next_volume.name
+                requested_chapter = None
+                continue
+
+            next_volume = select_volume_to_process(volume_dirs, rewrite_manifest, readiness_map, None)
+            if not prompt_next_volume(next_volume):
+                return 0
+            if next_volume is None:
+                return 0
+            requested_volume = next_volume.name
+    except KeyboardInterrupt:
+        print_progress("已取消。", error=True)
+        pause_before_exit()
+        return 1
+    except Exception as error:
+        print_progress(f"处理失败：{error}", error=True)
+        pause_before_exit()
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

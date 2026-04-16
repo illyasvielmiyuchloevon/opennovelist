@@ -42,9 +42,25 @@ def read_text(path: Path, *, encodings: tuple[str, ...] = DEFAULT_TEXT_ENCODINGS
     )
 
 
+def read_text_if_exists(path: Path, *, encodings: tuple[str, ...] = DEFAULT_TEXT_ENCODINGS) -> str:
+    if not path.exists():
+        return ""
+    return read_text(path, encodings=encodings)
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
+
+
+def write_text_if_changed(path: Path, content: str) -> bool:
+    normalized = content.rstrip() + "\n"
+    current = path.read_text(encoding="utf-8") if path.exists() else None
+    if current == normalized:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normalized, encoding="utf-8")
+    return True
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
