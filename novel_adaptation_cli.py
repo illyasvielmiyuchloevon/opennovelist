@@ -48,6 +48,13 @@ COMMON_DOCUMENT_OUTPUT_RULE = (
     "你必须使用提供的函数工具提交最终文档正文，把完整 Markdown 放进 content_md 字段，"
     "由程序负责写入文件。"
 )
+COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
+    "你是资深网络小说改编规划编辑。"
+    "用户拥有参考源文本权利。"
+    "当前任务每次只产出 1 份 Markdown 文档正文。"
+    "请严格根据输入中的 document_request 执行。"
+    + COMMON_DOCUMENT_OUTPUT_RULE
+)
 DOCUMENT_SUBMISSION_TOOL_NAME = "submit_markdown_document"
 DOCUMENT_SUBMISSION_TOOL_DESCRIPTION = (
     "提交最终 Markdown 文档正文。"
@@ -547,6 +554,7 @@ def print_request_context_summary(
     previous_response_id: str | None,
 ) -> None:
     print_progress(f"{doc_label} 本次请求将携带以下内容：")
+    print_progress("  提示词缓存共享前缀：项目上下文 + 阶段规则 + 文件清单 + 整卷原文。")
     print_progress(
         f"  当前卷整卷原文：{len(volume_material['chapters'])} 个章节文件，"
         f"{len(volume_material['extras'])} 个补充文件，总字符数约 {source_char_count}。"
@@ -663,49 +671,45 @@ def should_generate_style_guide(volume_number: str) -> bool:
     return volume_number == "001"
 
 
-def build_document_instructions(doc_key: str) -> str:
-    instruction_specs = {
-        "style_guide": (
-            "你是资深网络小说文风策划编辑。",
-            "当前任务只产出 1 份文笔写作风格文档正文。",
-            "文档必须覆盖写作方式、文风、情绪渲染方式、爽点铺排方式、章节结尾钩子方式、"
-            "叙事快慢、句长偏好、对话密度、描写密度、铺垫、转折、高潮、收束，并说明与原书的功能映射。",
-        ),
-        "world_design": (
-            "你是资深网络小说世界观设定编辑。",
-            "当前任务只产出 1 份世界观设计文档正文。",
-            "文档需覆盖世界观设定、背景故事、能力设计、道具设计、势力设计、角色功能位、故事类型与原书映射关系。",
-        ),
-        "book_outline": (
-            "你是资深网络小说总纲编辑。",
-            "当前任务只产出 1 份全书大纲文档正文。",
-            "把当前卷纳入整本书的大纲中，但只能增量补写已读取参考源的卷。"
-            "未读取的卷只能写成占位，或暂时不写，等后续阶段再补充，不得提前展开细纲。",
-        ),
-        "foreshadowing": (
-            "你是资深网络小说伏笔统筹编辑。",
-            "当前任务只产出 1 份伏笔文档正文。",
-            "文档要同时管理全书伏笔和当前卷伏笔，区分已埋设、待回收、已回收，并写出与原书的功能映射。",
-        ),
-        "volume_outline": (
-            "你是资深小说分卷策划编辑。",
-            "当前任务只产出 1 份当前卷的卷级大纲正文。",
-            "只产出当前卷的卷级大纲文档。",
-        ),
+def build_document_request(doc_key: str) -> dict[str, Any]:
+    request_specs: dict[str, dict[str, Any]] = {
+        "style_guide": {
+            "role": "资深网络小说文风策划编辑",
+            "task": "当前任务只产出 1 份文笔写作风格文档正文。",
+            "scope": (
+                "文档必须覆盖写作方式、文风、情绪渲染方式、爽点铺排方式、章节结尾钩子方式、"
+                "叙事快慢、句长偏好、对话密度、描写密度、铺垫、转折、高潮、收束，并说明与原书的功能映射。"
+            ),
+        },
+        "world_design": {
+            "role": "资深网络小说世界观设定编辑",
+            "task": "当前任务只产出 1 份世界观设计文档正文。",
+            "scope": (
+                "文档需覆盖世界观设定、背景故事、能力设计、道具设计、势力设计、角色功能位、故事类型与原书映射关系。"
+            ),
+        },
+        "book_outline": {
+            "role": "资深网络小说总纲编辑",
+            "task": "当前任务只产出 1 份全书大纲文档正文。",
+            "scope": (
+                "把当前卷纳入整本书的大纲中，但只能增量补写已读取参考源的卷。"
+                "未读取的卷只能写成占位，或暂时不写，等后续阶段再补充，不得提前展开细纲。"
+            ),
+        },
+        "foreshadowing": {
+            "role": "资深网络小说伏笔统筹编辑",
+            "task": "当前任务只产出 1 份伏笔文档正文。",
+            "scope": "文档要同时管理全书伏笔和当前卷伏笔，区分已埋设、待回收、已回收，并写出与原书的功能映射。",
+        },
+        "volume_outline": {
+            "role": "资深小说分卷策划编辑",
+            "task": "当前任务只产出 1 份当前卷的卷级大纲正文。",
+            "scope": "只产出当前卷的卷级大纲文档。",
+        },
     }
-    if doc_key not in instruction_specs:
+    if doc_key not in request_specs:
         fail(f"不支持的文档类型：{doc_key}")
-
-    role_text, task_text, scope_text = instruction_specs[doc_key]
-    return "".join(
-        [
-            role_text,
-            "用户拥有参考源文本权利。",
-            task_text,
-            COMMON_DOCUMENT_OUTPUT_RULE,
-            scope_text,
-        ]
-    )
+    return {"doc_key": doc_key, **request_specs[doc_key]}
 
 
 def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
@@ -756,6 +760,46 @@ def build_stage_project_context(
     }
 
 
+def build_stage_shared_prompt(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    loaded_files: list[dict[str, Any]],
+    source_bundle: str,
+    source_char_count: int,
+) -> str:
+    stage_shared_payload = {
+        "project": build_stage_project_context(manifest, volume_material),
+        "stage_rules": [
+            "这一卷的全部生成都属于同一个阶段会话，请沿用同一会话的上下文连续工作。",
+            "全书大纲、世界观文档、伏笔文档是每阶段都要注入的全局资料。",
+            "卷级大纲不作为全局注入资料，不要把卷级大纲当成下一份文档的依赖前提。",
+            "所有映射关系都写成功能映射，不要照抄参考源原文句子。",
+            "本阶段的每一次请求都会重新附带当前卷全部文件原文与文件清单。",
+        ],
+        "loaded_files": loaded_files,
+        "source_char_count": source_char_count,
+        "current_volume_source_bundle": source_bundle,
+    }
+    return (
+        "## Stage Shared Context\n"
+        + json.dumps(stage_shared_payload, ensure_ascii=False, indent=2)
+        + "\n\n"
+        + "## Dynamic Request\n"
+    )
+
+
+def build_payload_with_trailing_docs(
+    *,
+    stable_fields: dict[str, Any],
+    trailing_doc_fields: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    payload.update(stable_fields)
+    payload.update(trailing_doc_fields)
+    return payload
+
+
 def document_output_path(paths: dict[str, Path], doc_key: str) -> Path:
     if doc_key in paths:
         return paths[doc_key]
@@ -770,126 +814,129 @@ def generate_document_markdown(
     current_docs: dict[str, str],
     *,
     doc_key: str,
-    loaded_files: list[dict[str, Any]],
-    source_bundle: str,
-    source_char_count: int,
+    stage_shared_prompt: str,
     previous_response_id: str | None,
     prompt_cache_key: str,
 ) -> tuple[str, str | None]:
-    project_context = build_stage_project_context(manifest, volume_material)
     injected_globals = build_injected_global_docs(current_docs)
-
-    common_payload: dict[str, Any] = {
-        "project": project_context,
-        "stage_rules": [
-            "这一卷的全部生成都属于同一个阶段会话，请沿用同一会话的上下文连续工作。",
-            "全书大纲、世界观文档、伏笔文档是每阶段都要注入的全局资料。",
-            "卷级大纲不作为全局注入资料，不要把卷级大纲当成下一份文档的依赖前提。",
-            "所有映射关系都写成功能映射，不要照抄参考源原文句子。",
-            "本阶段的每一次请求都会重新附带当前卷全部文件原文与文件清单，不依赖只在第一次请求时注入。",
-        ],
-        "injected_global_docs": injected_globals,
-        "loaded_files": loaded_files,
-        "source_char_count": source_char_count,
-        "current_volume_source_bundle": source_bundle,
-    }
+    document_request = build_document_request(doc_key)
 
     if doc_key == "style_guide":
-        instructions = build_document_instructions(doc_key)
-        payload = {
-            **common_payload,
-            "required_file": GLOBAL_FILE_NAMES["style_guide"],
-            "existing_style_guide": clip_for_context(current_docs.get("style_guide", ""), limit=18000),
-            "requirements": [
-                "标题稳定，适合后续工作流长期注入。",
-                "这是全书级写作风格文档，仅在第一卷阶段生成与定稿。",
-            ],
-        }
+        payload = build_payload_with_trailing_docs(
+            stable_fields={
+                "document_request": document_request,
+                "required_file": GLOBAL_FILE_NAMES["style_guide"],
+                "requirements": [
+                    "标题稳定，适合后续工作流长期注入。",
+                    "这是全书级写作风格文档，仅在第一卷阶段生成与定稿。",
+                ],
+            },
+            trailing_doc_fields={
+                "existing_style_guide": clip_for_context(current_docs.get("style_guide", ""), limit=18000),
+                "injected_global_docs": injected_globals,
+            },
+        )
         return call_markdown_tool_response(
             client,
             model,
-            instructions,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
             previous_response_id=previous_response_id,
             prompt_cache_key=prompt_cache_key,
         )
 
     if doc_key == "world_design":
-        instructions = build_document_instructions(doc_key)
-        payload = {
-            **common_payload,
-            "required_file": GLOBAL_FILE_NAMES["world_design"],
-            "requirements": [
-                "保留历史世界观设计的连续性，并把当前卷新增内容补充进去。",
-                "优先先把底层世界规则和背景框架搭稳，再写扩展设定。",
-            ],
-        }
+        payload = build_payload_with_trailing_docs(
+            stable_fields={
+                "document_request": document_request,
+                "required_file": GLOBAL_FILE_NAMES["world_design"],
+                "requirements": [
+                    "保留历史世界观设计的连续性，并把当前卷新增内容补充进去。",
+                    "优先先把底层世界规则和背景框架搭稳，再写扩展设定。",
+                ],
+            },
+            trailing_doc_fields={
+                "injected_global_docs": injected_globals,
+            },
+        )
         return call_markdown_tool_response(
             client,
             model,
-            instructions,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
             previous_response_id=previous_response_id,
             prompt_cache_key=prompt_cache_key,
         )
 
     if doc_key == "book_outline":
-        instructions = build_document_instructions(doc_key)
-        payload = {
-            **common_payload,
-            "required_file": GLOBAL_FILE_NAMES["book_outline"],
-            "requirements": [
-                "这是整本书的大纲文档，不是单卷总结。",
-                "当前阶段只允许新增或改写当前卷对应的全书大纲段落，以及与已处理卷直接相关的衔接说明。",
-                "只展开 processed_volumes_including_current 中列出的卷；未读取参考源的后续卷必须二选一：要么不写，要么仅保留“第X卷：待后续阶段补全”这类占位说明。",
-                "未读取卷不得出现剧情梗概、角色推进、冲突设计、伏笔安排、高潮设计或结局走向。",
-                "如果旧版全书大纲里已经提前写了未读取卷的详细内容，本次要把那些未读取卷删掉，或回收为占位状态，不能继续保留伪细纲。",
-                "第一卷阶段尤其不能提前写第二卷及之后的详细大纲。",
-            ],
-        }
+        payload = build_payload_with_trailing_docs(
+            stable_fields={
+                "document_request": document_request,
+                "required_file": GLOBAL_FILE_NAMES["book_outline"],
+                "requirements": [
+                    "这是整本书的大纲文档，不是单卷总结。",
+                    "当前阶段只允许新增或改写当前卷对应的全书大纲段落，以及与已处理卷直接相关的衔接说明。",
+                    "只展开 processed_volumes_including_current 中列出的卷；未读取参考源的后续卷必须二选一：要么不写，要么仅保留“第X卷：待后续阶段补全”这类占位说明。",
+                    "未读取卷不得出现剧情梗概、角色推进、冲突设计、伏笔安排、高潮设计或结局走向。",
+                    "如果旧版全书大纲里已经提前写了未读取卷的详细内容，本次要把那些未读取卷删掉，或回收为占位状态，不能继续保留伪细纲。",
+                    "第一卷阶段尤其不能提前写第二卷及之后的详细大纲。",
+                ],
+            },
+            trailing_doc_fields={
+                "injected_global_docs": injected_globals,
+            },
+        )
         return call_markdown_tool_response(
             client,
             model,
-            instructions,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
             previous_response_id=previous_response_id,
             prompt_cache_key=prompt_cache_key,
         )
 
     if doc_key == "foreshadowing":
-        instructions = build_document_instructions(doc_key)
-        payload = {
-            **common_payload,
-            "required_file": GLOBAL_FILE_NAMES["foreshadowing"],
-            "requirements": [
-                "优先保持伏笔清单的可追踪性和后续工作流可读性。",
-                "请基于全书大纲、世界观文档和当前卷原文上下文补充更新。",
-            ],
-        }
+        payload = build_payload_with_trailing_docs(
+            stable_fields={
+                "document_request": document_request,
+                "required_file": GLOBAL_FILE_NAMES["foreshadowing"],
+                "requirements": [
+                    "优先保持伏笔清单的可追踪性和后续工作流可读性。",
+                    "请基于全书大纲、世界观文档和当前卷原文上下文补充更新。",
+                ],
+            },
+            trailing_doc_fields={
+                "injected_global_docs": injected_globals,
+            },
+        )
         return call_markdown_tool_response(
             client,
             model,
-            instructions,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
             previous_response_id=previous_response_id,
             prompt_cache_key=prompt_cache_key,
         )
 
     if doc_key == "volume_outline":
-        instructions = build_document_instructions(doc_key)
-        payload = {
-            **common_payload,
-            "required_file": f"{volume_material['volume_number']}_volume_outline.md",
-            "requirements": [
-                "卷纲要包含本卷定位、主要冲突、角色推进、高潮设计、结尾钩子、与原卷映射关系。",
-                "这是卷级注入文档，不要改写成全书文档。",
-            ],
-        }
+        payload = build_payload_with_trailing_docs(
+            stable_fields={
+                "document_request": document_request,
+                "required_file": f"{volume_material['volume_number']}_volume_outline.md",
+                "requirements": [
+                    "卷纲要包含本卷定位、主要冲突、角色推进、高潮设计、结尾钩子、与原卷映射关系。",
+                    "这是卷级注入文档，不要改写成全书文档。",
+                ],
+            },
+            trailing_doc_fields={
+                "injected_global_docs": injected_globals,
+            },
+        )
         return call_markdown_tool_response(
             client,
             model,
-            instructions,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
             previous_response_id=previous_response_id,
             prompt_cache_key=prompt_cache_key,
         )
@@ -1242,10 +1289,18 @@ def main() -> int:
                 f"本阶段将使用 {planned_calls} 次 API 调用逐份生成函数工具文档，"
                 f"每次调用都会携带当前卷全部文件原文，共加载 {len(loaded_files)} 个文件。"
             )
+            print_progress("本阶段已启用稳定共享前缀，提示词缓存将复用：项目上下文、阶段规则、文件清单与整卷原文。")
             existing_docs = read_existing_global_docs(Path(manifest["project_root"]))
             current_docs = dict(existing_docs)
             previous_response_id: str | None = None
             prompt_cache_key = build_phase_session_key(manifest, volume_material["volume_number"])
+            stage_shared_prompt = build_stage_shared_prompt(
+                manifest=manifest,
+                volume_material=volume_material,
+                loaded_files=loaded_files,
+                source_bundle=source_bundle,
+                source_char_count=source_char_count,
+            )
             generated_documents: list[dict[str, Any]] = []
 
             for index, doc_spec in enumerate(document_plan, start=1):
@@ -1276,9 +1331,7 @@ def main() -> int:
                     volume_material,
                     current_docs,
                     doc_key=doc_key,
-                    loaded_files=loaded_files,
-                    source_bundle=source_bundle,
-                    source_char_count=source_char_count,
+                    stage_shared_prompt=stage_shared_prompt,
                     previous_response_id=previous_response_id,
                     prompt_cache_key=prompt_cache_key,
                 )
