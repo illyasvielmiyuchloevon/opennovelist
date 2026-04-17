@@ -958,6 +958,7 @@ def build_chapter_shared_prompt(
             "每一次请求都会重新附带当前章节参考源与本阶段要求注入的全局/卷级/章级文档。",
             "全局注入是每卷每章都要看的资料；卷级注入只限当前卷；章级注入只限当前章。",
             "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
+            "参考源当前章不仅提供情节功能映射，也提供篇幅、叙事节奏、情节结构、对话密度、句长、段落分割与收尾方式的直接参照；除非审核意见明确要求，不得明显扩写。",
             "遇到旧审核意见时要显式吸收并修正，不要重复犯同样的问题。",
         ],
         "source_files": source_context_inventory(volume_material, chapter_number),
@@ -1659,6 +1660,10 @@ def build_phase_request_payload(
 
     included_docs = [*included_globals, *included_volumes, *included_chapters, *included_five_reviews]
     omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_chapters, *omitted_five_reviews]
+    reference_chapter = get_chapter_material(volume_material, chapter_number)
+    reference_char_count = len(reference_chapter["text"])
+    min_target_chars = max(1, int(reference_char_count * 0.8))
+    max_target_chars = max(min_target_chars, int(reference_char_count * 1.2))
 
     if phase_key == "phase1_outline":
         payload = build_payload_with_cache_layers(
@@ -1674,9 +1679,16 @@ def build_phase_request_payload(
                     "task": "只生成当前章的章纲 Markdown。",
                     "required_file": f"{chapter_number}_chapter_outline.md",
                 },
+                "reference_chapter_metrics": {
+                    "source_title": reference_chapter["source_title"],
+                    "source_char_count": reference_char_count,
+                    "target_length_guideline": "章纲粒度应服务于后续正文保持与参考源当前章相近的篇幅和节奏。",
+                },
                 "requirements": [
                     "章纲必须体现与参考源当前章的功能映射关系，但不能照搬原名词。",
                     "章纲要能直接服务后续正文生成与审核返工。",
+                    "章纲粒度要贴近参考源当前章，不要为了发挥把单章扩成更多场景、更多推进点或更多转折层次。",
+                    "章纲应尽量对齐参考源当前章的场景数量、冲突层级、叙事节奏与收尾功能。",
                 ],
             },
             trailing_doc_fields={
@@ -1702,10 +1714,18 @@ def build_phase_request_payload(
                     "task": "只生成当前章的完整仿写章节正文。",
                     "required_file": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
                 },
+                "reference_chapter_metrics": {
+                    "source_title": reference_chapter["source_title"],
+                    "source_char_count": reference_char_count,
+                    "target_char_count_range": [min_target_chars, max_target_chars],
+                },
                 "requirements": [
                     "正文必须符合全局文笔写作风格文档，不要写解释说明或提纲。",
                     "不能把参考源的人名、地名、宗门、术语原样照搬。",
                     "正文必须能承接章纲、卷纲、全局大纲与当前状态文档。",
+                    f"正文目标篇幅要贴近参考源当前章，通常控制在约 {min_target_chars}-{max_target_chars} 字符；除非审核意见明确要求，不要明显扩写。",
+                    "正文必须同时贴合文笔写作风格文档中的这些维度：爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式。",
+                    "如果参考源当前章是短促推进型，就保持短促；如果是对话驱动型，就保持相近的对话密度；不要额外补写解释性段落、总结性抒情、世界观说明或重复心理复述来硬性扩字。",
                 ],
             },
             trailing_doc_fields={
@@ -1771,11 +1791,18 @@ def build_phase_request_payload(
                     "task": "审核当前章的全部产物，并判断是否需要返工。",
                     "required_file": f"{chapter_number}_chapter_review.md",
                 },
+                "reference_chapter_metrics": {
+                    "source_title": reference_chapter["source_title"],
+                    "source_char_count": reference_char_count,
+                    "target_char_count_range": [min_target_chars, max_target_chars],
+                },
                 "requirements": [
                     "重点检查参考源原人名地名是否被照搬，若照搬则不合格。",
                     "重点检查 AI 感、机械感、逻辑断裂、幻觉错位、风格偏移。",
                     "重点检查是否出现过度修饰的排比、意象堆砌、诗化抒情过量、句式整齐得过头等问题；"
                     "如果语言明显非常符合当前主流大模型常见腔调，例如像 Claude 或 GPT-4 常见的华丽总结式文风，也视为不合格。",
+                    "重点检查正文篇幅是否明显偏离参考源当前章；如果出现接近翻倍的扩写、明显灌水，或远超目标区间，也视为不合格。",
+                    "重点检查正文是否真正符合文笔写作风格文档中对爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式的要求；若显著漂移则不合格。",
                     "如果不通过，rewrite_targets 必须写出需要返工的对象，例如 chapter_text、world_state 等。",
                 ],
             },
@@ -1840,6 +1867,7 @@ def build_volume_review_payload(
             },
             "requirements": [
                 "需要检查与卷级大纲、世界观设计、文风规范、全局剧情进程是否一致。",
+                "需要检查卷内章节的文风是否稳定符合文笔写作风格文档，尤其是爽点铺垫、剧情转折、叙事节奏、情节结构、段落分割、对话密度、句长与收尾方式是否持续一致。",
                 "如果不通过，chapters_to_revise 必须列出需要返工的章节编号。",
             ],
         },

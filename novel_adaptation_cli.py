@@ -43,6 +43,12 @@ PROTAGONIST_MODE_CUSTOM = "custom_design"
 PROTAGONIST_MODE_ADAPTIVE = "adaptive_from_source"
 DEFAULT_API_RETRIES = 10
 DEFAULT_RETRY_DELAY_SECONDS = 5
+RUN_MODE_STAGE = "stage"
+RUN_MODE_BOOK = "book"
+RUN_MODE_LABELS = {
+    RUN_MODE_STAGE: "按阶段运行",
+    RUN_MODE_BOOK: "按全书运行",
+}
 
 
 COMMON_DOCUMENT_OUTPUT_RULE = (
@@ -92,6 +98,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--protagonist-text", help="自定义主角设定和性格描述。")
     parser.add_argument("--volume", help="指定处理某一卷，例如 001。默认自动处理下一卷。")
+    parser.add_argument(
+        "--run-mode",
+        choices=(RUN_MODE_STAGE, RUN_MODE_BOOK),
+        help="运行方式：按阶段运行（每卷结束后确认）或按全书运行（自动连续处理后续卷）。",
+    )
     parser.add_argument(
         "--project-root",
         help="输出工程目录；默认使用新书名自动创建。",
@@ -418,6 +429,38 @@ def select_volume_to_process(
     return None
 
 
+def find_next_pending_volume_after(
+    volume_dirs: list[Path],
+    manifest: dict[str, Any],
+    current_volume_name: str,
+) -> Path | None:
+    processed = set(manifest.get("processed_volumes", []))
+    found_current = False
+    for volume_dir in volume_dirs:
+        if not found_current:
+            if volume_dir.name == current_volume_name:
+                found_current = True
+            continue
+        if volume_dir.name in processed:
+            continue
+        return volume_dir
+    return None
+
+
+def resolve_run_mode(args: argparse.Namespace) -> str:
+    if args.run_mode:
+        return args.run_mode
+    if not sys.stdin or not sys.stdin.isatty():
+        return RUN_MODE_STAGE
+    return prompt_choice(
+        "请选择运行方式",
+        [
+            (RUN_MODE_STAGE, f"{RUN_MODE_LABELS[RUN_MODE_STAGE]}（每卷结束后确认下一卷）"),
+            (RUN_MODE_BOOK, f"{RUN_MODE_LABELS[RUN_MODE_BOOK]}（自动连续处理后续卷）"),
+        ],
+    )
+
+
 def build_phase_session_key(manifest: dict[str, Any], volume_number: str) -> str:
     seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}"
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
@@ -597,7 +640,7 @@ def print_request_context_summary(
 
 def prompt_next_stage(next_volume: Path | None) -> bool:
     if next_volume is None:
-        print_progress("所有卷都已处理完成，没有新的阶段可继续。")
+        print_progress("当前卷之后没有新的待处理卷可继续了。")
         return False
 
     if not sys.stdin or not sys.stdin.isatty():
@@ -676,8 +719,9 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
             "role": "资深网络小说文风策划编辑",
             "task": "当前任务只产出 1 份文笔写作风格文档正文。",
             "scope": (
-                "文档必须覆盖写作方式、文风、情绪渲染方式、爽点铺排方式、章节结尾钩子方式、"
-                "叙事快慢、句长偏好、对话密度、描写密度、铺垫、转折、高潮、收束，并说明与原书的功能映射。"
+                "文档必须覆盖写作方式、文风、情绪渲染方式、爽点铺垫与释放方式、剧情转折方式、叙事节奏、情节结构、"
+                "符号使用习惯、段落分割、章节结尾钩子与收尾方式、句长偏好、对话密度、描写密度、铺垫、高潮、收束，"
+                "并说明与原书的功能映射，避免只给空泛风格形容词。"
             ),
         },
         "world_design": {
@@ -850,6 +894,8 @@ def generate_document_operation(
                 "requirements": [
                     "标题稳定，适合后续工作流长期注入。",
                     "这是全书级写作风格文档，仅在第一卷阶段生成与定稿。",
+                    "必须明确提炼爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式这些可执行维度。",
+                    "不要只写抽象评价，要写成后续章节生成与审核可以直接照着执行的风格规则。",
                     "如果当前文件已存在且只需局部补充，请优先使用 patch 工具；不要为了重组措辞而整篇重写。",
                 ],
             },
@@ -1191,6 +1237,7 @@ def render_dry_run_summary(
     manifest: dict[str, Any],
     target_volume: Path,
     volume_material: dict[str, Any],
+    run_mode: str,
 ) -> None:
     project_root = Path(manifest["project_root"])
     paths = stage_paths(project_root, target_volume.name)
@@ -1207,6 +1254,7 @@ def render_dry_run_summary(
         f"请求模式：逐文档函数工具调用生成，共 {len(plan)} 次调用，"
         "每次调用都会携带当前卷全部文件原文，并沿用同一卷 previous_response_id 会话链。"
     )
+    print(f"运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
     print("本次 dry-run 不调用 API，也不会生成文档正文。")
 
 
@@ -1219,6 +1267,7 @@ def main() -> int:
     planned_calls = 0
     client: OpenAI | None = None
     openai_settings: dict[str, str] | None = None
+    run_mode = RUN_MODE_STAGE
 
     try:
         print_progress("开始解析参考源目录。")
@@ -1245,8 +1294,10 @@ def main() -> int:
                 "last_new_book_title": manifest["new_book_title"],
             },
         )
+        run_mode = resolve_run_mode(args)
         print_progress(f"工程目录：{manifest['project_root']}")
         print_progress(f"参考源目录：{source_root}")
+        print_progress(f"本次运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
         if existing_manifest is not None or existing_project_root is not None:
             print_progress("已加载已有工程配置，将直接继续上次进度。")
 
@@ -1260,7 +1311,7 @@ def main() -> int:
         if args.dry_run:
             print_progress(f"本次准备处理第 {first_target_volume.name} 卷。")
             volume_material = load_volume_material(first_target_volume)
-            render_dry_run_summary(manifest, first_target_volume, volume_material)
+            render_dry_run_summary(manifest, first_target_volume, volume_material, run_mode)
             return 0
 
         print_progress("开始准备 API 客户端。")
@@ -1416,10 +1467,23 @@ def main() -> int:
             print_progress(f"伏笔文档：{paths['foreshadowing']}")
             print_progress(f"卷级大纲：{paths['volume_outline']}")
 
-            next_volume = select_volume_to_process(volume_dirs, manifest, None)
-            if not prompt_next_stage(next_volume):
+            next_volume = find_next_pending_volume_after(
+                volume_dirs,
+                manifest,
+                volume_material["volume_number"],
+            )
+            if run_mode == RUN_MODE_STAGE:
+                if not prompt_next_stage(next_volume):
+                    return 0
+                print_progress(f"准备进入下一阶段：第 {next_volume.name} 卷。")
+                requested_volume = next_volume.name
+                continue
+
+            if next_volume is None:
+                print_progress("当前卷之后没有新的待处理卷可继续了。")
                 return 0
-            print_progress(f"准备进入下一阶段：第 {next_volume.name} 卷。")
+            print_progress(f"按全书运行，自动进入下一阶段：第 {next_volume.name} 卷。")
+            requested_volume = next_volume.name
     except KeyboardInterrupt:
         print_progress("已取消。", error=True)
         pause_before_exit()
