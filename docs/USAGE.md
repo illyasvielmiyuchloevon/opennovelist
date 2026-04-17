@@ -20,6 +20,28 @@
 
 ## 2. 运行前准备
 
+### 2.0 仓库代码位置说明
+
+如果你是直接使用工具，可以只关心根目录这两个入口：
+
+- `novel_workflow_cli.py`
+- `start_workflow.bat`
+
+如果你要查看或修改源码，现在的代码结构是：
+
+```text
+novelist/
+├─ cli/    # 三个业务 CLI + 统一工作流 CLI
+└─ core/   # 可复用核心模块
+```
+
+也就是说，源码路径应优先看：
+
+- `novelist/cli/...`
+- `novelist/core/...`
+
+而不是旧的根目录 `core/...` 或旧的根目录独立 CLI 文件路径。
+
 ### 2.1 Python 依赖
 
 至少安装：

@@ -31,7 +31,7 @@
 - [novel_workflow_cli.py](./novel_workflow_cli.py)
 - 一键启动脚本：[start_workflow.bat](./start_workflow.bat)
   统一入口，自动识别输入类型并串联以上三步。
-- [core](./core)
+- [novelist/core](./novelist/core)
   可复用核心模块，包括：
   - OpenAI / OpenAI Compatible 配置
   - Responses / Chat Completions 运行时
@@ -118,6 +118,25 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 - 已适配但未完成重写的积压卷
 
 ## 主要目录结构
+
+### 仓库代码结构
+
+```text
+仓库根目录/
+├─ novel_workflow_cli.py      # 根目录统一入口包装脚本
+├─ start_workflow.bat         # Windows 一键启动脚本
+├─ novelist/
+│  ├─ cli/                    # 业务 CLI
+│  │  ├─ split_novel.py
+│  │  ├─ novel_adaptation_cli.py
+│  │  ├─ novel_chapter_rewrite_cli.py
+│  │  └─ novel_workflow_cli.py
+│  └─ core/                   # 可复用核心模块
+├─ docs/
+└─ tests/
+```
+
+如果你要查看或编辑源码，请优先打开 `novelist/cli/...` 和 `novelist/core/...`，而不是旧的根目录 `core/...` 路径。
 
 ### `split_novel` 输出
 
