@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from typing import NoReturn
 
 
 def print_progress(message: str, *, error: bool = False) -> None:
@@ -17,7 +18,7 @@ def pause_before_exit() -> None:
         pass
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise ValueError(message)
 
 

@@ -10,7 +10,7 @@ from typing import Any
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from core.files import (
+from novelist.core.files import (
     extract_json_payload,
     migrate_numbered_injection_dirs,
     normalize_path,
@@ -19,17 +19,17 @@ from core.files import (
     write_markdown_data,
     write_text_if_changed,
 )
-import core.document_ops as document_ops
-from core.novel_source import (
+import novelist.core.document_ops as document_ops
+from novelist.core.novel_source import (
     build_chapter_source_bundle,
     clip_for_context,
     discover_volume_dirs,
     get_chapter_material,
     load_volume_material,
 )
-from core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
-import core.openai_config as openai_config
-import core.responses_runtime as llm_runtime
+from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
+import novelist.core.openai_config as openai_config
+import novelist.core.responses_runtime as llm_runtime
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"

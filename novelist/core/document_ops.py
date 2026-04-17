@@ -16,7 +16,7 @@ from .files import (
     replace_text_with_fallbacks,
     write_text_if_changed,
 )
-import core.responses_runtime as llm_runtime
+from . import responses_runtime as llm_runtime
 
 
 DOCUMENT_WRITE_TOOL_NAME = "submit_document_writes"

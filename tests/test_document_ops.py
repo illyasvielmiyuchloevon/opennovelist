@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import document_ops
-from core import responses_runtime as llm_runtime
-from core.files import migrate_numbered_injection_dirs, read_text_if_exists, replace_text_with_fallbacks
+from novelist.core import document_ops
+from novelist.core import responses_runtime as llm_runtime
+from novelist.core.files import migrate_numbered_injection_dirs, read_text_if_exists, replace_text_with_fallbacks
 
 
 class FilesPatchTests(unittest.TestCase):

@@ -6,11 +6,11 @@
 
 这套工具把小说工作流拆成三层：
 
-1. `split_novel.py`
+1. `novelist.cli.split_novel`
    把一整本小说按章节拆开，并按每 50 章自动分卷。
-2. `novel_adaptation_cli.py`
+2. `novelist.cli.novel_adaptation_cli`
    基于参考源逐卷生成改编规划文档。
-3. `novel_chapter_rewrite_cli.py`
+3. `novelist.cli.novel_chapter_rewrite_cli`
    基于规划文档逐章生成仿写正文和配套审核文档。
 
 如果你不想手动串联，可以直接使用：
@@ -46,6 +46,8 @@ pip install openai pydantic
 ```powershell
 python F:\novelist\novel_workflow_cli.py
 ```
+
+或者直接双击仓库根目录下的 `start_workflow.bat`。
 
 启动后会先询问：
 
@@ -123,7 +125,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 #### 第一步：拆分小说
 
-统一入口会调用 `split_novel.py`：
+统一入口会调用 `novelist.cli.split_novel`：
 
 - 识别章节标题
 - 按章拆分为：
@@ -138,7 +140,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 #### 第二步：逐卷改编规划
 
-统一入口会调用 `novel_adaptation_cli.py`，逐卷生成：
+统一入口会调用 `novelist.cli.novel_adaptation_cli`，逐卷生成：
 
 - 全书大纲
 - 世界观设计
@@ -148,7 +150,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 #### 第三步：逐章重写
 
-统一入口会调用 `novel_chapter_rewrite_cli.py`，生成：
+统一入口会调用 `novelist.cli.novel_chapter_rewrite_cli`，生成：
 
 - 章纲
 - 仿写正文
@@ -162,7 +164,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 ### 6.1 单独拆分小说
 
 ```powershell
-python F:\novelist\split_novel.py "F:\books\我的小说.txt"
+python -m novelist.cli.split_novel "F:\books\我的小说.txt"
 ```
 
 ### 6.2 单独跑改编规划
@@ -170,13 +172,13 @@ python F:\novelist\split_novel.py "F:\books\我的小说.txt"
 输入必须是 `split_novel` 输出后的书名目录，或者已有工程目录：
 
 ```powershell
-python F:\novelist\novel_adaptation_cli.py "F:\books\我的小说"
+python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说"
 ```
 
 支持的核心参数：
 
 ```powershell
-python F:\novelist\novel_adaptation_cli.py "F:\books\我的小说" `
+python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说" `
   --new-title "玄幻忍者" `
   --target-worldview "玄幻修仙" `
   --run-mode stage
@@ -192,13 +194,13 @@ python F:\novelist\novel_adaptation_cli.py "F:\books\我的小说" `
 输入必须是已有工程目录，或者可解析到已有工程的来源目录：
 
 ```powershell
-python F:\novelist\novel_chapter_rewrite_cli.py "F:\books\玄幻忍者"
+python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者"
 ```
 
 支持的核心参数：
 
 ```powershell
-python F:\novelist\novel_chapter_rewrite_cli.py "F:\books\玄幻忍者" `
+python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
   --run-mode group `
   --volume 001
 ```
@@ -232,7 +234,7 @@ python F:\novelist\novel_chapter_rewrite_cli.py "F:\books\玄幻忍者" `
 
 ### 8.1 改编规划的断点
 
-`novel_adaptation_cli.py` 会在工程目录里维护：
+`novelist.cli.novel_adaptation_cli` 会在工程目录里维护：
 
 - `00_project_manifest.md`
 
@@ -246,7 +248,7 @@ python F:\novelist\novel_chapter_rewrite_cli.py "F:\books\玄幻忍者" `
 
 ### 8.2 章节重写的断点
 
-`novel_chapter_rewrite_cli.py` 会维护：
+`novelist.cli.novel_chapter_rewrite_cli` 会维护：
 
 - `00_chapter_rewrite_manifest.md`
 

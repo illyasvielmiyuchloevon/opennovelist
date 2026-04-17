@@ -5,11 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import novel_adaptation_cli as adaptation_cli
-import novel_chapter_rewrite_cli as rewrite_cli
-import novel_workflow_cli as workflow_cli
-import core.openai_config as openai_config
-from core.files import write_markdown_data
+from novelist.cli import novel_adaptation_cli as adaptation_cli
+from novelist.cli import novel_chapter_rewrite_cli as rewrite_cli
+from novelist.cli import novel_workflow_cli as workflow_cli
+import novelist.core.openai_config as openai_config
+from novelist.core.files import write_markdown_data
 
 
 class WorkflowCliDetectionTests(unittest.TestCase):

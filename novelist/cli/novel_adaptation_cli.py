@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
-from core.files import (
+from novelist.core.files import (
     extract_json_payload,
     migrate_numbered_injection_dirs,
     normalize_path,
@@ -18,10 +18,10 @@ from core.files import (
     sanitize_file_name,
     write_markdown_data,
 )
-from core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
-import core.document_ops as document_ops
-import core.openai_config as openai_config
-import core.responses_runtime as llm_runtime
+from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
+import novelist.core.document_ops as document_ops
+import novelist.core.openai_config as openai_config
+import novelist.core.responses_runtime as llm_runtime
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"

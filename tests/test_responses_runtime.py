@@ -8,7 +8,7 @@ import httpx
 import openai
 from pydantic import BaseModel
 
-from core import responses_runtime as llm_runtime
+from novelist.core import responses_runtime as llm_runtime
 
 
 class _CompatToolPayload(BaseModel):

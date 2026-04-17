@@ -11,16 +11,16 @@
 
 ## 组件一览
 
-- [split_novel.py](./split_novel.py)
+- [novelist/cli/split_novel.py](./novelist/cli/split_novel.py)
   把原始小说 `.txt` 按章节拆分，并按每 50 章归档到卷目录。
-- [novel_adaptation_cli.py](./novel_adaptation_cli.py)
+- [novelist/cli/novel_adaptation_cli.py](./novelist/cli/novel_adaptation_cli.py)
   读取 `split_novel` 输出后的书名目录，逐卷生成：
   - 全书大纲
   - 世界观设计
   - 文笔写作风格
   - 伏笔文档
   - 卷级大纲
-- [novel_chapter_rewrite_cli.py](./novel_chapter_rewrite_cli.py)
+- [novelist/cli/novel_chapter_rewrite_cli.py](./novelist/cli/novel_chapter_rewrite_cli.py)
   读取改编工程目录，逐章生成：
   - 章纲
   - 仿写正文
@@ -29,6 +29,7 @@
   - 世界模型 / 世界状态
   - 章级审核 / 组审查 / 卷级审核
 - [novel_workflow_cli.py](./novel_workflow_cli.py)
+- 一键启动脚本：[start_workflow.bat](./start_workflow.bat)
   统一入口，自动识别输入类型并串联以上三步。
 - [core](./core)
   可复用核心模块，包括：
@@ -45,6 +46,8 @@
 ```powershell
 python F:\novelist\novel_workflow_cli.py
 ```
+
+也可以直接双击仓库根目录下的 `start_workflow.bat` 一键启动。
 
 统一入口支持自动识别以下输入：
 
@@ -85,9 +88,9 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 典型流程：
 
-1. `split_novel.py` 先拆分小说
-2. `novel_adaptation_cli.py` 生成逐卷改编规划
-3. `novel_chapter_rewrite_cli.py` 生成逐章正文与审核文档
+1. `novelist.cli.split_novel` 先拆分小说
+2. `novelist.cli.novel_adaptation_cli` 生成逐卷改编规划
+3. `novelist.cli.novel_chapter_rewrite_cli` 生成逐章正文与审核文档
 
 ### 2. 从已拆分好的目录开始
 
@@ -235,19 +238,19 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 ### 只拆分小说
 
 ```powershell
-python F:\novelist\split_novel.py "F:\books\我的小说.txt"
+python -m novelist.cli.split_novel "F:\books\我的小说.txt"
 ```
 
 ### 只跑卷级改编
 
 ```powershell
-python F:\novelist\novel_adaptation_cli.py "F:\books\我的小说"
+python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说"
 ```
 
 ### 只跑章节重写
 
 ```powershell
-python F:\novelist\novel_chapter_rewrite_cli.py "F:\books\新书工程目录"
+python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\新书工程目录"
 ```
 
 ### 统一入口 dry-run
