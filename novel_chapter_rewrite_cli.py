@@ -16,7 +16,6 @@ from core.files import (
     now_iso,
     read_text_if_exists,
     write_markdown_data,
-    write_text,
     write_text_if_changed,
 )
 from core.novel_source import (
@@ -1375,7 +1374,46 @@ def write_volume_stage_snapshot(
     )
 
 
-def apply_support_updates(paths: dict[str, Path], payload: WorkflowSubmissionPayload) -> list[str]:
+def doc_label_for_key(doc_key: str) -> str:
+    if doc_key == "group_review":
+        return f"{FIVE_CHAPTER_REVIEW_NAME}文档"
+    return (
+        GLOBAL_DOC_LABELS.get(doc_key)
+        or VOLUME_DOC_LABELS.get(doc_key)
+        or CHAPTER_DOC_LABELS.get(doc_key)
+        or doc_key
+    )
+
+
+def write_artifact(path: Path, content: str) -> bool:
+    return write_text_if_changed(path, content)
+
+
+def print_call_artifact_report(
+    call_label: str,
+    artifacts: list[tuple[str, Path]],
+    changed_keys: list[str],
+) -> None:
+    print_progress(f"{call_label} 产出物：")
+    if artifacts:
+        for label, path in artifacts:
+            content = read_text_if_exists(path).strip()
+            print_progress(f"  - {label} -> {path}（字符数约 {len(content)}）")
+    else:
+        print_progress("  - 无。")
+
+    print_progress(f"{call_label} 改动文档：")
+    if changed_keys:
+        for key in changed_keys:
+            print_progress(f"  - {doc_label_for_key(key)}")
+    else:
+        print_progress("  - 无，本次生成结果与现有文件一致。")
+
+
+def apply_support_updates(
+    paths: dict[str, Path],
+    payload: WorkflowSubmissionPayload,
+) -> tuple[list[str], list[str]]:
     field_map = {
         "character_status_cards_md": "character_status_cards",
         "character_relationship_graph_md": "character_relationship_graph",
@@ -1385,14 +1423,16 @@ def apply_support_updates(paths: dict[str, Path], payload: WorkflowSubmissionPay
         "world_model_md": "world_model",
         "world_state_md": "world_state",
     }
+    emitted_docs: list[str] = []
     changed_docs: list[str] = []
     for field_name, path_key in field_map.items():
         content = getattr(payload, field_name).strip()
         if not content:
             continue
+        emitted_docs.append(path_key)
         if write_text_if_changed(paths[path_key], content):
             changed_docs.append(path_key)
-    return changed_docs
+    return emitted_docs, changed_docs
 
 
 def build_phase_request_payload(
@@ -1915,7 +1955,12 @@ def run_five_chapter_review(
             previous_response_id=None,
             prompt_cache_key=prompt_cache_key,
         )
-        write_text(review_path, review.review_md)
+        group_review_changed = write_artifact(review_path, review.review_md)
+        print_call_artifact_report(
+            f"{FIVE_CHAPTER_REVIEW_NAME}调用",
+            [(f"{FIVE_CHAPTER_REVIEW_NAME}文档", review_path)],
+            ["group_review"] if group_review_changed else [],
+        )
 
         if review.passed:
             update_five_chapter_review_state(
@@ -2293,7 +2338,12 @@ def run_chapter_workflow(
                 prompt_cache_key=chapter_session_key,
             )
             response_ids.append(str(outline_result.response_id or ""))
-            write_text(paths["chapter_outline"], outline_md)
+            chapter_outline_changed = write_artifact(paths["chapter_outline"], outline_md)
+            print_call_artifact_report(
+                "第 1/4 次调用",
+                [("章纲", paths["chapter_outline"])],
+                ["chapter_outline"] if chapter_outline_changed else [],
+            )
 
             update_chapter_state(
                 rewrite_manifest,
@@ -2351,7 +2401,12 @@ def run_chapter_workflow(
                 prompt_cache_key=chapter_session_key,
             )
             response_ids.append(str(chapter_text_result.response_id or ""))
-            write_text(paths["rewritten_chapter"], chapter_txt)
+            chapter_text_changed = write_artifact(paths["rewritten_chapter"], chapter_txt)
+            print_call_artifact_report(
+                "第 2/4 次调用",
+                [("仿写章节正文", paths["rewritten_chapter"])],
+                ["rewritten_chapter"] if chapter_text_changed else [],
+            )
 
             update_chapter_state(
                 rewrite_manifest,
@@ -2410,10 +2465,15 @@ def run_chapter_workflow(
                 prompt_cache_key=chapter_session_key,
             )
             response_ids.append(str(support_result.response_id or ""))
-            changed_docs = apply_support_updates(paths, support_updates)
+            emitted_docs, changed_docs = apply_support_updates(paths, support_updates)
+            print_call_artifact_report(
+                "第 3/4 次调用",
+                [(doc_label_for_key(key), paths[key]) for key in emitted_docs],
+                changed_docs,
+            )
             print_progress(
                 "本轮配套文档更新结果："
-                + (", ".join(changed_docs) if changed_docs else "模型判定当前无需要落盘的文档更新。")
+                + (", ".join(doc_label_for_key(key) for key in changed_docs) if changed_docs else "模型判定当前无需要落盘的文档更新。")
             )
 
             update_chapter_state(
@@ -2473,7 +2533,12 @@ def run_chapter_workflow(
                 prompt_cache_key=chapter_session_key,
             )
             response_ids.append(str(review_result.response_id or ""))
-            write_text(paths["chapter_review"], chapter_review.review_md)
+            chapter_review_changed = write_artifact(paths["chapter_review"], chapter_review.review_md)
+            print_call_artifact_report(
+                "第 4/4 次调用",
+                [("章级审核文档", paths["chapter_review"])],
+                ["chapter_review"] if chapter_review_changed else [],
+            )
 
             if chapter_review.passed:
                 update_chapter_state(
@@ -2631,7 +2696,12 @@ def run_volume_review(
                 previous_response_id=None,
                 prompt_cache_key=prompt_cache_key,
             )
-            write_text(paths["volume_review"], volume_review.review_md)
+            volume_review_changed = write_artifact(paths["volume_review"], volume_review.review_md)
+            print_call_artifact_report(
+                "卷级审核调用",
+                [("卷级审核文档", paths["volume_review"])],
+                ["volume_review"] if volume_review_changed else [],
+            )
             write_volume_stage_snapshot(
                 paths["volume_stage_manifest"],
                 volume_number=volume_material["volume_number"],
