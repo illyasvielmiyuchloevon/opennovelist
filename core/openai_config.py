@@ -64,6 +64,55 @@ def resolve_api_key(
     return api_key, updated_config
 
 
+def force_reconfigure_openai(
+    *,
+    cli_base_url: str | None,
+    cli_api_key: str | None,
+    cli_model: str | None,
+    global_config: dict[str, Any],
+    config_path: Path,
+    env_var: str = "OPENAI_API_KEY",
+    api_key_prompt: str = "重新输入 OpenAI API Key（明文显示）",
+    base_url_prompt: str = "重新输入 OpenAI base_url",
+    model_prompt: str = "重新输入模型名称",
+) -> tuple[str, dict[str, str], dict[str, Any]]:
+    remembered_api_key = (
+        (cli_api_key or "").strip()
+        or os.getenv(env_var, "").strip()
+        or str(global_config.get("last_api_key") or "").strip()
+    )
+    remembered_base_url = normalize_base_url(
+        (cli_base_url or "").strip()
+        or str(global_config.get("last_base_url") or "").strip()
+        or DEFAULT_BASE_URL
+    )
+    remembered_model = (
+        (cli_model or "").strip()
+        or str(global_config.get("last_model") or "").strip()
+        or DEFAULT_MODEL
+    )
+
+    api_key = prompt_text(api_key_prompt, remembered_api_key or None).strip()
+    if not api_key:
+        fail("未提供 OpenAI API Key。")
+
+    base_url = normalize_base_url(prompt_text(base_url_prompt, remembered_base_url))
+    model = prompt_text(model_prompt, remembered_model).strip()
+    if not model:
+        fail("未提供模型名称。")
+
+    updated_config = update_global_config(
+        config_path,
+        global_config,
+        {
+            "last_api_key": api_key,
+            "last_base_url": base_url,
+            "last_model": model,
+        },
+    )
+    return api_key, {"base_url": base_url, "model": model}, updated_config
+
+
 def resolve_openai_settings(
     *,
     cli_base_url: str | None,
