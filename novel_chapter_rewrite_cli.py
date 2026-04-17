@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from core.files import (
     extract_json_payload,
+    migrate_numbered_injection_dirs,
     normalize_path,
     now_iso,
     read_text_if_exists,
@@ -37,7 +38,9 @@ REWRITE_MANIFEST_NAME = "00_chapter_rewrite_manifest.md"
 GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "config.json"
 GLOBAL_DIRNAME = "global_injection"
+VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
+GROUP_ROOT_DIRNAME = "group_injection"
 GROUP_DIR_SUFFIX = "_group_injection"
 CHAPTER_DIR_SUFFIX = "_chapter_outline"
 REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
@@ -350,6 +353,16 @@ def load_rewrite_manifest(project_root: Path) -> dict[str, Any] | None:
 
 def ensure_rewrite_dirs(project_root: Path) -> None:
     (project_root / REWRITTEN_ROOT_DIRNAME).mkdir(parents=True, exist_ok=True)
+    migrate_numbered_injection_dirs(
+        project_root,
+        container_dirname=VOLUME_ROOT_DIRNAME,
+        suffix=VOLUME_DIR_SUFFIX,
+    )
+    migrate_numbered_injection_dirs(
+        project_root,
+        container_dirname=GROUP_ROOT_DIRNAME,
+        suffix=GROUP_DIR_SUFFIX,
+    )
 
 
 def save_rewrite_manifest(manifest: dict[str, Any]) -> None:
@@ -405,11 +418,13 @@ def init_or_load_rewrite_manifest(
 
 def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | None = None) -> dict[str, Path]:
     global_dir = project_root / GLOBAL_DIRNAME
-    volume_dir = project_root / f"{volume_number}{VOLUME_DIR_SUFFIX}"
+    volume_root_dir = project_root / VOLUME_ROOT_DIRNAME
+    volume_dir = volume_root_dir / f"{volume_number}{VOLUME_DIR_SUFFIX}"
     rewritten_root = project_root / REWRITTEN_ROOT_DIRNAME
     rewritten_volume_dir = rewritten_root / volume_number
     paths: dict[str, Path] = {
         "global_dir": global_dir,
+        "volume_root_dir": volume_root_dir,
         "volume_dir": volume_dir,
         "rewritten_root": rewritten_root,
         "rewritten_volume_dir": rewritten_volume_dir,
@@ -589,7 +604,7 @@ def five_chapter_batch_id(chapter_numbers: list[str]) -> str:
 
 
 def group_injection_root(project_root: Path, volume_number: str) -> Path:
-    return project_root / f"{volume_number}{GROUP_DIR_SUFFIX}"
+    return project_root / GROUP_ROOT_DIRNAME / f"{volume_number}{GROUP_DIR_SUFFIX}"
 
 
 def group_injection_dir(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
@@ -2894,6 +2909,7 @@ def main() -> int:
     try:
         print_progress("开始识别小说工程目录。")
         project_root, source_root, project_manifest = resolve_project_input(args.input_root, global_config)
+        ensure_rewrite_dirs(project_root)
         volume_dirs = discover_volume_dirs(source_root)
         readiness_map = {
             volume_dir.name: assess_volume_readiness(project_root, source_root, volume_dir.name)
@@ -2902,7 +2918,6 @@ def main() -> int:
         print_volume_readiness_summary(readiness_map)
 
         rewrite_manifest = init_or_load_rewrite_manifest(project_root, source_root, project_manifest, volume_dirs)
-        ensure_rewrite_dirs(project_root)
         run_mode = resolve_run_mode(args)
         global_config = openai_config.update_global_config(
             GLOBAL_CONFIG_PATH,

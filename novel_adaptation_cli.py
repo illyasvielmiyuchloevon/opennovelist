@@ -11,6 +11,7 @@ from typing import Any
 from openai import OpenAI
 from core.files import (
     extract_json_payload,
+    migrate_numbered_injection_dirs,
     normalize_path,
     now_iso,
     read_text,
@@ -28,6 +29,7 @@ LEGACY_PROJECT_MANIFEST_NAME = "00_project_manifest.json"
 GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "config.json"
 GLOBAL_DIRNAME = "global_injection"
+VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
 GLOBAL_FILE_NAMES = {
     "book_outline": "01_book_outline.md",
@@ -272,6 +274,11 @@ def save_manifest(manifest: dict[str, Any]) -> None:
 
 def ensure_project_dirs(project_root: Path) -> None:
     (project_root / GLOBAL_DIRNAME).mkdir(parents=True, exist_ok=True)
+    migrate_numbered_injection_dirs(
+        project_root,
+        container_dirname=VOLUME_ROOT_DIRNAME,
+        suffix=VOLUME_DIR_SUFFIX,
+    )
 
 
 def resolve_style_mode(args: argparse.Namespace) -> tuple[str, str | None]:
@@ -970,9 +977,11 @@ def generate_document_operation(
 
 def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
     global_dir = project_root / GLOBAL_DIRNAME
-    volume_dir = project_root / f"{volume_number}{VOLUME_DIR_SUFFIX}"
+    volume_root_dir = project_root / VOLUME_ROOT_DIRNAME
+    volume_dir = volume_root_dir / f"{volume_number}{VOLUME_DIR_SUFFIX}"
     return {
         "global_dir": global_dir,
+        "volume_root_dir": volume_root_dir,
         "volume_dir": volume_dir,
         "book_outline": global_dir / GLOBAL_FILE_NAMES["book_outline"],
         "world_design": global_dir / GLOBAL_FILE_NAMES["world_design"],
@@ -1247,6 +1256,7 @@ def main() -> int:
             print_progress("所有卷都已处理完成，没有新的卷需要生成。")
             return 0
 
+        ensure_project_dirs(Path(manifest["project_root"]))
         if args.dry_run:
             print_progress(f"本次准备处理第 {first_target_volume.name} 卷。")
             volume_material = load_volume_material(first_target_volume)
@@ -1272,7 +1282,6 @@ def main() -> int:
             api_key=api_key,
             base_url=openai_settings["base_url"],
         )
-        ensure_project_dirs(Path(manifest["project_root"]))
 
         while True:
             target_volume = select_volume_to_process(volume_dirs, manifest, requested_volume)

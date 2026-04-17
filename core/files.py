@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,66 @@ def write_text_if_changed(path: Path, content: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(normalized, encoding="utf-8")
     return True
+
+
+def merge_directory_tree(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+
+    for child in list(src.iterdir()):
+        target = dst / child.name
+        if child.is_dir():
+            merge_directory_tree(child, target)
+            try:
+                child.rmdir()
+            except OSError:
+                pass
+            continue
+
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(child), str(target))
+            continue
+
+        if child.read_bytes() == target.read_bytes():
+            child.unlink()
+            continue
+
+        if child.stat().st_mtime > target.stat().st_mtime:
+            target.unlink()
+            shutil.move(str(child), str(target))
+        else:
+            child.unlink()
+
+    try:
+        src.rmdir()
+    except OSError:
+        pass
+
+
+def migrate_numbered_injection_dirs(
+    project_root: Path,
+    *,
+    container_dirname: str,
+    suffix: str,
+) -> Path:
+    container_dir = project_root / container_dirname
+    container_dir.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(rf"^\d{{3}}{re.escape(suffix)}$")
+
+    for child in list(project_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.parent != project_root:
+            continue
+        if child.name == container_dirname:
+            continue
+        if not pattern.fullmatch(child.name):
+            continue
+        merge_directory_tree(child, container_dir / child.name)
+
+    return container_dir
 
 
 def normalize_line_endings(text: str) -> str:

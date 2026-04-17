@@ -7,7 +7,7 @@ from unittest import mock
 
 from core import document_ops
 from core import responses_runtime as llm_runtime
-from core.files import read_text_if_exists, replace_text_with_fallbacks
+from core.files import migrate_numbered_injection_dirs, read_text_if_exists, replace_text_with_fallbacks
 
 
 class FilesPatchTests(unittest.TestCase):
@@ -20,6 +20,26 @@ class FilesPatchTests(unittest.TestCase):
 
         self.assertIn("value: 2", updated)
         self.assertNotIn("value: 1", updated)
+
+    def test_migrate_numbered_injection_dirs_moves_legacy_dirs_into_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            legacy_dir = root / "001_volume_injection"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            legacy_file = legacy_dir / "001_volume_outline.md"
+            legacy_file.write_text("# 卷纲\n\n- 旧位置内容。\n", encoding="utf-8")
+
+            container = migrate_numbered_injection_dirs(
+                root,
+                container_dirname="volume_injection",
+                suffix="_volume_injection",
+            )
+
+            migrated_file = container / "001_volume_injection" / "001_volume_outline.md"
+            self.assertTrue(container.exists())
+            self.assertTrue(migrated_file.exists())
+            self.assertFalse(legacy_dir.exists())
+            self.assertIn("旧位置内容", migrated_file.read_text(encoding="utf-8"))
 
     def test_apply_patch_edits_to_text_supports_multiple_edit_blocks(self) -> None:
         content = (
