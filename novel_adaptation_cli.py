@@ -16,9 +16,9 @@ from core.files import (
     read_text,
     sanitize_file_name,
     write_markdown_data,
-    write_text,
 )
 from core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
+import core.document_ops as document_ops
 import core.openai_config as openai_config
 import core.responses_runtime as llm_runtime
 
@@ -45,20 +45,15 @@ DEFAULT_RETRY_DELAY_SECONDS = 5
 
 COMMON_DOCUMENT_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
-    "你必须使用提供的函数工具提交最终文档正文，把完整 Markdown 放进 content_md 字段，"
-    "由程序负责写入文件。"
+    "你必须使用提供的文档工具提交结果，由程序负责写入或 patch 到文件。"
 )
 COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"
     "用户拥有参考源文本权利。"
-    "当前任务每次只产出 1 份 Markdown 文档正文。"
+    "当前任务每次只处理 1 份目标文档。"
     "请严格根据输入中的 document_request 执行。"
+    + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_DOCUMENT_OUTPUT_RULE
-)
-DOCUMENT_SUBMISSION_TOOL_NAME = "submit_markdown_document"
-DOCUMENT_SUBMISSION_TOOL_DESCRIPTION = (
-    "提交最终 Markdown 文档正文。"
-    "必须把完整正文放进 content_md 字段，不要额外返回解释文本。"
 )
 
 
@@ -615,7 +610,7 @@ def prompt_next_stage(next_volume: Path | None) -> bool:
     return choice == "next"
 
 
-def call_markdown_tool_response(
+def call_document_operation_response(
     client: OpenAI,
     model: str,
     instructions: str,
@@ -623,21 +618,18 @@ def call_markdown_tool_response(
     previous_response_id: str | None = None,
     prompt_cache_key: str | None = None,
     retries: int = DEFAULT_API_RETRIES,
-) -> tuple[str, str | None]:
-    result = llm_runtime.call_function_tool(
+) -> tuple[document_ops.DocumentOperationCallResult, str | None]:
+    result = document_ops.call_document_operation_tools(
         client,
         model=model,
         instructions=instructions,
         user_input=user_input,
-        tool_model=llm_runtime.MarkdownDocumentPayload,
-        tool_name=DOCUMENT_SUBMISSION_TOOL_NAME,
-        tool_description=DOCUMENT_SUBMISSION_TOOL_DESCRIPTION,
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
         retries=retries,
         retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
     )
-    return result.parsed.content_md.strip(), result.response_id
+    return result, result.response_id
 
 
 def style_reference_context(manifest: dict[str, Any]) -> str:
@@ -806,7 +798,23 @@ def document_output_path(paths: dict[str, Path], doc_key: str) -> Path:
     fail(f"未找到文档输出路径：{doc_key}")
 
 
-def generate_document_markdown(
+def build_target_file_context(
+    *,
+    doc_key: str,
+    output_path: Path,
+    current_content: str,
+) -> dict[str, Any]:
+    return {
+        "file_key": doc_key,
+        "file_name": output_path.name,
+        "file_path": str(output_path),
+        "exists": output_path.exists(),
+        "current_content": clip_for_context(current_content, limit=18000),
+        "preferred_mode": "patch" if current_content.strip() else "write",
+    }
+
+
+def generate_document_operation(
     client: OpenAI,
     model: str,
     manifest: dict[str, Any],
@@ -814,12 +822,18 @@ def generate_document_markdown(
     current_docs: dict[str, str],
     *,
     doc_key: str,
+    output_path: Path,
     stage_shared_prompt: str,
     previous_response_id: str | None,
     prompt_cache_key: str,
-) -> tuple[str, str | None]:
+) -> tuple[document_ops.DocumentOperationCallResult, str | None]:
     injected_globals = build_injected_global_docs(current_docs)
     document_request = build_document_request(doc_key)
+    target_file = build_target_file_context(
+        doc_key=doc_key,
+        output_path=output_path,
+        current_content=current_docs.get(doc_key, ""),
+    )
 
     if doc_key == "style_guide":
         payload = build_payload_with_trailing_docs(
@@ -829,14 +843,16 @@ def generate_document_markdown(
                 "requirements": [
                     "标题稳定，适合后续工作流长期注入。",
                     "这是全书级写作风格文档，仅在第一卷阶段生成与定稿。",
+                    "如果当前文件已存在且只需局部补充，请优先使用 patch 工具；不要为了重组措辞而整篇重写。",
                 ],
             },
             trailing_doc_fields={
+                "target_file": target_file,
                 "existing_style_guide": clip_for_context(current_docs.get("style_guide", ""), limit=18000),
                 "injected_global_docs": injected_globals,
             },
         )
-        return call_markdown_tool_response(
+        return call_document_operation_response(
             client,
             model,
             COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
@@ -852,14 +868,16 @@ def generate_document_markdown(
                 "required_file": GLOBAL_FILE_NAMES["world_design"],
                 "requirements": [
                     "保留历史世界观设计的连续性，并把当前卷新增内容补充进去。",
-                    "优先先把底层世界规则和背景框架搭稳，再写扩展设定。",
+                    "优先使用 patch 工具对已有条目、段落或小节做增量更新，不要整篇重写世界观文档。",
+                    "未变化的世界知识、术语、层级结构、历史背景必须保留。",
                 ],
             },
             trailing_doc_fields={
+                "target_file": target_file,
                 "injected_global_docs": injected_globals,
             },
         )
-        return call_markdown_tool_response(
+        return call_document_operation_response(
             client,
             model,
             COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
@@ -880,13 +898,15 @@ def generate_document_markdown(
                     "未读取卷不得出现剧情梗概、角色推进、冲突设计、伏笔安排、高潮设计或结局走向。",
                     "如果旧版全书大纲里已经提前写了未读取卷的详细内容，本次要把那些未读取卷删掉，或回收为占位状态，不能继续保留伪细纲。",
                     "第一卷阶段尤其不能提前写第二卷及之后的详细大纲。",
+                    "优先使用 patch 工具对当前卷对应段落做增量修改，不要把整份全书大纲改写成只剩最近一卷的信息。",
                 ],
             },
             trailing_doc_fields={
+                "target_file": target_file,
                 "injected_global_docs": injected_globals,
             },
         )
-        return call_markdown_tool_response(
+        return call_document_operation_response(
             client,
             model,
             COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
@@ -903,13 +923,15 @@ def generate_document_markdown(
                 "requirements": [
                     "优先保持伏笔清单的可追踪性和后续工作流可读性。",
                     "请基于全书大纲、世界观文档和当前卷原文上下文补充更新。",
+                    "优先使用 patch 工具做增量补充、状态推进或局部修订。",
                 ],
             },
             trailing_doc_fields={
+                "target_file": target_file,
                 "injected_global_docs": injected_globals,
             },
         )
-        return call_markdown_tool_response(
+        return call_document_operation_response(
             client,
             model,
             COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
@@ -926,13 +948,15 @@ def generate_document_markdown(
                 "requirements": [
                     "卷纲要包含本卷定位、主要冲突、角色推进、高潮设计、结尾钩子、与原卷映射关系。",
                     "这是卷级注入文档，不要改写成全书文档。",
+                    "如果当前卷纲文件已存在且只需局部补写，请优先使用 patch 工具；否则可整篇写入。",
                 ],
             },
             trailing_doc_fields={
+                "target_file": target_file,
                 "injected_global_docs": injected_globals,
             },
         )
-        return call_markdown_tool_response(
+        return call_document_operation_response(
             client,
             model,
             COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
@@ -1324,21 +1348,25 @@ def main() -> int:
                     source_char_count=source_char_count,
                     previous_response_id=previous_response_id,
                 )
-                doc_markdown, previous_response_id = generate_document_markdown(
+                output_path = document_output_path(paths, doc_key)
+                operation_result, previous_response_id = generate_document_operation(
                     client,
                     openai_settings["model"],
                     manifest,
                     volume_material,
                     current_docs,
                     doc_key=doc_key,
+                    output_path=output_path,
                     stage_shared_prompt=stage_shared_prompt,
                     previous_response_id=previous_response_id,
                     prompt_cache_key=prompt_cache_key,
                 )
-                output_path = document_output_path(paths, doc_key)
                 print_progress(f"{doc_label} 已返回，开始写入文件。")
-                write_text(output_path, doc_markdown)
-                current_docs[doc_key] = doc_markdown
+                applied = document_ops.apply_document_operation(
+                    operation_result,
+                    allowed_files={doc_key: output_path},
+                )
+                current_docs[doc_key] = read_text(output_path) if output_path.exists() else ""
                 generated_documents.append(
                     {
                         "index": index,
@@ -1346,9 +1374,14 @@ def main() -> int:
                         "label": doc_label,
                         "response_id": previous_response_id,
                         "output_path": str(output_path),
+                        "operation_mode": applied.mode,
+                        "changed": bool(applied.changed_keys),
                     }
                 )
-                print_progress(f"{doc_label} 已写入：{output_path}")
+                print_progress(
+                    f"{doc_label} 已处理：{output_path}，模式={applied.mode}，"
+                    f"{'已更新' if applied.changed_keys else '内容无变化'}。"
+                )
 
             print_progress("本阶段文档生成完成，开始更新阶段索引文件。")
             paths = write_stage_outputs(

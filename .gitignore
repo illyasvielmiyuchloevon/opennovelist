@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 
+.external/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

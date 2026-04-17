@@ -501,6 +501,25 @@ class FunctionToolResult(Generic[T]):
     raw_json: Any
 
 
+@dataclass(frozen=True)
+class FunctionToolSpec(Generic[T]):
+    model: type[T]
+    name: str
+    description: str
+
+
+@dataclass
+class MultiFunctionToolResult:
+    tool_name: str
+    parsed: BaseModel
+    response_id: str | None
+    status: str
+    output_types: list[str]
+    preview: str
+    raw_body_text: str
+    raw_json: Any
+
+
 def _coerce_function_tool_arguments(
     response: Any,
     tool_model: type[T],
@@ -579,6 +598,102 @@ def _coerce_function_tool_arguments(
                                 pass
 
     return None, ""
+
+
+def _coerce_any_function_tool_arguments(
+    response: Any,
+    tool_specs_by_name: dict[str, FunctionToolSpec[Any]],
+    *,
+    raw_body_text: str = "",
+    raw_json: Any = None,
+) -> tuple[BaseModel | None, str, str]:
+    output = to_plain_data(getattr(response, "output", None)) or []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "function_call":
+                continue
+            item_name = item.get("name")
+            if not isinstance(item_name, str):
+                continue
+            spec = tool_specs_by_name.get(item_name)
+            if spec is None:
+                continue
+            parsed_arguments = item.get("parsed_arguments")
+            if isinstance(parsed_arguments, spec.model):
+                return parsed_arguments, item_name, "function_call.parsed_arguments"
+            if parsed_arguments is not None:
+                try:
+                    return spec.model.model_validate(parsed_arguments), item_name, "function_call.parsed_arguments"
+                except Exception:
+                    pass
+            arguments = item.get("arguments")
+            if isinstance(arguments, str):
+                loaded = safe_json_loads(arguments)
+                if isinstance(loaded, dict):
+                    try:
+                        return spec.model.model_validate(loaded), item_name, "function_call.arguments"
+                    except Exception:
+                        pass
+
+    plain = to_plain_data(raw_json)
+    if isinstance(plain, dict):
+        raw_output = plain.get("output")
+        if isinstance(raw_output, list):
+            for item in raw_output:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "function_call":
+                    continue
+                item_name = item.get("name")
+                if not isinstance(item_name, str):
+                    continue
+                spec = tool_specs_by_name.get(item_name)
+                if spec is None:
+                    continue
+                arguments = item.get("arguments")
+                if isinstance(arguments, str):
+                    loaded = safe_json_loads(arguments)
+                    if isinstance(loaded, dict):
+                        try:
+                            return spec.model.model_validate(loaded), item_name, "raw_json.output.function_call.arguments"
+                        except Exception:
+                            pass
+
+        choices = plain.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                tool_calls = message.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    item_name = function.get("name")
+                    if not isinstance(item_name, str):
+                        continue
+                    spec = tool_specs_by_name.get(item_name)
+                    if spec is None:
+                        continue
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        loaded = safe_json_loads(arguments)
+                        if isinstance(loaded, dict):
+                            try:
+                                return spec.model.model_validate(loaded), item_name, "raw_json.choices.message.tool_calls.arguments"
+                            except Exception:
+                                pass
+
+    return None, "", ""
 
 
 def _coerce_parsed_payload(
@@ -731,7 +846,48 @@ def call_function_tool(
     retries: int = DEFAULT_API_RETRIES,
     retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
 ) -> FunctionToolResult[T]:
+    result = call_function_tools(
+        client,
+        model=model,
+        instructions=instructions,
+        user_input=user_input,
+        tool_specs=[FunctionToolSpec(model=tool_model, name=tool_name, description=tool_description)],
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+        tool_choice={"type": "function", "name": tool_name},
+    )
+    if result.tool_name != tool_name:
+        raise ModelOutputError(f"模型调用了意外工具：{result.tool_name}，期望工具：{tool_name}")
+    return FunctionToolResult(
+        parsed=tool_model.model_validate(result.parsed),
+        response_id=result.response_id,
+        status=result.status,
+        output_types=result.output_types,
+        preview=result.preview,
+        raw_body_text=result.raw_body_text,
+        raw_json=result.raw_json,
+    )
+
+
+def call_function_tools(
+    client: OpenAI,
+    *,
+    model: str,
+    instructions: str,
+    user_input: str,
+    tool_specs: list[FunctionToolSpec[Any]],
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+    retries: int = DEFAULT_API_RETRIES,
+    retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
+    tool_choice: Any = "auto",
+) -> MultiFunctionToolResult:
     last_error: Exception | None = None
+    if not tool_specs:
+        raise ValueError("tool_specs 不能为空。")
+    tool_specs_by_name = {spec.name: spec for spec in tool_specs}
 
     for attempt in range(1, retries + 1):
         activity = StatusSpinner("思考中")
@@ -747,12 +903,13 @@ def call_function_tool(
                 "reasoning": {"effort": DEFAULT_REASONING_EFFORT},
                 "tools": [
                     openai.pydantic_function_tool(
-                        tool_model,
-                        name=tool_name,
-                        description=tool_description,
+                        spec.model,
+                        name=spec.name,
+                        description=spec.description,
                     )
+                    for spec in tool_specs
                 ],
-                "tool_choice": {"type": "function", "name": tool_name},
+                "tool_choice": tool_choice,
                 "parallel_tool_calls": False,
                 "store": True,
             }
@@ -785,10 +942,9 @@ def call_function_tool(
         response_id, status, output_items = response_identity(response, raw_json)
         output_types = response_output_types(response, raw_json)
         preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
-        parsed_payload, extraction_source = _coerce_function_tool_arguments(
+        parsed_payload, parsed_tool_name, extraction_source = _coerce_any_function_tool_arguments(
             response,
-            tool_model,
-            tool_name=tool_name,
+            tool_specs_by_name,
             raw_body_text=raw_body_text,
             raw_json=raw_json,
         )
@@ -798,8 +954,9 @@ def call_function_tool(
             f"output={','.join(output_types) or 'none'}。"
         )
 
-        if parsed_payload is not None:
-            return FunctionToolResult(
+        if parsed_payload is not None and parsed_tool_name:
+            return MultiFunctionToolResult(
+                tool_name=parsed_tool_name,
                 parsed=parsed_payload,
                 response_id=response_id,
                 status=status,

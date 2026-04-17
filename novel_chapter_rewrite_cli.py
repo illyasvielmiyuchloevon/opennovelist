@@ -18,6 +18,7 @@ from core.files import (
     write_markdown_data,
     write_text_if_changed,
 )
+import core.document_ops as document_ops
 from core.novel_source import (
     build_chapter_source_bundle,
     clip_for_context,
@@ -77,6 +78,7 @@ COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
     "请严格根据输入中的 document_request 和当前阶段要求执行。"
     + COMMON_FUNCTION_OUTPUT_RULE
 )
+COMMON_SUPPORT_UPDATE_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + document_ops.DOCUMENT_OPERATION_RULE
 COMMON_VOLUME_REVIEW_INSTRUCTIONS = (
     "你是资深网络小说卷级统稿编辑与审校编辑。"
     "用户拥有参考源文本权利。"
@@ -1035,6 +1037,7 @@ def payload_dynamic_suffix_summary_lines(payload: dict[str, Any]) -> list[str]:
         "rolling_injected_volume_docs": "滚动卷级注入文档",
         "rolling_injected_chapter_docs": "滚动章级注入文档",
         "rolling_injected_group_docs": "滚动组级注入文档",
+        "update_target_files": "待更新目标文件清单",
         "rewritten_chapters": "已生成章节正文清单",
     }
     for key, label in doc_bucket_labels.items():
@@ -1192,19 +1195,19 @@ def call_support_updates_response(
     previous_response_id: str | None = None,
     prompt_cache_key: str | None = None,
 ) -> tuple[
-    WorkflowSubmissionPayload,
+    document_ops.DocumentOperationCallResult,
     str | None,
-    llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
+    document_ops.DocumentOperationCallResult,
 ]:
-    payload, response_id, result = call_workflow_submission_response(
+    result = document_ops.call_document_operation_tools(
         client,
-        model,
-        instructions,
-        user_input,
+        model=model,
+        instructions=instructions,
+        user_input=user_input,
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
     )
-    return payload, response_id, result
+    return result, result.response_id, result
 
 
 def call_chapter_review_response(
@@ -1389,6 +1392,35 @@ def write_artifact(path: Path, content: str) -> bool:
     return write_text_if_changed(path, content)
 
 
+def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
+    return {
+        "character_status_cards": paths["character_status_cards"],
+        "character_relationship_graph": paths["character_relationship_graph"],
+        "volume_plot_progress": paths["volume_plot_progress"],
+        "global_plot_progress": paths["global_plot_progress"],
+        "foreshadowing": paths["foreshadowing"],
+        "world_model": paths["world_model"],
+        "world_state": paths["world_state"],
+    }
+
+
+def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    for file_key, path in support_update_target_paths(paths).items():
+        current_content = read_text_if_exists(path).strip()
+        inventory.append(
+            {
+                "file_key": file_key,
+                "file_name": path.name,
+                "file_path": str(path),
+                "exists": path.exists(),
+                "preferred_mode": "patch" if current_content else "write",
+                "current_content": clip_for_context(current_content, limit=18000),
+            }
+        )
+    return inventory
+
+
 def print_call_artifact_report(
     call_label: str,
     artifacts: list[tuple[str, Path]],
@@ -1410,31 +1442,6 @@ def print_call_artifact_report(
         print_progress("  - 无，本次生成结果与现有文件一致。")
 
 
-def apply_support_updates(
-    paths: dict[str, Path],
-    payload: WorkflowSubmissionPayload,
-) -> tuple[list[str], list[str]]:
-    field_map = {
-        "character_status_cards_md": "character_status_cards",
-        "character_relationship_graph_md": "character_relationship_graph",
-        "volume_plot_progress_md": "volume_plot_progress",
-        "global_plot_progress_md": "global_plot_progress",
-        "foreshadowing_md": "foreshadowing",
-        "world_model_md": "world_model",
-        "world_state_md": "world_state",
-    }
-    emitted_docs: list[str] = []
-    changed_docs: list[str] = []
-    for field_name, path_key in field_map.items():
-        content = getattr(payload, field_name).strip()
-        if not content:
-            continue
-        emitted_docs.append(path_key)
-        if write_text_if_changed(paths[path_key], content):
-            changed_docs.append(path_key)
-    return emitted_docs, changed_docs
-
-
 def build_phase_request_payload(
     *,
     phase_key: str,
@@ -1445,6 +1452,7 @@ def build_phase_request_payload(
     catalog: dict[str, dict[str, Any]],
     chapter_text: str = "",
 ) -> tuple[dict[str, Any], list[str], list[str]]:
+    paths = rewrite_paths(project_root, volume_number, chapter_number)
     selection = PHASE_DOC_SELECTIONS[phase_key]
     five_chapter_review_docs, included_five_reviews, omitted_five_reviews = load_relevant_five_chapter_review_docs(
         project_root,
@@ -1541,7 +1549,9 @@ def build_phase_request_payload(
                     "task": "根据刚写完的章节，更新人物状态卡、人物关系链、剧情进程、伏笔、世界模型、世界状态。",
                 },
                 "requirements": [
-                    "需要更新的文档请写完整 Markdown；无变化则返回空字符串。",
+                    "优先使用 patch 工具做多文件增量更新，不要把已有文档整篇重写。",
+                    "人物状态卡、人物关系链、全局剧情进程、卷级剧情进程、世界模型、世界状态都必须保留未变化部分。",
+                    "只有文件缺失、文件为空、或现有结构明显不可用时，才允许使用整篇写入工具。",
                     "全局剧情进程要管理整本书主线、跨卷目标、反派线、终局线。",
                     "卷级剧情进程只写当前卷内容。",
                 ],
@@ -1551,10 +1561,11 @@ def build_phase_request_payload(
                 "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
                 "rolling_injected_group_docs": five_chapter_review_docs,
+                "update_target_files": support_update_target_inventory(paths),
                 "current_generated_chapter": {
                     "label": "当前章节正文",
                     "file_name": f"{chapter_number}.txt",
-                    "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+                    "file_path": str(paths["rewritten_chapter"]),
                     "content": chapter_text.strip(),
                 },
             },
@@ -2459,13 +2470,18 @@ def run_chapter_workflow(
             support_updates, previous_response_id, support_result = call_support_updates_response(
                 client,
                 model,
-                COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                COMMON_SUPPORT_UPDATE_INSTRUCTIONS,
                 stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
                 previous_response_id=previous_response_id,
                 prompt_cache_key=chapter_session_key,
             )
             response_ids.append(str(support_result.response_id or ""))
-            emitted_docs, changed_docs = apply_support_updates(paths, support_updates)
+            applied_updates = document_ops.apply_document_operation(
+                support_updates,
+                allowed_files=support_update_target_paths(paths),
+            )
+            emitted_docs = applied_updates.emitted_keys
+            changed_docs = applied_updates.changed_keys
             print_call_artifact_report(
                 "第 3/4 次调用",
                 [(doc_label_for_key(key), paths[key]) for key in emitted_docs],

@@ -63,6 +63,180 @@ def write_text_if_changed(path: Path, content: str) -> bool:
     return True
 
 
+def normalize_line_endings(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def detect_line_ending(text: str) -> str:
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def convert_to_line_ending(text: str, ending: str) -> str:
+    normalized = normalize_line_endings(text)
+    if ending == "\r\n":
+        return normalized.replace("\n", "\r\n")
+    return normalized
+
+
+def _trimmed_block_candidates(content: str, find: str) -> list[str]:
+    original_lines = content.split("\n")
+    search_lines = find.split("\n")
+    if search_lines and search_lines[-1] == "":
+        search_lines.pop()
+    if not search_lines:
+        return []
+
+    candidates: list[str] = []
+    search_len = len(search_lines)
+    for start in range(0, len(original_lines) - search_len + 1):
+        block = original_lines[start : start + search_len]
+        if all(block[index].strip() == search_lines[index].strip() for index in range(search_len)):
+            candidates.append("\n".join(block))
+    return candidates
+
+
+def _remove_common_indentation(text: str) -> str:
+    lines = text.split("\n")
+    non_empty = [line for line in lines if line.strip()]
+    if not non_empty:
+        return text
+    min_indent = min(len(line) - len(line.lstrip()) for line in non_empty)
+    return "\n".join(line[min_indent:] if line.strip() else line for line in lines)
+
+
+def _indentation_flexible_candidates(content: str, find: str) -> list[str]:
+    content_lines = content.split("\n")
+    search_lines = find.split("\n")
+    if not search_lines:
+        return []
+    normalized_find = _remove_common_indentation(find)
+    search_len = len(search_lines)
+    candidates: list[str] = []
+    for start in range(0, len(content_lines) - search_len + 1):
+        block = "\n".join(content_lines[start : start + search_len])
+        if _remove_common_indentation(block) == normalized_find:
+            candidates.append(block)
+    return candidates
+
+
+def _block_anchor_candidates(content: str, find: str) -> list[str]:
+    search_lines = find.split("\n")
+    if search_lines and search_lines[-1] == "":
+        search_lines.pop()
+    if len(search_lines) < 3:
+        return []
+
+    original_lines = content.split("\n")
+    first_line = search_lines[0].strip()
+    last_line = search_lines[-1].strip()
+    candidates: list[str] = []
+    for start in range(len(original_lines)):
+        if original_lines[start].strip() != first_line:
+            continue
+        for end in range(start + 2, len(original_lines)):
+            if original_lines[end].strip() == last_line:
+                block = "\n".join(original_lines[start : end + 1])
+                candidates.append(block)
+                break
+    return candidates
+
+
+def _whitespace_normalized_candidates(content: str, find: str) -> list[str]:
+    normalized_find = " ".join(find.split())
+    if not normalized_find:
+        return []
+    candidates: list[str] = []
+    lines = content.split("\n")
+    for line in lines:
+        if " ".join(line.split()) == normalized_find:
+            candidates.append(line)
+    find_lines = find.split("\n")
+    if len(find_lines) > 1:
+        block_len = len(find_lines)
+        for start in range(0, len(lines) - block_len + 1):
+            block = "\n".join(lines[start : start + block_len])
+            if " ".join(block.split()) == normalized_find:
+                candidates.append(block)
+    return candidates
+
+
+def _dedupe_candidates(candidates: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+    return deduped
+
+
+def find_unique_text_match(content: str, target: str) -> str:
+    if not target:
+        raise ValueError("match_text 不能为空。")
+
+    normalized_content = normalize_line_endings(content)
+    normalized_target = normalize_line_endings(target)
+    candidates = _dedupe_candidates(
+        ([normalized_target] if normalized_target in normalized_content else [])
+        + _trimmed_block_candidates(normalized_content, normalized_target)
+        + _indentation_flexible_candidates(normalized_content, normalized_target)
+        + _block_anchor_candidates(normalized_content, normalized_target)
+        + _whitespace_normalized_candidates(normalized_content, normalized_target)
+    )
+
+    not_found = True
+    for candidate in candidates:
+        count = normalized_content.count(candidate)
+        if count == 0:
+            continue
+        not_found = False
+        if count == 1:
+            return candidate
+
+    if not_found:
+        raise ValueError("未能在文件中定位 match_text，请提供更稳定的上下文块。")
+    raise ValueError("match_text 在文件中匹配到多个位置，请补充更多上下文以确保唯一。")
+
+
+def replace_text_with_fallbacks(content: str, old_text: str, new_text: str, *, replace_all: bool = False) -> str:
+    if old_text == new_text:
+        raise ValueError("old_text 与 new_text 相同，无法执行替换。")
+    if not old_text:
+        raise ValueError("replace 操作要求 old_text 非空。")
+
+    original_ending = detect_line_ending(content)
+    normalized_content = normalize_line_endings(content)
+    normalized_old = normalize_line_endings(old_text)
+    normalized_new = normalize_line_endings(new_text)
+
+    candidates = _dedupe_candidates(
+        ([normalized_old] if normalized_old in normalized_content else [])
+        + _trimmed_block_candidates(normalized_content, normalized_old)
+        + _indentation_flexible_candidates(normalized_content, normalized_old)
+        + _block_anchor_candidates(normalized_content, normalized_old)
+        + _whitespace_normalized_candidates(normalized_content, normalized_old)
+    )
+
+    not_found = True
+    for candidate in candidates:
+        count = normalized_content.count(candidate)
+        if count == 0:
+            continue
+        not_found = False
+        if replace_all:
+            return convert_to_line_ending(normalized_content.replace(candidate, normalized_new), original_ending)
+        if count == 1:
+            return convert_to_line_ending(
+                normalized_content.replace(candidate, normalized_new, 1),
+                original_ending,
+            )
+
+    if not_found:
+        raise ValueError("未找到 old_text，请提供更稳定的上下文块。")
+    raise ValueError("old_text 在文件中匹配到多个位置，请补充更多上下文以确保唯一。")
+
+
 def extract_json_payload(text: str) -> dict[str, Any]:
     stripped = text.strip()
     if not stripped:
