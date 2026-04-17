@@ -108,6 +108,12 @@ class AppliedDocumentOperation:
         return [item.file_key for item in self.files if item.changed]
 
 
+@dataclass(frozen=True)
+class DocumentTarget:
+    path: Path
+    allow_write_on_existing: bool = False
+
+
 def document_tool_specs() -> list[llm_runtime.FunctionToolSpec[Any]]:
     return [
         llm_runtime.FunctionToolSpec(
@@ -242,16 +248,26 @@ def apply_patch_edits_to_text(content: str, edits: list[DocumentPatchEdit]) -> s
 def apply_document_operation(
     operation: DocumentOperationCallResult,
     *,
-    allowed_files: dict[str, Path],
+    allowed_files: dict[str, Path | DocumentTarget],
 ) -> AppliedDocumentOperation:
+    normalized_targets: dict[str, DocumentTarget] = {}
+    for file_key, target in allowed_files.items():
+        if isinstance(target, DocumentTarget):
+            normalized_targets[file_key] = target
+        else:
+            normalized_targets[file_key] = DocumentTarget(path=target)
+
     file_results: list[AppliedDocumentFile] = []
 
     if operation.mode == "write":
         payload = operation.write_payload or DocumentWritePayload()
         for item in payload.files:
-            if item.file_key not in allowed_files:
+            if item.file_key not in normalized_targets:
                 raise ValueError(f"整篇写入返回了未授权文件：{item.file_key}")
-            path = allowed_files[item.file_key]
+            target = normalized_targets[item.file_key]
+            path = target.path
+            if path.exists() and read_text_if_exists(path).strip() and not target.allow_write_on_existing:
+                raise ValueError(f"目标文件已存在，禁止整篇写入：{item.file_key}")
             changed = write_text_if_changed(path, item.content)
             file_results.append(
                 AppliedDocumentFile(
@@ -267,9 +283,9 @@ def apply_document_operation(
 
     payload = operation.patch_payload or DocumentPatchPayload()
     for item in payload.files:
-        if item.file_key not in allowed_files:
+        if item.file_key not in normalized_targets:
             raise ValueError(f"Patch 返回了未授权文件：{item.file_key}")
-        path = allowed_files[item.file_key]
+        path = normalized_targets[item.file_key].path
         current = read_text_if_exists(path)
         updated = apply_patch_edits_to_text(current, item.edits)
         changed = write_text_if_changed(path, updated)

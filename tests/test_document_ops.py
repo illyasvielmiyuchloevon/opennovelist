@@ -177,6 +177,36 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertTrue(outline_path.exists())
             self.assertIn("本卷从入门试炼开始", read_text_if_exists(outline_path))
 
+    def test_apply_document_operation_write_rejects_existing_file_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outline_path = root / "001_volume_outline.md"
+            outline_path.write_text("# 卷级大纲\n\n- 旧内容。\n", encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="write",
+                response_id="resp_write_existing",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                write_payload=document_ops.DocumentWritePayload(
+                    files=[
+                        document_ops.DocumentWriteFile(
+                            file_key="volume_outline",
+                            content="# 卷级大纲\n\n- 新内容。\n",
+                        )
+                    ]
+                ),
+            )
+
+            with self.assertRaises(ValueError):
+                document_ops.apply_document_operation(
+                    operation,
+                    allowed_files={"volume_outline": outline_path},
+                )
+
     def test_apply_document_operation_rejects_unauthorized_file_key(self) -> None:
         operation = document_ops.DocumentOperationCallResult(
             mode="patch",
