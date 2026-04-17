@@ -385,6 +385,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="只识别工程、卷状态和待处理章节，不调用 API。",
     )
+    parser.add_argument(
+        "--workflow-controlled",
+        action="store_true",
+        help="由统一工作流入口调度时启用：当前只处理本次目标范围，完成后直接返回，不在子 CLI 内继续下一章/组/卷。",
+    )
     return parser.parse_args()
 
 
@@ -3152,9 +3157,12 @@ def main() -> int:
         )
         print_progress(f"本次使用 base_url：{openai_settings['base_url']}")
         print_progress(f"本次使用模型：{openai_settings['model']}")
+        print_progress(f"本次使用协议：{openai_settings.get('protocol', 'responses')}")
         client = openai_config.create_openai_client(
             api_key=api_key,
             base_url=openai_settings["base_url"],
+            protocol=openai_settings.get("protocol", openai_config.PROTOCOL_RESPONSES),
+            provider=openai_settings.get("provider", openai_config.PROVIDER_OPENAI),
         )
 
         requested_volume = target_volume.name
@@ -3182,6 +3190,9 @@ def main() -> int:
                 requested_chapter=requested_chapter,
             )
             requested_chapter = None
+            if args.workflow_controlled:
+                print_progress("当前重写范围已完成，统一工作流将接管后续调度。")
+                return 0
 
             if completed_scope == "chapter":
                 if next_target is not None:

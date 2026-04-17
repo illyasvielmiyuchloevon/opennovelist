@@ -73,6 +73,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", help="OpenAI API Key。")
     parser.add_argument("--model", help="调用的模型名称。")
     parser.add_argument(
+        "--provider",
+        choices=(openai_config.PROVIDER_OPENAI, openai_config.PROVIDER_OPENAI_COMPATIBLE),
+        help="API 提供商。",
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=(openai_config.PROTOCOL_RESPONSES, openai_config.PROTOCOL_OPENAI_COMPATIBLE),
+        help="API 协议。",
+    )
+    parser.add_argument(
         "--startup-mode",
         choices=(STARTUP_MODE_WORKFLOW, STARTUP_MODE_CONFIG_AND_WORKFLOW, STARTUP_MODE_CONFIG_ONLY),
         help="启动方式：直接进入工作流、先重新配置 OpenAI 再进入工作流、或只重新配置 OpenAI。",
@@ -283,11 +293,19 @@ def maybe_configure_openai(
     global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
     if force_reconfigure:
         _, settings, _ = openai_config.force_reconfigure_openai(
+            cli_provider=args.provider,
+            cli_protocol=args.protocol,
             cli_base_url=args.base_url,
             cli_api_key=args.api_key,
             cli_model=args.model,
             global_config=global_config,
             config_path=GLOBAL_CONFIG_PATH,
+        )
+        print_progress(
+            f"统一入口已重新写入提供商：{openai_config.PROVIDER_LABELS.get(settings['provider'], settings['provider'])}"
+        )
+        print_progress(
+            f"统一入口已重新写入协议：{openai_config.PROTOCOL_LABELS.get(settings['protocol'], settings['protocol'])}"
         )
         print_progress(f"统一入口已重新写入 base_url：{settings['base_url']}")
         print_progress(f"统一入口已重新写入模型：{settings['model']}")
@@ -299,10 +317,18 @@ def maybe_configure_openai(
         config_path=GLOBAL_CONFIG_PATH,
     )
     settings, _ = openai_config.resolve_openai_settings(
+        cli_provider=args.provider,
+        cli_protocol=args.protocol,
         cli_base_url=args.base_url,
         cli_model=args.model,
         global_config=global_config,
         config_path=GLOBAL_CONFIG_PATH,
+    )
+    print_progress(
+        f"统一入口已写入提供商：{openai_config.PROVIDER_LABELS.get(settings['provider'], settings['provider'])}"
+    )
+    print_progress(
+        f"统一入口已写入协议：{openai_config.PROTOCOL_LABELS.get(settings['protocol'], settings['protocol'])}"
     )
     print_progress(f"统一入口已写入 base_url：{settings['base_url']}")
     print_progress(f"统一入口已写入模型：{settings['model']}")
@@ -354,11 +380,45 @@ def resolve_project_root_for_source(
     )
 
 
+def try_resolve_existing_project_root(
+    source_root: Path,
+    requested_project_root: str | None,
+) -> Path | None:
+    if requested_project_root:
+        candidate = normalize_path(requested_project_root)
+        return candidate if adaptation_cli.load_manifest(candidate) is not None else None
+
+    project_root, manifest = adaptation_cli.find_existing_project_for_source(source_root)
+    if project_root is not None and manifest is not None:
+        return project_root
+    return None
+
+
+def sorted_volume_numbers(volume_numbers: list[str]) -> list[str]:
+    normalized = [str(item).zfill(3) for item in volume_numbers if str(item).strip()]
+    return sorted(dict.fromkeys(normalized), key=lambda item: int(item))
+
+
+def pending_rewrite_volumes(project_root: Path) -> list[str]:
+    adaptation_manifest = adaptation_cli.load_manifest(project_root)
+    if adaptation_manifest is None:
+        return []
+
+    rewrite_manifest = rewrite_cli.load_rewrite_manifest(project_root)
+    adapted_volumes = sorted_volume_numbers(list(adaptation_manifest.get("processed_volumes", [])))
+    rewritten_volumes = set(
+        sorted_volume_numbers(list((rewrite_manifest or {}).get("processed_volumes", [])))
+    )
+    return [volume for volume in adapted_volumes if volume not in rewritten_volumes]
+
+
 def build_adaptation_cli_args(
     args: argparse.Namespace,
     *,
     input_root: Path,
     run_mode: str,
+    workflow_controlled: bool = False,
+    volume_override: str | None = None,
 ) -> list[str]:
     cli_args = [str(input_root), "--run-mode", run_mode]
     if args.new_title:
@@ -375,10 +435,13 @@ def build_adaptation_cli_args(
         cli_args.extend(["--protagonist-text", args.protagonist_text])
     if args.project_root:
         cli_args.extend(["--project-root", args.project_root])
-    if args.adaptation_volume:
-        cli_args.extend(["--volume", args.adaptation_volume])
+    target_volume = volume_override or args.adaptation_volume
+    if target_volume:
+        cli_args.extend(["--volume", target_volume])
     if args.dry_run:
         cli_args.append("--dry-run")
+    if workflow_controlled:
+        cli_args.append("--workflow-controlled")
     return cli_args
 
 
@@ -387,14 +450,19 @@ def build_rewrite_cli_args(
     *,
     project_root: Path,
     run_mode: str,
+    workflow_controlled: bool = False,
+    volume_override: str | None = None,
 ) -> list[str]:
     cli_args = [str(project_root), "--run-mode", run_mode]
-    if args.rewrite_volume:
-        cli_args.extend(["--volume", args.rewrite_volume])
+    target_volume = volume_override or args.rewrite_volume
+    if target_volume:
+        cli_args.extend(["--volume", target_volume])
     if args.rewrite_chapter:
         cli_args.extend(["--chapter", args.rewrite_chapter])
     if args.dry_run:
         cli_args.append("--dry-run")
+    if workflow_controlled:
+        cli_args.append("--workflow-controlled")
     return cli_args
 
 
@@ -460,10 +528,36 @@ def main() -> int:
             else:
                 fail(f"不支持的输入类型：{input_kind}")
 
-            adaptation_run_mode = resolve_adaptation_run_mode(args) if not args.skip_adaptation else ""
-            rewrite_run_mode = resolve_rewrite_run_mode(args) if not args.skip_rewrite else ""
+            if project_root is None and source_root is not None:
+                existing_project_root = try_resolve_existing_project_root(source_root, args.project_root)
+                if existing_project_root is not None:
+                    project_root = existing_project_root
+                    print_progress(f"已识别到来源目录对应的已有工程：{project_root}")
 
-            if not args.skip_adaptation:
+            rewrite_backlog_volumes: list[str] = []
+            if project_root is not None and not args.skip_rewrite:
+                rewrite_backlog_volumes = pending_rewrite_volumes(project_root)
+
+            adaptation_enabled = not args.skip_adaptation
+            if adaptation_enabled and not args.skip_rewrite and rewrite_backlog_volumes:
+                adaptation_enabled = False
+                print_progress(
+                    "检测到已有已适配但未完成重写的卷："
+                    + "、".join(rewrite_backlog_volumes)
+                )
+                print_progress("统一工作流将优先续跑章节重写，当前轮次暂时跳过继续处理下一卷适配。")
+
+            adaptation_run_mode = resolve_adaptation_run_mode(args) if adaptation_enabled else ""
+            rewrite_run_mode = resolve_rewrite_run_mode(args) if not args.skip_rewrite else ""
+            adaptation_workflow_controlled = (
+                adaptation_enabled
+                and not args.skip_rewrite
+                and adaptation_run_mode == adaptation_cli.RUN_MODE_STAGE
+            )
+            rewrite_workflow_controlled = adaptation_workflow_controlled
+            adapted_volume_number: str | None = None
+
+            if adaptation_enabled:
                 adaptation_input = project_root or source_root
                 assert adaptation_input is not None
                 run_python_cli(
@@ -472,22 +566,32 @@ def main() -> int:
                         args,
                         input_root=adaptation_input,
                         run_mode=adaptation_run_mode,
+                        workflow_controlled=adaptation_workflow_controlled,
                     ),
                 )
                 assert source_root is not None
                 project_root = resolve_project_root_for_source(source_root, args.project_root)
+                manifest = adaptation_cli.load_manifest(project_root)
+                adapted_volume_number = str((manifest or {}).get("last_processed_volume") or "").strip() or None
                 print_progress(f"novel_adaptation_cli 完成后工程目录：{project_root}")
+                if adapted_volume_number:
+                    print_progress(f"本轮统一工作流已完成适配卷：{adapted_volume_number}")
 
             if not args.skip_rewrite:
                 if project_root is None:
                     assert source_root is not None
                     project_root = resolve_project_root_for_source(source_root, args.project_root)
+                rewrite_volume_override = args.rewrite_volume or adapted_volume_number
+                if rewrite_volume_override is None and rewrite_backlog_volumes:
+                    rewrite_volume_override = rewrite_backlog_volumes[0]
                 run_python_cli(
                     "novel_chapter_rewrite_cli.py",
                     build_rewrite_cli_args(
                         args,
                         project_root=project_root,
                         run_mode=rewrite_run_mode,
+                        workflow_controlled=rewrite_workflow_controlled,
+                        volume_override=rewrite_volume_override,
                     ),
                 )
 

@@ -112,6 +112,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="只初始化工程和识别待处理卷，不调用 API。",
     )
+    parser.add_argument(
+        "--workflow-controlled",
+        action="store_true",
+        help="由统一工作流入口调度时启用：当前只处理本次目标卷，完成后直接返回，不在子 CLI 内继续下一卷。",
+    )
     return parser.parse_args()
 def validate_source_root(source_root: Path) -> None:
     if not source_root.exists():
@@ -1329,9 +1334,12 @@ def main() -> int:
         )
         print_progress(f"本次使用 base_url：{openai_settings['base_url']}")
         print_progress(f"本次使用模型：{openai_settings['model']}")
+        print_progress(f"本次使用协议：{openai_settings.get('protocol', 'responses')}")
         client = openai_config.create_openai_client(
             api_key=api_key,
             base_url=openai_settings["base_url"],
+            protocol=openai_settings.get("protocol", openai_config.PROTOCOL_RESPONSES),
+            provider=openai_settings.get("provider", openai_config.PROVIDER_OPENAI),
         )
 
         while True:
@@ -1472,6 +1480,9 @@ def main() -> int:
                 manifest,
                 volume_material["volume_number"],
             )
+            if args.workflow_controlled:
+                print_progress("当前卷阶段已完成，统一工作流将接管后续调度。")
+                return 0
             if run_mode == RUN_MODE_STAGE:
                 if not prompt_next_stage(next_volume):
                     return 0

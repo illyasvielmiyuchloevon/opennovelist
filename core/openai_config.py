@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -8,11 +9,100 @@ from openai import OpenAI
 
 from .files import load_json_file, merge_dict_updates, normalize_base_url, save_json_file
 from .responses_runtime import build_openai_client
-from .ui import fail, print_progress, prompt_text
+from .ui import fail, print_progress, prompt_choice, prompt_text
 
 
 DEFAULT_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1")
+PROVIDER_OPENAI = "openai"
+PROVIDER_OPENAI_COMPATIBLE = "openai_compatible"
+PROTOCOL_RESPONSES = "responses"
+PROTOCOL_OPENAI_COMPATIBLE = "openai_compatible"
+PROVIDER_LABELS = {
+    PROVIDER_OPENAI: "OpenAI 官方",
+    PROVIDER_OPENAI_COMPATIBLE: "OpenAI Compatible（兼容提供商 / 自定义服务）",
+}
+PROTOCOL_LABELS = {
+    PROTOCOL_RESPONSES: "OpenAI Responses API",
+    PROTOCOL_OPENAI_COMPATIBLE: "OpenAI Compatible（兼容 OpenAI 接口）",
+}
+
+
+def provider_default_protocol(provider: str) -> str:
+    if provider == PROVIDER_OPENAI_COMPATIBLE:
+        return PROTOCOL_OPENAI_COMPATIBLE
+    return PROTOCOL_RESPONSES
+
+
+def infer_provider_from_base_url(base_url: str | None) -> str:
+    normalized = normalize_base_url(base_url or DEFAULT_BASE_URL)
+    if "api.openai.com" in normalized:
+        return PROVIDER_OPENAI
+    return PROVIDER_OPENAI_COMPATIBLE
+
+
+def ordered_choice_options(
+    options: list[tuple[str, str]],
+    preferred_key: str | None,
+) -> list[tuple[str, str]]:
+    if not preferred_key:
+        return options
+    prioritized = [item for item in options if item[0] == preferred_key]
+    rest = [item for item in options if item[0] != preferred_key]
+    return [*prioritized, *rest]
+
+
+def resolve_provider_protocol_metadata(
+    *,
+    cli_provider: str | None,
+    cli_protocol: str | None,
+    global_config: dict[str, Any],
+    legacy_settings: dict[str, Any] | None = None,
+    force_prompt: bool = False,
+) -> tuple[str, str]:
+    legacy_settings = legacy_settings or {}
+    remembered_provider = str(global_config.get("last_provider") or "").strip()
+    remembered_protocol = str(global_config.get("last_protocol") or "").strip()
+    legacy_provider = str(legacy_settings.get("provider") or "").strip()
+    legacy_protocol = str(legacy_settings.get("protocol") or "").strip()
+    inferred_provider = infer_provider_from_base_url(
+        str(global_config.get("last_base_url") or legacy_settings.get("base_url") or DEFAULT_BASE_URL)
+    )
+
+    provider = (cli_provider or "").strip() or remembered_provider or legacy_provider or inferred_provider
+    if provider not in PROVIDER_LABELS:
+        provider = inferred_provider
+
+    protocol = (cli_protocol or "").strip() or remembered_protocol or legacy_protocol or provider_default_protocol(provider)
+    if protocol not in PROTOCOL_LABELS:
+        protocol = provider_default_protocol(provider)
+
+    if force_prompt and sys.stdin and sys.stdin.isatty():
+        provider = prompt_choice(
+            "请选择 API 提供商",
+            ordered_choice_options(
+                [
+                    (PROVIDER_OPENAI, f"{PROVIDER_LABELS[PROVIDER_OPENAI]}（官方服务）"),
+                    (
+                        PROVIDER_OPENAI_COMPATIBLE,
+                        f"{PROVIDER_LABELS[PROVIDER_OPENAI_COMPATIBLE]}（支持自定义 base_url）",
+                    ),
+                ],
+                provider,
+            ),
+        )
+        protocol = prompt_choice(
+            "请选择协议",
+            ordered_choice_options(
+                [
+                    (PROTOCOL_RESPONSES, PROTOCOL_LABELS[PROTOCOL_RESPONSES]),
+                    (PROTOCOL_OPENAI_COMPATIBLE, PROTOCOL_LABELS[PROTOCOL_OPENAI_COMPATIBLE]),
+                ],
+                protocol,
+            ),
+        )
+
+    return provider, protocol
 
 
 def load_global_config(config_path: Path) -> dict[str, Any]:
@@ -66,6 +156,8 @@ def resolve_api_key(
 
 def force_reconfigure_openai(
     *,
+    cli_provider: str | None,
+    cli_protocol: str | None,
     cli_base_url: str | None,
     cli_api_key: str | None,
     cli_model: str | None,
@@ -76,6 +168,12 @@ def force_reconfigure_openai(
     base_url_prompt: str = "重新输入 OpenAI base_url",
     model_prompt: str = "重新输入模型名称",
 ) -> tuple[str, dict[str, str], dict[str, Any]]:
+    provider, protocol = resolve_provider_protocol_metadata(
+        cli_provider=cli_provider,
+        cli_protocol=cli_protocol,
+        global_config=global_config,
+        force_prompt=True,
+    )
     remembered_api_key = (
         (cli_api_key or "").strip()
         or os.getenv(env_var, "").strip()
@@ -108,13 +206,17 @@ def force_reconfigure_openai(
             "last_api_key": api_key,
             "last_base_url": base_url,
             "last_model": model,
+            "last_provider": provider,
+            "last_protocol": protocol,
         },
     )
-    return api_key, {"base_url": base_url, "model": model}, updated_config
+    return api_key, {"base_url": base_url, "model": model, "provider": provider, "protocol": protocol}, updated_config
 
 
 def resolve_openai_settings(
     *,
+    cli_provider: str | None = None,
+    cli_protocol: str | None = None,
     cli_base_url: str | None,
     cli_model: str | None,
     global_config: dict[str, Any],
@@ -124,6 +226,17 @@ def resolve_openai_settings(
     model_prompt: str = "输入模型名称",
 ) -> tuple[dict[str, str], dict[str, Any]]:
     legacy_settings = legacy_settings or {}
+    provider, protocol = resolve_provider_protocol_metadata(
+        cli_provider=cli_provider,
+        cli_protocol=cli_protocol,
+        global_config=global_config,
+        legacy_settings=legacy_settings,
+        force_prompt=not (
+            (cli_provider or "").strip()
+            or str(global_config.get("last_provider") or "").strip()
+            or str(legacy_settings.get("provider") or "").strip()
+        ),
+    )
 
     raw_base_url = (cli_base_url or "").strip()
     if raw_base_url:
@@ -162,10 +275,29 @@ def resolve_openai_settings(
     updated_config = update_global_config(
         config_path,
         global_config,
-        {"last_base_url": base_url, "last_model": model},
+        {
+            "last_base_url": base_url,
+            "last_model": model,
+            "last_provider": provider,
+            "last_protocol": protocol,
+        },
     )
-    return {"base_url": base_url, "model": model}, updated_config
+    return {
+        "base_url": base_url,
+        "model": model,
+        "provider": provider,
+        "protocol": protocol,
+    }, updated_config
 
 
-def create_openai_client(*, api_key: str, base_url: str) -> OpenAI:
-    return build_openai_client(api_key=api_key, base_url=base_url)
+def create_openai_client(
+    *,
+    api_key: str,
+    base_url: str,
+    protocol: str = PROTOCOL_RESPONSES,
+    provider: str = PROVIDER_OPENAI,
+) -> OpenAI:
+    client = build_openai_client(api_key=api_key, base_url=base_url)
+    setattr(client, "_codex_protocol", protocol)
+    setattr(client, "_codex_provider", provider)
+    return client

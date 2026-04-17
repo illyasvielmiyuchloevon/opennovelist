@@ -18,6 +18,9 @@ from .ui import print_progress
 DEFAULT_API_RETRIES = 10
 DEFAULT_RETRY_DELAY_SECONDS = 5
 DEFAULT_REASONING_EFFORT = "medium"
+PROTOCOL_RESPONSES = "responses"
+PROTOCOL_OPENAI_COMPATIBLE = "openai_compatible"
+COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD = 120000
 
 
 class ApiRequestError(RuntimeError):
@@ -48,6 +51,75 @@ def _print_retry_notice(
         f"{retry_delay_seconds} 秒后重试第 {attempt + 1}/{retries} 次：{error}",
         error=True,
     )
+
+
+def estimate_request_text_chars(*parts: str | None) -> int:
+    total = 0
+    for part in parts:
+        if isinstance(part, str):
+            total += len(part)
+    return total
+
+
+def should_abort_transport_retries(
+    error: Exception,
+    *,
+    protocol: str,
+    request_chars: int,
+    attempt: int,
+) -> bool:
+    if isinstance(
+        error,
+        (
+            openai.BadRequestError,
+            openai.AuthenticationError,
+            openai.PermissionDeniedError,
+            openai.NotFoundError,
+            openai.UnprocessableEntityError,
+        ),
+    ):
+        return True
+
+    if isinstance(error, openai.InternalServerError):
+        error_text = str(error)
+        if "Database error" in error_text or "please contact the administrator" in error_text:
+            return True
+        if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+            return attempt >= 2
+        return False
+
+    if not isinstance(error, openai.APIConnectionError):
+        return False
+    if protocol != PROTOCOL_OPENAI_COMPATIBLE:
+        return False
+    if request_chars >= COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD:
+        return True
+    return attempt >= 2
+
+
+def format_transport_error_message(
+    error: Exception,
+    *,
+    protocol: str,
+    request_chars: int,
+    abort_retries: bool,
+) -> str:
+    message = f"接口请求失败（{type(error).__name__}，发生在 SDK 预处理或发送阶段）：{error}"
+    if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+        message += f" 当前协议=openai_compatible，请求文本约 {request_chars} 字符。"
+        if isinstance(error, openai.BadRequestError):
+            message += " 这是请求参数层面的确定性错误，已停止继续重试。"
+        if isinstance(error, openai.InternalServerError):
+            if "Database error" in str(error) or "please contact the administrator" in str(error):
+                message += " 这是兼容服务端返回的数据库/内部错误，不是本地解析问题，继续重试通常没有意义。"
+            elif abort_retries:
+                message += " 同类服务端内部错误已连续出现，已停止继续重试。"
+        if isinstance(error, openai.APIConnectionError):
+            if request_chars >= COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD:
+                message += " 这更像是兼容网关或上游在大载荷下直接断开连接，不是模型回复解析失败。"
+            elif abort_retries:
+                message += " 同类连接错误已连续出现，已停止继续重试。"
+    return message
 
 class StatusSpinner:
     FRAMES = ("|", "/", "-", "\\")
@@ -108,6 +180,13 @@ class StatusSpinner:
 
 def build_openai_client(*, api_key: str, base_url: str) -> OpenAI:
     return OpenAI(api_key=api_key, base_url=base_url)
+
+
+def runtime_protocol(client: OpenAI) -> str:
+    protocol = str(getattr(client, "_codex_protocol", "") or "").strip()
+    if protocol:
+        return protocol
+    return PROTOCOL_RESPONSES
 
 
 def to_plain_data(value: Any) -> Any:
@@ -308,6 +387,206 @@ def collect_stream_response(
     )
     raw_body_text = json.dumps(response_payload, ensure_ascii=False)
     return synthetic_response, raw_body_text, response_payload
+
+
+def build_chat_completion_tools(tool_specs: list["FunctionToolSpec[Any]"]) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    for spec in tool_specs:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.model.model_json_schema(),
+                },
+            }
+        )
+    return tools
+
+
+def normalize_chat_tool_choice(tool_choice: Any) -> Any:
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") == "function" and isinstance(tool_choice.get("name"), str):
+            return {
+                "type": "function",
+                "function": {"name": tool_choice["name"]},
+            }
+    return tool_choice
+
+
+def build_chat_tool_choice_candidates(tool_choice: Any) -> list[Any]:
+    normalized = normalize_chat_tool_choice(tool_choice)
+    candidates: list[Any] = [normalized]
+    if isinstance(tool_choice, dict):
+        legacy_name = tool_choice.get("name")
+        if tool_choice.get("type") == "function" and isinstance(legacy_name, str):
+            candidates.append({"type": "function", "name": legacy_name})
+
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        marker = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(candidate)
+    return deduped
+
+
+def should_retry_legacy_chat_tool_choice(error: Exception) -> bool:
+    if not isinstance(error, openai.BadRequestError):
+        return False
+    text = str(error)
+    return "tool_choice.function" in text or "Unknown parameter: 'tool_choice.function'" in text
+
+
+def collect_chat_completion_stream_response(
+    client: OpenAI,
+    *,
+    request_params: dict[str, Any],
+) -> tuple[Any, str, Any]:
+    response_payload: dict[str, Any] = {}
+    tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    legacy_function_call: dict[str, str] = {"name": "", "arguments": ""}
+    content_parts: list[str] = []
+    finish_reason: str | None = None
+    role = "assistant"
+
+    stream = client.chat.completions.create(**request_params)
+    close = getattr(stream, "close", None)
+    try:
+        for chunk in stream:
+            plain = to_plain_data(chunk)
+            if not isinstance(plain, dict):
+                continue
+            for key in ("id", "object", "created", "model", "system_fingerprint"):
+                if key in plain and key not in response_payload:
+                    response_payload[key] = plain[key]
+
+            choices = plain.get("choices")
+            if not isinstance(choices, list):
+                continue
+
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                if isinstance(choice.get("finish_reason"), str) and choice["finish_reason"]:
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                if isinstance(delta.get("role"), str) and delta["role"]:
+                    role = delta["role"]
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    content_parts.append(content)
+                function_call = delta.get("function_call")
+                if isinstance(function_call, dict):
+                    if isinstance(function_call.get("name"), str) and function_call["name"]:
+                        legacy_function_call["name"] = function_call["name"]
+                    if isinstance(function_call.get("arguments"), str) and function_call["arguments"]:
+                        legacy_function_call["arguments"] += function_call["arguments"]
+                tool_calls = delta.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    index = tool_call.get("index")
+                    if not isinstance(index, int):
+                        index = 0
+                    item = tool_calls_by_index.setdefault(
+                        index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    if isinstance(tool_call.get("id"), str) and tool_call["id"]:
+                        item["id"] = tool_call["id"]
+                    if isinstance(tool_call.get("type"), str) and tool_call["type"]:
+                        item["type"] = tool_call["type"]
+                    function = tool_call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    item_function = item.setdefault("function", {"name": "", "arguments": ""})
+                    if isinstance(function.get("name"), str) and function["name"]:
+                        item_function["name"] = function["name"]
+                    if isinstance(function.get("arguments"), str) and function["arguments"]:
+                        item_function["arguments"] = str(item_function.get("arguments") or "") + function["arguments"]
+    finally:
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    message: dict[str, Any] = {
+        "role": role,
+        "content": "".join(content_parts) or None,
+    }
+    if tool_calls_by_index:
+        message["tool_calls"] = [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)]
+    elif legacy_function_call["name"] or legacy_function_call["arguments"]:
+        message["function_call"] = dict(legacy_function_call)
+        message["tool_calls"] = [
+            {
+                "id": "legacy_function_call_0",
+                "type": "function",
+                "function": dict(legacy_function_call),
+            }
+        ]
+
+    response_payload["choices"] = [
+        {
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason or ("tool_calls" if tool_calls_by_index or legacy_function_call["name"] else "stop"),
+        }
+    ]
+    synthetic_response = SimpleNamespace(
+        id=str(response_payload.get("id", "") or ""),
+        status="completed",
+        output=[],
+        output_text="".join(content_parts).strip(),
+    )
+    raw_body_text = json.dumps(response_payload, ensure_ascii=False)
+    return synthetic_response, raw_body_text, response_payload
+
+
+def chat_completion_preview(raw_json: Any, *, limit: int = 600) -> str:
+    plain = to_plain_data(raw_json)
+    if not isinstance(plain, dict):
+        return ""
+    choices = plain.get("choices")
+    if not isinstance(choices, list):
+        return ""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()[:limit]
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = str(function.get("name") or "").strip()
+            arguments = str(function.get("arguments") or "").strip()
+            preview = f"{name}: {arguments}" if name else arguments
+            if preview:
+                return preview[:limit]
+    return ""
 
 
 def extract_text_candidates_from_response(response: Any) -> list[tuple[str, str]]:
@@ -577,6 +856,20 @@ def _coerce_function_tool_arguments(
                 message = choice.get("message")
                 if not isinstance(message, dict):
                     continue
+                function_call = message.get("function_call")
+                if isinstance(function_call, dict):
+                    item_name = function_call.get("name")
+                    if isinstance(item_name, str):
+                        spec = tool_specs_by_name.get(item_name)
+                        if spec is not None:
+                            arguments = function_call.get("arguments")
+                            if isinstance(arguments, str):
+                                loaded = safe_json_loads(arguments)
+                                if isinstance(loaded, dict):
+                                    try:
+                                        return spec.model.model_validate(loaded), item_name, "raw_json.choices.message.function_call.arguments"
+                                    except Exception:
+                                        pass
                 tool_calls = message.get("tool_calls")
                 if not isinstance(tool_calls, list):
                     continue
@@ -741,6 +1034,7 @@ def call_structured_output(
     retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
 ) -> StructuredResponseResult[T]:
     last_error: Exception | None = None
+    request_chars = estimate_request_text_chars(instructions, user_input)
 
     for attempt in range(1, retries + 1):
         activity = StatusSpinner("思考中")
@@ -769,9 +1063,22 @@ def call_structured_output(
             )
         except Exception as error:
             activity.stop()
-            last_error = ApiRequestError(
-                f"接口请求失败（{type(error).__name__}，发生在 SDK 预处理或发送阶段）：{error}"
+            abort_retries = should_abort_transport_retries(
+                error,
+                protocol=PROTOCOL_RESPONSES,
+                request_chars=request_chars,
+                attempt=attempt,
             )
+            last_error = ApiRequestError(
+                format_transport_error_message(
+                    error,
+                    protocol=PROTOCOL_RESPONSES,
+                    request_chars=request_chars,
+                    abort_retries=abort_retries,
+                )
+            )
+            if abort_retries or attempt >= retries:
+                break
             if attempt < retries:
                 _print_retry_notice(
                     attempt=attempt,
@@ -846,6 +1153,12 @@ def call_function_tool(
     retries: int = DEFAULT_API_RETRIES,
     retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
 ) -> FunctionToolResult[T]:
+    protocol = runtime_protocol(client)
+    tool_choice: Any = {"type": "function", "name": tool_name}
+    if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+        # 兼容服务在强制单工具选择上经常存在参数差异或服务端 bug；
+        # 单工具场景下改用 auto，与 adaptation 文档工具链保持一致。
+        tool_choice = "auto"
     result = call_function_tools(
         client,
         model=model,
@@ -856,7 +1169,7 @@ def call_function_tool(
         prompt_cache_key=prompt_cache_key,
         retries=retries,
         retry_delay_seconds=retry_delay_seconds,
-        tool_choice={"type": "function", "name": tool_name},
+        tool_choice=tool_choice,
     )
     if result.tool_name != tool_name:
         raise ModelOutputError(f"模型调用了意外工具：{result.tool_name}，期望工具：{tool_name}")
@@ -888,6 +1201,8 @@ def call_function_tools(
     if not tool_specs:
         raise ValueError("tool_specs 不能为空。")
     tool_specs_by_name = {spec.name: spec for spec in tool_specs}
+    protocol = runtime_protocol(client)
+    request_chars = estimate_request_text_chars(instructions, user_input)
 
     for attempt in range(1, retries + 1):
         activity = StatusSpinner("思考中")
@@ -896,38 +1211,80 @@ def call_function_tools(
         response: Any = None
         try:
             activity.start()
-            request_params: dict[str, Any] = {
-                "model": model,
-                "instructions": instructions,
-                "input": user_input,
-                "reasoning": {"effort": DEFAULT_REASONING_EFFORT},
-                "tools": [
-                    openai.pydantic_function_tool(
-                        spec.model,
-                        name=spec.name,
-                        description=spec.description,
-                    )
-                    for spec in tool_specs
-                ],
-                "tool_choice": tool_choice,
-                "parallel_tool_calls": False,
-                "store": True,
-            }
-            if previous_response_id:
-                request_params["previous_response_id"] = previous_response_id
-            if prompt_cache_key:
-                request_params["prompt_cache_key"] = prompt_cache_key
-
             activity.set_status("生成中")
-            response, raw_body_text, raw_json = collect_stream_response(
-                client,
-                request_params=request_params,
-            )
+            if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+                base_request_params = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": user_input},
+                    ],
+                    "tools": build_chat_completion_tools(tool_specs),
+                    "stream": True,
+                }
+                last_compatible_error: Exception | None = None
+                for chat_tool_choice in build_chat_tool_choice_candidates(tool_choice):
+                    request_params = dict(base_request_params)
+                    request_params["tool_choice"] = chat_tool_choice
+                    try:
+                        response, raw_body_text, raw_json = collect_chat_completion_stream_response(
+                            client,
+                            request_params=request_params,
+                        )
+                        last_compatible_error = None
+                        break
+                    except Exception as compatible_error:
+                        last_compatible_error = compatible_error
+                        if should_retry_legacy_chat_tool_choice(compatible_error):
+                            continue
+                        raise
+                if last_compatible_error is not None:
+                    raise last_compatible_error
+            else:
+                request_params = {
+                    "model": model,
+                    "instructions": instructions,
+                    "input": user_input,
+                    "reasoning": {"effort": DEFAULT_REASONING_EFFORT},
+                    "tools": [
+                        openai.pydantic_function_tool(
+                            spec.model,
+                            name=spec.name,
+                            description=spec.description,
+                        )
+                        for spec in tool_specs
+                    ],
+                    "tool_choice": tool_choice,
+                    "parallel_tool_calls": False,
+                    "store": True,
+                }
+                if previous_response_id:
+                    request_params["previous_response_id"] = previous_response_id
+                if prompt_cache_key:
+                    request_params["prompt_cache_key"] = prompt_cache_key
+
+                response, raw_body_text, raw_json = collect_stream_response(
+                    client,
+                    request_params=request_params,
+                )
         except Exception as error:
             activity.stop()
-            last_error = ApiRequestError(
-                f"接口请求失败（{type(error).__name__}，发生在 SDK 预处理或发送阶段）：{error}"
+            abort_retries = should_abort_transport_retries(
+                error,
+                protocol=protocol,
+                request_chars=request_chars,
+                attempt=attempt,
             )
+            last_error = ApiRequestError(
+                format_transport_error_message(
+                    error,
+                    protocol=protocol,
+                    request_chars=request_chars,
+                    abort_retries=abort_retries,
+                )
+            )
+            if abort_retries or attempt >= retries:
+                break
             if attempt < retries:
                 _print_retry_notice(
                     attempt=attempt,
@@ -940,8 +1297,30 @@ def call_function_tools(
             continue
 
         response_id, status, output_items = response_identity(response, raw_json)
-        output_types = response_output_types(response, raw_json)
-        preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
+        if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+            status = "completed"
+            output_types = ["chat.completion"]
+            plain = to_plain_data(raw_json)
+            if isinstance(plain, dict):
+                choices = plain.get("choices")
+                if isinstance(choices, list):
+                    for choice in choices:
+                        if not isinstance(choice, dict):
+                            continue
+                        message = choice.get("message")
+                        if not isinstance(message, dict):
+                            continue
+                        if message.get("tool_calls") or message.get("function_call"):
+                            output_types.append("tool_calls")
+                            break
+            preview = chat_completion_preview(raw_json) or build_response_preview(
+                response,
+                raw_body_text=raw_body_text,
+                raw_json=raw_json,
+            )
+        else:
+            output_types = response_output_types(response, raw_json)
+            preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
         parsed_payload, parsed_tool_name, extraction_source = _coerce_any_function_tool_arguments(
             response,
             tool_specs_by_name,
