@@ -283,6 +283,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录" --dry-run
 更完整的操作步骤、断点续跑说明、目录结构解释、配置与常见问题，请看：
 
 - [docs/USAGE.md](./docs/USAGE.md)
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
 
 ## 许可证
 

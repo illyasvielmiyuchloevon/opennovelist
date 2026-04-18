@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,9 @@ LEGACY_PROJECT_MANIFEST_NAME = "00_project_manifest.json"
 REWRITE_MANIFEST_NAME = "00_chapter_rewrite_manifest.md"
 GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "config.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CHAPTER_REVIEW_SKILL_PATH = REPO_ROOT / "skill" / "chapter_review" / "SKILL.md"
+CHAPTER_WRITING_SKILL_PATH = REPO_ROOT / "skill" / "chapter_writing" / "SKILL.md"
 GLOBAL_DIRNAME = "global_injection"
 VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
@@ -356,6 +360,232 @@ class WorkflowSubmissionPayload(BaseModel):
     blocking_issues: list[str] = Field(default_factory=list, description="阻塞问题列表。")
     rewrite_targets: list[str] = Field(default_factory=list, description="需要重写或更新的目标。")
     chapters_to_revise: list[str] = Field(default_factory=list, description="需要返工的章节编号列表。")
+
+
+REVIEW_KIND_LABELS = {
+    "chapter": "章级审核",
+    "group": FIVE_CHAPTER_REVIEW_NAME,
+    "volume": "卷级审核",
+}
+
+
+def load_chapter_review_skill_reference() -> dict[str, Any]:
+    content = read_text_if_exists(CHAPTER_REVIEW_SKILL_PATH).strip()
+    if not content:
+        return {
+            "label": "AI 痕迹审查 Skill",
+            "file_name": CHAPTER_REVIEW_SKILL_PATH.name,
+            "file_path": str(CHAPTER_REVIEW_SKILL_PATH),
+            "content": "",
+        }
+    return {
+        "label": "AI 痕迹审查 Skill",
+        "file_name": CHAPTER_REVIEW_SKILL_PATH.name,
+        "file_path": str(CHAPTER_REVIEW_SKILL_PATH),
+        "content": clip_for_context(content, limit=50000),
+    }
+
+
+def load_chapter_writing_skill_reference() -> dict[str, Any]:
+    content = read_text_if_exists(CHAPTER_WRITING_SKILL_PATH).strip()
+    if not content:
+        return {
+            "label": "写作规范 Skill",
+            "file_name": CHAPTER_WRITING_SKILL_PATH.name,
+            "file_path": str(CHAPTER_WRITING_SKILL_PATH),
+            "content": "",
+        }
+    return {
+        "label": "写作规范 Skill",
+        "file_name": CHAPTER_WRITING_SKILL_PATH.name,
+        "file_path": str(CHAPTER_WRITING_SKILL_PATH),
+        "content": clip_for_context(content, limit=50000),
+    }
+
+
+def normalize_review_chapter_numbers(
+    values: list[str],
+    *,
+    allowed_chapters: set[str] | None = None,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        digits = "".join(ch for ch in str(value) if ch.isdigit())
+        if not digits:
+            continue
+        chapter_number = digits.zfill(4)
+        if allowed_chapters is not None and chapter_number not in allowed_chapters:
+            continue
+        if chapter_number in seen:
+            continue
+        seen.add(chapter_number)
+        normalized.append(chapter_number)
+    return normalized
+
+
+def infer_review_passed(
+    payload: WorkflowSubmissionPayload,
+    *,
+    fallback_text: str = "",
+) -> bool | None:
+    if payload.passed is not None:
+        return payload.passed
+
+    if payload.blocking_issues or payload.rewrite_targets or payload.chapters_to_revise:
+        return False
+
+    combined_text = "\n".join(
+        part.strip()
+        for part in (payload.review_md, payload.content_md, fallback_text)
+        if isinstance(part, str) and part.strip()
+    )
+    if not combined_text:
+        return None
+
+    normalized_text = combined_text.replace("*", "").replace("`", "")
+
+    if re.search(r"(未通过|不通过|需返工|需要返工|必须返工|存在重大问题)", normalized_text):
+        return False
+    if re.search(r"(审核通过|本章通过|通过。|通过$|总体结论[^。\n]*通过|结论[^。\n]*通过)", normalized_text):
+        return True
+    return None
+
+
+def extract_chapter_numbers_from_text(
+    text: str,
+    *,
+    allowed_chapters: set[str] | None = None,
+) -> list[str]:
+    matches = re.findall(r"\b\d{1,4}\b", text)
+    return normalize_review_chapter_numbers(matches, allowed_chapters=allowed_chapters)
+
+
+def build_canonical_review_markdown(
+    *,
+    review_kind: str,
+    passed: bool,
+    review_md: str,
+    blocking_issues: list[str],
+    rewrite_targets: list[str],
+    chapters_to_revise: list[str],
+) -> str:
+    label = REVIEW_KIND_LABELS.get(review_kind, "审核")
+    original = review_md.strip()
+    canonical_sections = {
+        "总体结论",
+        "核心问题",
+        "需要返工的章节",
+        "需要返工的对象",
+        "修改建议",
+        "详细审查说明",
+    }
+    if original and any(f"## {heading}" in original for heading in canonical_sections):
+        return original
+
+    lines = [
+        f"# {label}",
+        "",
+        "## 总体结论",
+        f"- **{'通过' if passed else '不通过'}**",
+        "",
+        "## 核心问题",
+    ]
+
+    if blocking_issues:
+        lines.extend(f"- {item}" for item in blocking_issues)
+    else:
+        lines.append("- 无。")
+
+    if review_kind in {"group", "volume"}:
+        lines.extend(["", "## 需要返工的章节"])
+        if chapters_to_revise:
+            lines.extend(f"- {item}" for item in chapters_to_revise)
+        else:
+            lines.append("- 无。")
+    else:
+        lines.extend(["", "## 需要返工的对象"])
+        if rewrite_targets:
+            lines.extend(f"- {item}" for item in rewrite_targets)
+        else:
+            lines.append("- 无。")
+
+    lines.extend(["", "## 修改建议"])
+    if original:
+        lines.append(original)
+    elif not passed:
+        lines.append("- 请根据上述问题返工。")
+    else:
+        lines.append("- 当前产物可继续进入下一阶段。")
+
+    return "\n".join(lines).strip()
+
+
+def review_output_contract_lines(review_kind: str) -> list[str]:
+    label = REVIEW_KIND_LABELS.get(review_kind, "审核")
+    range_section_title = "需要返工的章节" if review_kind in {"group", "volume"} else "需要返工的对象"
+    return [
+        f"必须通过函数工具返回完整的{label}结果，至少包含 passed 和 review_md。",
+        f"review_md 必须使用固定骨架：# {label} / ## 总体结论 / ## 核心问题 / ## {range_section_title} / ## 修改建议。",
+        "如果 passed=true，review_md 的总体结论必须明确写“通过”。",
+        "如果 passed=false，review_md 的总体结论必须明确写“不通过”，并在对应返工章节或返工对象小节中列出需要返工的内容。",
+    ]
+
+
+def finalize_review_payload(
+    payload: WorkflowSubmissionPayload,
+    *,
+    review_kind: str,
+    allowed_chapters: list[str] | None = None,
+) -> WorkflowSubmissionPayload:
+    allowed_set = set(allowed_chapters or [])
+    fallback_text = payload.content_md.strip()
+    chapters_to_revise = normalize_review_chapter_numbers(
+        payload.chapters_to_revise,
+        allowed_chapters=allowed_set if allowed_set else None,
+    )
+
+    if not chapters_to_revise and review_kind in {"group", "volume"}:
+        inferred = extract_chapter_numbers_from_text(
+            "\n".join(
+                [
+                    payload.review_md.strip(),
+                    payload.content_md.strip(),
+                    "\n".join(payload.blocking_issues),
+                    "\n".join(payload.rewrite_targets),
+                ]
+            ),
+            allowed_chapters=allowed_set if allowed_set else None,
+        )
+        chapters_to_revise = inferred
+
+    passed = infer_review_passed(
+        payload.model_copy(update={"chapters_to_revise": chapters_to_revise}),
+        fallback_text=fallback_text,
+    )
+    if passed is None:
+        raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回明确的审核结论。")
+
+    review_md_source = payload.review_md.strip() or fallback_text
+    if not review_md_source:
+        review_md_source = "模型未提供审核正文，已根据结构化字段生成标准化审查摘要。"
+
+    canonical_review_md = build_canonical_review_markdown(
+        review_kind=review_kind,
+        passed=passed,
+        review_md=review_md_source,
+        blocking_issues=payload.blocking_issues,
+        rewrite_targets=payload.rewrite_targets,
+        chapters_to_revise=chapters_to_revise,
+    )
+
+    return payload.model_copy(
+        update={
+            "passed": passed,
+            "review_md": canonical_review_md,
+            "chapters_to_revise": chapters_to_revise,
+        }
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1202,6 +1432,8 @@ def payload_dynamic_suffix_summary_lines(payload: dict[str, Any]) -> list[str]:
         "rolling_injected_volume_docs": "滚动卷级注入文档",
         "rolling_injected_chapter_docs": "滚动章级注入文档",
         "rolling_injected_group_docs": "滚动组级注入文档",
+        "writing_skill_reference": "写作规范 skill 参考",
+        "review_skill_reference": "审核 skill 参考",
         "update_target_files": "待更新目标文件清单",
         "rewritten_chapters": "已生成章节正文清单",
     }
@@ -1396,9 +1628,10 @@ def call_chapter_review_response(
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
     )
-    if payload.passed is None or not payload.review_md.strip():
+    finalized = finalize_review_payload(payload, review_kind="chapter")
+    if finalized.passed is None or not finalized.review_md.strip():
         raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回完整的章级审核结果。")
-    return payload, response_id, result
+    return finalized, response_id, result
 
 
 def call_volume_review_response(
@@ -1407,6 +1640,7 @@ def call_volume_review_response(
     instructions: str,
     user_input: str,
     *,
+    allowed_chapters: list[str] | None = None,
     previous_response_id: str | None = None,
     prompt_cache_key: str | None = None,
 ) -> tuple[
@@ -1422,9 +1656,14 @@ def call_volume_review_response(
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
     )
-    if payload.passed is None or not payload.review_md.strip():
+    finalized = finalize_review_payload(
+        payload,
+        review_kind="volume",
+        allowed_chapters=allowed_chapters,
+    )
+    if finalized.passed is None or not finalized.review_md.strip():
         raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回完整的卷级审核结果。")
-    return payload, response_id, result
+    return finalized, response_id, result
 
 
 def call_five_chapter_review_response(
@@ -1433,6 +1672,7 @@ def call_five_chapter_review_response(
     instructions: str,
     user_input: str,
     *,
+    allowed_chapters: list[str] | None = None,
     previous_response_id: str | None = None,
     prompt_cache_key: str | None = None,
 ) -> tuple[
@@ -1448,9 +1688,14 @@ def call_five_chapter_review_response(
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
     )
-    if payload.passed is None or not payload.review_md.strip():
+    finalized = finalize_review_payload(
+        payload,
+        review_kind="group",
+        allowed_chapters=allowed_chapters,
+    )
+    if finalized.passed is None or not finalized.review_md.strip():
         raise llm_runtime.ModelOutputError("模型未通过统一函数工具返回完整的组审查结果。")
-    return payload, response_id, result
+    return finalized, response_id, result
 
 
 def write_response_debug_snapshot(
@@ -1706,6 +1951,7 @@ def build_phase_request_payload(
         return payload, included_docs, omitted_docs
 
     if phase_key == "phase2_chapter_text":
+        writing_skill = load_chapter_writing_skill_reference()
         payload = build_payload_with_cache_layers(
             shared_prefix_fields={
                 "stable_injected_global_docs": stable_global_docs,
@@ -1724,12 +1970,15 @@ def build_phase_request_payload(
                     "source_char_count": reference_char_count,
                     "target_char_count_range": [min_target_chars, max_target_chars],
                 },
+                "writing_skill_reference": writing_skill,
                 "requirements": [
+                    "必须把注入的写作规范 skill 作为当前章正文仿写的主写作规则。",
                     "正文必须符合全局文笔写作风格文档，不要写解释说明或提纲。",
                     "不能把参考源的人名、地名、宗门、术语原样照搬。",
                     "正文必须能承接章纲、卷纲、全局大纲与当前状态文档。",
                     f"正文目标篇幅要贴近参考源当前章，通常控制在约 {min_target_chars}-{max_target_chars} 字符；除非审核意见明确要求，不要明显扩写。",
                     "正文必须同时贴合文笔写作风格文档中的这些维度：爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式。",
+                    "不得沿用参考源的章节标题、人物名、地点名、事件名、物品名、数值体系和具体数值；如果正文出现标题式文本或强识别设定，也必须转换为新书体系下的对应表达。",
                     "如果参考源当前章是短促推进型，就保持短促；如果是对话驱动型，就保持相近的对话密度；不要额外补写解释性段落、总结性抒情、世界观说明或重复心理复述来硬性扩字。",
                 ],
             },
@@ -1783,6 +2032,7 @@ def build_phase_request_payload(
         return payload, included_docs, omitted_docs
 
     if phase_key == "phase3_review":
+        review_skill = load_chapter_review_skill_reference()
         payload = build_payload_with_cache_layers(
             shared_prefix_fields={
                 "stable_injected_global_docs": stable_global_docs,
@@ -1802,6 +2052,7 @@ def build_phase_request_payload(
                     "target_char_count_range": [min_target_chars, max_target_chars],
                 },
                 "requirements": [
+                    "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                     "重点检查参考源原人名地名是否被照搬，若照搬则不合格。",
                     "重点检查 AI 感、机械感、逻辑断裂、幻觉错位、风格偏移。",
                     "重点检查是否出现过度修饰的排比、意象堆砌、诗化抒情过量、句式整齐得过头等问题；"
@@ -1809,6 +2060,7 @@ def build_phase_request_payload(
                     "重点检查正文篇幅是否明显偏离参考源当前章；如果出现接近翻倍的扩写、明显灌水，或远超目标区间，也视为不合格。",
                     "重点检查正文是否真正符合文笔写作风格文档中对爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式的要求；若显著漂移则不合格。",
                     "如果不通过，rewrite_targets 必须写出需要返工的对象，例如 chapter_text、world_state 等。",
+                    *review_output_contract_lines("chapter"),
                 ],
             },
             trailing_doc_fields={
@@ -1816,6 +2068,7 @@ def build_phase_request_payload(
                 "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
                 "rolling_injected_group_docs": five_chapter_review_docs,
+                "review_skill_reference": review_skill,
                 "current_generated_chapter": {
                     "label": "当前章节正文",
                     "file_name": f"{chapter_number}.txt",
@@ -1837,6 +2090,7 @@ def build_volume_review_payload(
     catalog: dict[str, dict[str, Any]],
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], list[str], list[str]]:
+    review_skill = load_chapter_review_skill_reference()
     stable_global_docs, rolling_global_docs, included_globals, omitted_globals = prepare_cache_ordered_injected_docs(
         catalog,
         [
@@ -1871,14 +2125,17 @@ def build_volume_review_payload(
                 "required_file": f"{volume_number}_volume_review.md",
             },
             "requirements": [
+                "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                 "需要检查与卷级大纲、世界观设计、文风规范、全局剧情进程是否一致。",
                 "需要检查卷内章节的文风是否稳定符合文笔写作风格文档，尤其是爽点铺垫、剧情转折、叙事节奏、情节结构、段落分割、对话密度、句长与收尾方式是否持续一致。",
                 "如果不通过，chapters_to_revise 必须列出需要返工的章节编号。",
+                *review_output_contract_lines("volume"),
             ],
         },
         trailing_doc_fields={
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
+            "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
         },
     )
@@ -1930,6 +2187,7 @@ def build_five_chapter_review_payload(
     catalog: dict[str, dict[str, Any]],
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], list[str], list[str]]:
+    review_skill = load_chapter_review_skill_reference()
     current_batch_id = five_chapter_batch_id(chapter_numbers)
     current_batch_doc_name = f"{current_batch_id}_group_review.md"
     current_review_path = five_chapter_review_path(project_root, volume_material["volume_number"], chapter_numbers)
@@ -1987,15 +2245,18 @@ def build_five_chapter_review_payload(
                 "required_file": current_batch_doc_name,
             },
             "requirements": [
+                "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                 "重点检查最近这组章节之间是否前后矛盾、逻辑是否通畅。",
                 "重点检查剧情是否和参考源发生重大偏移，是否和卷纲、全书大纲、世界观设计发生重大偏移。",
                 "如果不通过，chapters_to_revise 必须只列当前区间内需要返工的章节编号。",
+                *review_output_contract_lines("group"),
             ],
         },
         trailing_doc_fields={
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
             "rolling_injected_group_docs": five_chapter_review_docs,
+            "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
         },
     )
@@ -2181,6 +2442,7 @@ def run_five_chapter_review(
             model,
             COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
             shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+            allowed_chapters=chapter_numbers,
             previous_response_id=None,
             prompt_cache_key=prompt_cache_key,
         )
@@ -2927,6 +3189,7 @@ def run_volume_review(
                 model,
                 COMMON_VOLUME_REVIEW_INSTRUCTIONS,
                 shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                allowed_chapters=list(rewritten_chapters.keys()),
                 previous_response_id=None,
                 prompt_cache_key=prompt_cache_key,
             )

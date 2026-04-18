@@ -74,6 +74,26 @@ class FilesPatchTests(unittest.TestCase):
         self.assertIn("## 事件状态", updated)
         self.assertIn("异常玉符线索浮出水面", updated)
 
+    def test_apply_patch_edits_to_text_skips_noop_replace(self) -> None:
+        content = "# 世界状态\n\n## 地点状态\n- 青岚城：表面平静。\n"
+        edits = [
+            document_ops.DocumentPatchEdit(
+                action="replace",
+                match_text="- 青岚城：表面平静。",
+                new_text="- 青岚城：表面平静。",
+            ),
+            document_ops.DocumentPatchEdit(
+                action="append",
+                match_text="",
+                new_text="## 事件状态\n- 暂无新增事件。",
+            ),
+        ]
+
+        updated = document_ops.apply_patch_edits_to_text(content, edits)
+
+        self.assertIn("- 青岚城：表面平静。", updated)
+        self.assertIn("## 事件状态", updated)
+
 
 class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patches_multiple_files(self) -> None:
@@ -176,6 +196,47 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertEqual(applied.changed_keys, ["volume_outline"])
             self.assertTrue(outline_path.exists())
             self.assertIn("本卷从入门试炼开始", read_text_if_exists(outline_path))
+
+    def test_apply_document_operation_patch_ignores_noop_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            world_state = root / "09_world_state.md"
+            original = "# 世界状态\n\n## 地点状态\n- 青岚城：表面平静。\n"
+            world_state.write_text(original, encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="patch",
+                response_id="resp_noop",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                patch_payload=document_ops.DocumentPatchPayload(
+                    files=[
+                        document_ops.DocumentPatchFile(
+                            file_key="world_state",
+                            edits=[
+                                document_ops.DocumentPatchEdit(
+                                    action="replace",
+                                    match_text="- 青岚城：表面平静。",
+                                    new_text="- 青岚城：表面平静。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={"world_state": world_state},
+            )
+
+            self.assertEqual(applied.mode, "patch")
+            self.assertEqual(applied.emitted_keys, ["world_state"])
+            self.assertEqual(applied.changed_keys, [])
+            self.assertEqual(read_text_if_exists(world_state), original)
 
     def test_apply_document_operation_write_rejects_existing_file_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

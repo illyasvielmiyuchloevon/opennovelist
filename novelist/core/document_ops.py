@@ -222,6 +222,8 @@ def apply_patch_edits_to_text(content: str, edits: list[DocumentPatchEdit]) -> s
     updated = content
     for edit in edits:
         if edit.action == "replace":
+            if normalize_line_endings(edit.match_text) == normalize_line_endings(edit.new_text):
+                continue
             updated = replace_text_with_fallbacks(
                 updated,
                 edit.match_text,
