@@ -117,5 +117,28 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertIn("review_skill_reference", payload)
 
 
+class RevisionPlanTests(unittest.TestCase):
+    def test_build_chapter_revision_plan_for_text_only(self) -> None:
+        plan = rewrite_cli.build_chapter_revision_plan(rewrite_targets=["chapter_text"])
+        self.assertEqual(plan, ["phase2_chapter_text", "phase3_review"])
+
+    def test_build_chapter_revision_plan_for_text_and_support_updates(self) -> None:
+        plan = rewrite_cli.build_chapter_revision_plan(
+            rewrite_targets=["chapter_text", "world_state"],
+        )
+        self.assertEqual(
+            plan,
+            ["phase2_chapter_text", "phase2_support_updates", "phase3_review"],
+        )
+
+    def test_build_multi_chapter_revision_plan_uses_per_chapter_targets(self) -> None:
+        plan = rewrite_cli.build_multi_chapter_revision_plan(
+            chapters_to_revise=["0003", "0005"],
+            rewrite_targets=["0003:chapter_text", "0005:support_updates"],
+        )
+        self.assertEqual(plan["0003"], ["phase2_chapter_text", "phase3_review"])
+        self.assertEqual(plan["0005"], ["phase2_support_updates", "phase3_review"])
+
+
 if __name__ == "__main__":
     unittest.main()
