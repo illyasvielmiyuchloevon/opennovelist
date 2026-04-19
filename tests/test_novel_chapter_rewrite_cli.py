@@ -116,6 +116,39 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertNotIn("writing_skill_reference", payload)
         self.assertIn("review_skill_reference", payload)
 
+    def test_phase2_chapter_text_revision_payload_uses_existing_chapter_context(self) -> None:
+        volume_material = {
+            "volume_number": "001",
+            "chapters": [
+                {
+                    "chapter_number": "0001",
+                    "file_name": "0001.txt",
+                    "source_title": "第1章 测试",
+                    "text": "这是当前参考章节正文。",
+                }
+            ],
+            "extras": [],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            catalog = rewrite_cli.read_doc_catalog(project_root, "001", "0001")
+            payload, _, _ = rewrite_cli.build_phase_request_payload(
+                phase_key="phase2_chapter_text",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number="001",
+                chapter_number="0001",
+                catalog=catalog,
+                chapter_text="这是现有章节正文。",
+                chapter_text_revision=True,
+            )
+
+        self.assertEqual(payload["document_request"]["role"], "章节仿写修订作者")
+        self.assertIn("update_target_files", payload)
+        self.assertIn("current_generated_chapter", payload)
+        self.assertEqual(payload["current_generated_chapter"]["content"], "这是现有章节正文。")
+
 
 class RevisionPlanTests(unittest.TestCase):
     def test_build_chapter_revision_plan_for_text_only(self) -> None:

@@ -96,6 +96,7 @@ COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
     + COMMON_FUNCTION_OUTPUT_RULE
 )
 COMMON_SUPPORT_UPDATE_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + document_ops.DOCUMENT_OPERATION_RULE
+COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + document_ops.DOCUMENT_OPERATION_RULE
 COMMON_VOLUME_REVIEW_INSTRUCTIONS = (
     "你是资深网络小说卷级统稿编辑与审校编辑。"
     "用户拥有参考源文本权利。"
@@ -1812,6 +1813,30 @@ def call_support_updates_response(
     return result, result.response_id, result
 
 
+def call_chapter_text_revision_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    document_ops.DocumentOperationCallResult,
+    str | None,
+    document_ops.DocumentOperationCallResult,
+]:
+    result = document_ops.call_document_operation_tools(
+        client,
+        model=model,
+        instructions=instructions,
+        user_input=user_input,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    return result, result.response_id, result
+
+
 def call_chapter_review_response(
     client: OpenAI,
     model: str,
@@ -2019,6 +2044,26 @@ def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
     }
 
 
+def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "file_key": "rewritten_chapter",
+            "file_name": paths["rewritten_chapter"].name,
+            "file_path": str(paths["rewritten_chapter"]),
+            "exists": paths["rewritten_chapter"].exists(),
+            "preferred_mode": "patch" if current_text.strip() else "write",
+            "write_policy": "patch_only_if_exists",
+            "structure_mode": "existing_chapter_text_revision",
+            "update_rules": [
+                "当前文件已存在时，只能基于现有正文做局部改写、增删、替换与重组。",
+                "不要把整章当成全新生成任务推倒重写。",
+                "未变化段落应尽量保留，优先只修改受审核意见影响的局部。",
+            ],
+            "current_content": clip_for_context(current_text, limit=30000),
+        }
+    ]
+
+
 def support_update_general_rules() -> list[str]:
     return [
         "这是长期知识文档更新步骤，只更新当前章节真实发生变化且确有必要更新的文档。",
@@ -2089,6 +2134,7 @@ def build_phase_request_payload(
     chapter_number: str,
     catalog: dict[str, dict[str, Any]],
     chapter_text: str = "",
+    chapter_text_revision: bool = False,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     paths = rewrite_paths(project_root, volume_number, chapter_number)
     selection = PHASE_DOC_SELECTIONS[phase_key]
@@ -2157,6 +2203,57 @@ def build_phase_request_payload(
 
     if phase_key == "phase2_chapter_text":
         writing_skill = load_chapter_writing_skill_reference()
+        if chapter_text_revision:
+            payload = build_payload_with_cache_layers(
+                shared_prefix_fields={
+                    "stable_injected_global_docs": stable_global_docs,
+                    "stable_injected_volume_docs": stable_volume_docs,
+                    "stable_injected_chapter_docs": stable_chapter_docs,
+                },
+                request_fields={
+                    "document_request": {
+                        "phase": phase_key,
+                        "role": "章节仿写修订作者",
+                        "task": "基于当前章现有正文、当前章上下文与审核意见，对已有章节正文做增量改写/修改。",
+                        "required_file": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+                    },
+                    "reference_chapter_metrics": {
+                        "source_title": reference_chapter["source_title"],
+                        "source_char_count": reference_char_count,
+                        "target_char_count_range": [min_target_chars, max_target_chars],
+                    },
+                    "writing_skill_reference": writing_skill,
+                    "requirements": [
+                        "必须把注入的写作规范 skill 作为当前章正文修订的主写作规则。",
+                        "这是基于现有正文的修订任务，不是从零整篇重写任务。",
+                        "如果当前文件已经存在，必须优先使用 patch 工具对现有正文做局部或分段修改；不要用整篇写入覆盖旧正文。",
+                        "优先保留未变化段落，只修改受审核意见影响的局部；只有在局部无法修正时，才扩大修改范围。",
+                        "正文修订后仍必须符合全局文笔写作风格文档，不要写解释说明或提纲。",
+                        "修订时不能把参考源的人名、地名、宗门、术语原样照搬。",
+                        "修订后的正文必须能承接章纲、卷纲、全局大纲与当前状态文档。",
+                        f"修订后的正文目标篇幅仍应贴近参考源当前章，通常控制在约 {min_target_chars}-{max_target_chars} 字符；除非审核意见明确要求，不要明显扩写。",
+                        "修订后的正文必须同时贴合文笔写作风格文档中的这些维度：爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式。",
+                        "不得沿用参考源的章节标题、人物名、地点名、事件名、物品名、数值体系和具体数值；如果正文出现标题式文本或强识别设定，也必须转换为新书体系下的对应表达。",
+                    ],
+                },
+                trailing_doc_fields={
+                    "rolling_injected_global_docs": rolling_global_docs,
+                    "rolling_injected_volume_docs": rolling_volume_docs,
+                    "rolling_injected_chapter_docs": rolling_chapter_docs,
+                    "rolling_injected_group_docs": five_chapter_review_docs,
+                    "update_target_files": chapter_text_target_inventory(
+                        rewrite_paths(project_root, volume_number, chapter_number),
+                        chapter_text,
+                    ),
+                    "current_generated_chapter": {
+                        "label": "当前章节正文",
+                        "file_name": f"{chapter_number}.txt",
+                        "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+                        "content": chapter_text.strip(),
+                    },
+                },
+            )
+            return payload, included_docs, omitted_docs
         payload = build_payload_with_cache_layers(
             shared_prefix_fields={
                 "stable_injected_global_docs": stable_global_docs,
@@ -3084,6 +3181,7 @@ def run_chapter_workflow(
                 fail(f"第 {chapter_number} 章缺少章纲，无法跳过章纲阶段直接继续后续流程。")
 
             if PHASE2_CHAPTER_TEXT in phase_plan:
+                chapter_text_revision_mode = bool(current_chapter_text.strip())
                 catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
                 payload, included_docs, omitted_docs = build_phase_request_payload(
                     phase_key=PHASE2_CHAPTER_TEXT,
@@ -3092,10 +3190,15 @@ def run_chapter_workflow(
                     volume_number=volume_material["volume_number"],
                     chapter_number=chapter_number,
                     catalog=catalog,
+                    chapter_text=current_chapter_text,
+                    chapter_text_revision=chapter_text_revision_mode,
                 )
-                print_progress(f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用：生成第 {chapter_number} 章完整正文。")
+                print_progress(
+                    f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用："
+                    + (f"修订第 {chapter_number} 章现有正文。" if chapter_text_revision_mode else f"生成第 {chapter_number} 章完整正文。")
+                )
                 print_request_context_summary(
-                    request_label="第二阶段-第一部分：正文生成",
+                    request_label="第二阶段-第一部分：正文修订" if chapter_text_revision_mode else "第二阶段-第一部分：正文生成",
                     volume_number=volume_material["volume_number"],
                     chapter_number=chapter_number,
                     source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
@@ -3114,22 +3217,43 @@ def run_chapter_workflow(
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                 )
-                chapter_txt, previous_response_id, chapter_text_result = call_chapter_text_tool_response(
-                    client,
-                    model,
-                    COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
-                    stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-                    previous_response_id=previous_response_id,
-                    prompt_cache_key=chapter_session_key,
-                )
-                response_ids.append(str(chapter_text_result.response_id or ""))
-                chapter_text_changed = write_artifact(paths["rewritten_chapter"], chapter_txt)
-                current_chapter_text = chapter_txt
-                print_call_artifact_report(
-                    f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用",
-                    [("仿写章节正文", paths["rewritten_chapter"])],
-                    ["rewritten_chapter"] if chapter_text_changed else [],
-                )
+                if chapter_text_revision_mode:
+                    chapter_text_update, previous_response_id, chapter_text_result = call_chapter_text_revision_response(
+                        client,
+                        model,
+                        COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS,
+                        stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                        previous_response_id=previous_response_id,
+                        prompt_cache_key=chapter_session_key,
+                    )
+                    response_ids.append(str(chapter_text_result.response_id or ""))
+                    applied_chapter_text_update = document_ops.apply_document_operation(
+                        chapter_text_update,
+                        allowed_files={"rewritten_chapter": paths["rewritten_chapter"]},
+                    )
+                    current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
+                    print_call_artifact_report(
+                        f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用",
+                        [("仿写章节正文", paths["rewritten_chapter"])],
+                        applied_chapter_text_update.changed_keys,
+                    )
+                else:
+                    chapter_txt, previous_response_id, chapter_text_result = call_chapter_text_tool_response(
+                        client,
+                        model,
+                        COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                        stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                        previous_response_id=previous_response_id,
+                        prompt_cache_key=chapter_session_key,
+                    )
+                    response_ids.append(str(chapter_text_result.response_id or ""))
+                    chapter_text_changed = write_artifact(paths["rewritten_chapter"], chapter_txt)
+                    current_chapter_text = chapter_txt
+                    print_call_artifact_report(
+                        f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用",
+                        [("仿写章节正文", paths["rewritten_chapter"])],
+                        ["rewritten_chapter"] if chapter_text_changed else [],
+                    )
 
                 remaining = [phase for phase in phase_plan if phase not in {PHASE1_OUTLINE, PHASE2_CHAPTER_TEXT}]
                 update_chapter_state(
