@@ -36,6 +36,7 @@ GLOBAL_FILE_NAMES = {
     "world_design": "02_world_design.md",
     "style_guide": "03_style_guide.md",
     "foreshadowing": "04_foreshadowing.md",
+    "world_model": "08_world_model.md",
 }
 STYLE_MODE_CUSTOM = "custom_style_file"
 STYLE_MODE_SOURCE = "reference_source_style"
@@ -629,6 +630,7 @@ def print_request_context_summary(
         ("book_outline", "全书大纲"),
         ("world_design", "世界观设计"),
         ("foreshadowing", "伏笔文档"),
+        ("world_model", "世界模型"),
     ):
         content = (current_docs.get(doc_key) or "").strip()
         file_name = GLOBAL_FILE_NAMES[doc_key]
@@ -749,6 +751,14 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
             "task": "当前任务只产出 1 份伏笔文档正文。",
             "scope": "文档要同时管理全书伏笔和当前卷伏笔，区分已埋设、待回收、已回收，并写出与原书的功能映射。",
         },
+        "world_model": {
+            "role": "资深网络小说世界知识建模编辑",
+            "task": "当前任务只产出 1 份世界模型文档正文。",
+            "scope": (
+                "文档要沉淀到当前卷为止已知的世界知识，包括世界背景、历史事件、地点体系、势力体系、规则与能力体系、"
+                "地图与地域结构、地理与资源体系、社会常识与禁忌、世界观关键词与术语表，并写出与原书的功能映射。"
+            ),
+        },
         "volume_outline": {
             "role": "资深小说分卷策划编辑",
             "task": "当前任务只产出 1 份当前卷的卷级大纲正文。",
@@ -765,12 +775,14 @@ def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
         return [
             {"key": "style_guide", "label": "文笔写作风格文档", "scope": "global"},
             {"key": "world_design", "label": "世界观设计文档", "scope": "global"},
+            {"key": "world_model", "label": "世界模型文档", "scope": "global"},
             {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
             {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
             {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
         ]
     return [
         {"key": "world_design", "label": "世界观设计文档", "scope": "global"},
+        {"key": "world_model", "label": "世界模型文档", "scope": "global"},
         {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
         {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
         {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
@@ -779,9 +791,10 @@ def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
 
 def build_injected_global_docs(current_docs: dict[str, str]) -> dict[str, str]:
     return {
-        "book_outline": clip_for_context(current_docs.get("book_outline", ""), limit=22000),
-        "world_design": clip_for_context(current_docs.get("world_design", ""), limit=22000),
-        "foreshadowing": clip_for_context(current_docs.get("foreshadowing", ""), limit=22000),
+        "book_outline": clip_for_context(current_docs.get("book_outline", ""), limit=30000),
+        "world_design": clip_for_context(current_docs.get("world_design", ""), limit=30000),
+        "foreshadowing": clip_for_context(current_docs.get("foreshadowing", ""), limit=30000),
+        "world_model": clip_for_context(current_docs.get("world_model", ""), limit=30000),
     }
 
 
@@ -820,7 +833,7 @@ def build_stage_shared_prompt(
         "project": build_stage_project_context(manifest, volume_material),
         "stage_rules": [
             "这一卷的全部生成都属于同一个阶段会话，请沿用同一会话的上下文连续工作。",
-            "全书大纲、世界观文档、伏笔文档是每阶段都要注入的全局资料。",
+            "全书大纲、世界观文档、伏笔文档、世界模型文档是每阶段都要注入的全局资料。",
             "卷级大纲不作为全局注入资料，不要把卷级大纲当成下一份文档的依赖前提。",
             "所有映射关系都写成功能映射，不要照抄参考源原文句子。",
             "本阶段的每一次请求都会重新附带当前卷全部文件原文与文件清单。",
@@ -998,6 +1011,32 @@ def generate_document_operation(
             prompt_cache_key=prompt_cache_key,
         )
 
+    if doc_key == "world_model":
+        payload = build_payload_with_trailing_docs(
+            stable_fields={
+                "document_request": document_request,
+                "required_file": GLOBAL_FILE_NAMES["world_model"],
+                "requirements": [
+                    "这是全书级世界模型文档，但采用按卷增量维护方式：每卷只补充、修正到当前卷为止新增的世界知识。",
+                    "如果当前文件已存在，必须优先使用 patch 工具做增量更新，不得整篇覆盖式重写世界模型。",
+                    "未变化的世界知识、术语、势力、地点、历史背景与规则结构必须保留。",
+                    "本次只允许补充、修正与当前卷直接相关的世界知识，不要把文档改写成只剩最近一卷。",
+                ],
+            },
+            trailing_doc_fields={
+                "target_file": target_file,
+                "injected_global_docs": injected_globals,
+            },
+        )
+        return call_document_operation_response(
+            client,
+            model,
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+            previous_response_id=previous_response_id,
+            prompt_cache_key=prompt_cache_key,
+        )
+
     if doc_key == "volume_outline":
         payload = build_payload_with_trailing_docs(
             stable_fields={
@@ -1038,6 +1077,7 @@ def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
         "world_design": global_dir / GLOBAL_FILE_NAMES["world_design"],
         "style_guide": global_dir / GLOBAL_FILE_NAMES["style_guide"],
         "foreshadowing": global_dir / GLOBAL_FILE_NAMES["foreshadowing"],
+        "world_model": global_dir / GLOBAL_FILE_NAMES["world_model"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
         "source_digest": volume_dir / "00_source_digest.md",
         "stage_manifest": volume_dir / "00_stage_manifest.md",
@@ -1202,7 +1242,7 @@ def write_stage_outputs(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "world_design", "style_guide", "foreshadowing")
+            for key in ("book_outline", "world_design", "style_guide", "foreshadowing", "world_model")
             if paths[key].exists()
         },
         "volume_files": {
@@ -1466,6 +1506,7 @@ def main() -> int:
             print_progress(f"卷级注入目录：{paths['volume_dir']}")
             print_progress(f"全书大纲：{paths['book_outline']}")
             print_progress(f"世界观设计：{paths['world_design']}")
+            print_progress(f"世界模型：{paths['world_model']}")
             if any(item.get("key") == "style_guide" for item in generated_documents):
                 print_progress(f"文笔风格：{paths['style_guide']}")
             elif paths["style_guide"].exists():

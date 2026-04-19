@@ -173,5 +173,14 @@ class RevisionPlanTests(unittest.TestCase):
         self.assertEqual(plan["0005"], ["phase2_support_updates", "phase3_review"])
 
 
+class SupportUpdateScopeTests(unittest.TestCase):
+    def test_support_update_targets_do_not_include_world_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
+            target_paths = rewrite_cli.support_update_target_paths(paths)
+        self.assertNotIn("world_model", target_paths)
+
+
 if __name__ == "__main__":
     unittest.main()

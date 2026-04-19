@@ -2039,7 +2039,6 @@ def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
         "volume_plot_progress": paths["volume_plot_progress"],
         "global_plot_progress": paths["global_plot_progress"],
         "foreshadowing": paths["foreshadowing"],
-        "world_model": paths["world_model"],
         "world_state": paths["world_state"],
     }
 
@@ -2304,11 +2303,11 @@ def build_phase_request_payload(
                 "document_request": {
                     "phase": phase_key,
                     "role": "连续性编辑与状态维护编辑",
-                    "task": "根据刚写完的章节，按需更新人物状态卡、人物关系链、剧情进程、伏笔、世界模型、世界状态。",
+                    "task": "根据刚写完的章节，按需更新人物状态卡、人物关系链、剧情进程、伏笔、世界状态。",
                 },
                 "requirements": [
                     *support_update_general_rules(),
-                    "人物关系链、全局剧情进程、卷级剧情进程、世界模型、世界状态要保持固定标题，并通过贴合本书内容的二级标题来组织信息。",
+                    "人物关系链、全局剧情进程、卷级剧情进程、世界状态要保持固定标题，并通过贴合本书内容的二级标题来组织信息。",
                     "这些长期知识文档如果已有内容，必须优先沿用现有有效的二级标题结构，只对受当前章节影响的段落、小节或记录做 patch。",
                     "不要把这些小说参考文档改写成字段表、节点表、边表、数据库表或代码化 schema。",
                     "不要每次都更新全部文档；只返回当前章节确实发生变化、必须更新的文档。",
