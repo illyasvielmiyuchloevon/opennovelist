@@ -96,6 +96,57 @@ class FilesPatchTests(unittest.TestCase):
 
 
 class DocumentOperationTests(unittest.TestCase):
+    def test_apply_document_operation_edits_existing_file_precisely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            volume_progress = root / "001_volume_plot_progress.md"
+            volume_progress.write_text(
+                "# 卷级剧情进程\n\n"
+                "## 试炼线\n"
+                "### 起始\n"
+                "- 主角进入试炼。\n\n"
+                "### 已发生发展\n"
+                "- 主角通过第一轮筛选。\n\n"
+                "### 当前状态\n"
+                "- 仍在试炼中。\n",
+                encoding="utf-8",
+            )
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_edit",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=document_ops.DocumentEditPayload(
+                    files=[
+                        document_ops.DocumentEditFile(
+                            file_key="volume_plot_progress",
+                            edits=[
+                                document_ops.DocumentEditEdit(
+                                    old_text="- 仍在试炼中。",
+                                    new_text="- 仍在试炼中，并开始接触核心对手。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={"volume_plot_progress": volume_progress},
+            )
+
+            self.assertEqual(applied.mode, "edit")
+            self.assertEqual(applied.changed_keys, ["volume_plot_progress"])
+            updated = read_text_if_exists(volume_progress)
+            self.assertIn("并开始接触核心对手", updated)
+            self.assertIn("### 起始", updated)
+            self.assertIn("### 已发生发展", updated)
+
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -301,6 +352,42 @@ class DocumentOperationTests(unittest.TestCase):
 
 
 class DocumentToolCallMappingTests(unittest.TestCase):
+    def test_call_document_operation_tools_maps_edit_tool_result(self) -> None:
+        fake_result = llm_runtime.MultiFunctionToolResult(
+            tool_name=document_ops.DOCUMENT_EDIT_TOOL_NAME,
+            parsed=document_ops.DocumentEditPayload(
+                files=[
+                    document_ops.DocumentEditFile(
+                        file_key="volume_plot_progress",
+                        edits=[
+                            document_ops.DocumentEditEdit(
+                                old_text="- 旧内容。",
+                                new_text="- 新内容。",
+                            )
+                        ],
+                    )
+                ]
+            ),
+            response_id="resp_edit",
+            status="completed",
+            output_types=["function_call"],
+            preview="preview",
+            raw_body_text="raw",
+            raw_json={},
+        )
+
+        with mock.patch.object(document_ops.llm_runtime, "call_function_tools", return_value=fake_result):
+            result = document_ops.call_document_operation_tools(
+                client=mock.Mock(),
+                model="test-model",
+                instructions="instructions",
+                user_input="input",
+            )
+
+        self.assertEqual(result.mode, "edit")
+        self.assertIsNotNone(result.edit_payload)
+        self.assertEqual(result.edit_payload.files[0].file_key, "volume_plot_progress")
+
     def test_call_document_operation_tools_maps_patch_tool_result(self) -> None:
         fake_result = llm_runtime.MultiFunctionToolResult(
             tool_name=document_ops.DOCUMENT_PATCH_TOOL_NAME,

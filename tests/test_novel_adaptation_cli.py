@@ -36,5 +36,17 @@ class AdaptationDocumentPlanTests(unittest.TestCase):
         )
 
 
+class WorldModelDefinitionTests(unittest.TestCase):
+    def test_world_model_default_sections_has_sixteen_entries(self) -> None:
+        self.assertEqual(len(adaptation_cli.WORLD_MODEL_DEFAULT_SECTIONS), 16)
+        self.assertEqual(adaptation_cli.WORLD_MODEL_DEFAULT_SECTIONS[-1], "可扩展世界专题")
+
+    def test_world_model_scope_text_mentions_expansion_section(self) -> None:
+        scope = adaptation_cli.world_model_scope_text()
+        self.assertIn("可扩展世界专题", scope)
+        self.assertIn("16 个二级标题", scope)
+        self.assertIn("多个三级标题", scope)
+
+
 if __name__ == "__main__":
     unittest.main()

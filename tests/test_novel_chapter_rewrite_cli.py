@@ -182,5 +182,21 @@ class SupportUpdateScopeTests(unittest.TestCase):
         self.assertNotIn("world_model", target_paths)
 
 
+class VolumePlotProgressStructureTests(unittest.TestCase):
+    def test_volume_plot_progress_template_uses_fixed_third_level_progress_headings(self) -> None:
+        template = rewrite_cli.HEADING_MANAGED_DOC_SPECS["volume_plot_progress"]["template"]
+        self.assertIn("## 卷主线", template)
+        self.assertIn("### 起始", template)
+        self.assertIn("### 已发生发展", template)
+        self.assertIn("### 关键转折", template)
+        self.assertIn("### 当前状态", template)
+        self.assertIn("### 待推进", template)
+
+    def test_volume_plot_progress_rules_require_patching_affected_third_level_blocks(self) -> None:
+        rules = "\n".join(rewrite_cli.HEADING_MANAGED_DOC_SPECS["volume_plot_progress"]["update_rules"])
+        self.assertIn("三级标题", rules)
+        self.assertIn("不要整段替换整条故事线", rules)
+
+
 if __name__ == "__main__":
     unittest.main()

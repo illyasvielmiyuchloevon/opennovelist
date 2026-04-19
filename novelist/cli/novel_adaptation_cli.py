@@ -38,6 +38,24 @@ GLOBAL_FILE_NAMES = {
     "foreshadowing": "04_foreshadowing.md",
     "world_model": "08_world_model.md",
 }
+WORLD_MODEL_DEFAULT_SECTIONS = [
+    "世界背景与时代",
+    "历史与大事件",
+    "地图、地域与地点体系",
+    "势力与组织体系",
+    "身份阶层与社会结构",
+    "规则与底层常识",
+    "能力与修炼体系",
+    "功法 / 技能 / 神通 / 武学",
+    "装备 / 道具 / 资源 / 材料",
+    "职业 / 副职业 / 生产体系",
+    "血脉 / 体质 / 天赋 / 特殊资格",
+    "制度 / 禁忌 / 风俗 / 日常常识",
+    "关键词与术语表",
+    "已公开真相 / 未公开真相",
+    "本卷新增或修正世界知识",
+    "可扩展世界专题",
+]
 STYLE_MODE_CUSTOM = "custom_style_file"
 STYLE_MODE_SOURCE = "reference_source_style"
 PROTAGONIST_MODE_CUSTOM = "custom_design"
@@ -64,6 +82,15 @@ COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
     + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_DOCUMENT_OUTPUT_RULE
 )
+
+
+def world_model_scope_text() -> str:
+    section_text = "、".join(WORLD_MODEL_DEFAULT_SECTIONS)
+    return (
+        "文档要沉淀到当前卷为止已知的世界知识，默认按 16 个二级标题组织："
+        f"{section_text}。每个二级标题下可以根据实际需要继续展开多个三级标题，用于管理该栏目的不同知识子类。"
+        "并写出与原书的功能映射。"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -754,10 +781,7 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
         "world_model": {
             "role": "资深网络小说世界知识建模编辑",
             "task": "当前任务只产出 1 份世界模型文档正文。",
-            "scope": (
-                "文档要沉淀到当前卷为止已知的世界知识，包括世界背景、历史事件、地点体系、势力体系、规则与能力体系、"
-                "地图与地域结构、地理与资源体系、社会常识与禁忌、世界观关键词与术语表，并写出与原书的功能映射。"
-            ),
+            "scope": world_model_scope_text(),
         },
         "volume_outline": {
             "role": "资深小说分卷策划编辑",
@@ -1021,6 +1045,9 @@ def generate_document_operation(
                     "如果当前文件已存在，必须优先使用 patch 工具做增量更新，不得整篇覆盖式重写世界模型。",
                     "未变化的世界知识、术语、势力、地点、历史背景与规则结构必须保留。",
                     "本次只允许补充、修正与当前卷直接相关的世界知识，不要把文档改写成只剩最近一卷。",
+                    "默认使用 scope 中给出的 16 个二级标题组织世界模型；如果某些栏目当前卷暂无信息，可以保留简短占位说明，但不要删除默认标题。",
+                    "每个二级标题下可以根据实际小说内容需要展开多个三级标题，用于细分该栏目的不同知识类型；不要强行把所有内容挤在一个段落里。",
+                    "只有当默认 16 个栏目确实无法容纳本书特有世界知识时，才使用“可扩展世界专题”新增专题。新增专题必须长期可复用。",
                 ],
             },
             trailing_doc_fields={
