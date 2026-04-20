@@ -33,22 +33,27 @@ GLOBAL_DIRNAME = "global_injection"
 VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
 GLOBAL_FILE_NAMES = {
-    "book_outline": "01_book_outline.md",
-    "world_design": "02_world_design.md",
+    "world_design": "01_world_design.md",
+    "world_model": "02_world_model.md",
     "style_guide": "03_style_guide.md",
-    "world_model": "04_world_model.md",
-    "global_plot_progress": "05_global_plot_progress.md",
-    "foreshadowing": "06_foreshadowing.md",
+    "book_outline": "04_book_outline.md",
+    "foreshadowing": "05_foreshadowing.md",
+    "global_plot_progress": "06_global_plot_progress.md",
 }
 GLOBAL_INJECTION_DOC_ORDER = [
-    "global_plot_progress",
-    "style_guide",
     "world_design",
     "world_model",
+    "style_guide",
     "book_outline",
     "foreshadowing",
+    "global_plot_progress",
 ]
 LEGACY_GLOBAL_FILE_RENAMES = {
+    "01_book_outline.md": GLOBAL_FILE_NAMES["book_outline"],
+    "02_world_design.md": GLOBAL_FILE_NAMES["world_design"],
+    "04_world_model.md": GLOBAL_FILE_NAMES["world_model"],
+    "05_global_plot_progress.md": GLOBAL_FILE_NAMES["global_plot_progress"],
+    "06_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "04_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "05_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "08_world_model.md": GLOBAL_FILE_NAMES["world_model"],
@@ -667,6 +672,7 @@ def chunk_text_items(items: list[str], size: int) -> list[str]:
 def print_request_context_summary(
     *,
     doc_label: str,
+    current_doc_key: str,
     volume_material: dict[str, Any],
     current_docs: dict[str, str],
     loaded_files: list[dict[str, Any]],
@@ -696,16 +702,21 @@ def print_request_context_summary(
     print_progress(f"  已附带文件清单：{len(loaded_files)} 项。")
 
     for doc_key, label in (
-        ("global_plot_progress", "全局剧情进程"),
-        ("style_guide", "文笔写作风格"),
         ("world_design", "世界观设计"),
         ("world_model", "世界模型"),
+        ("style_guide", "文笔写作风格"),
         ("book_outline", "全书大纲"),
         ("foreshadowing", "伏笔文档"),
+        ("global_plot_progress", "全局剧情进程"),
     ):
         content = (current_docs.get(doc_key) or "").strip()
         file_name = GLOBAL_FILE_NAMES[doc_key]
-        if content:
+        if doc_key == current_doc_key:
+            if content:
+                print_progress(f"  目标文件 {file_name}（{label}）：当前内容将通过 target_file.current_content 附带，字符数约 {len(content)}。")
+            else:
+                print_progress(f"  目标文件 {file_name}（{label}）：当前为空。")
+        elif content:
             print_progress(f"  全局注入 {file_name}（{label}）：已附带，字符数约 {len(content)}。")
         else:
             print_progress(f"  全局注入 {file_name}（{label}）：当前为空。")
@@ -846,27 +857,34 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
 def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
     if should_generate_style_guide(volume_number):
         return [
-            {"key": "global_plot_progress", "label": "全局剧情进程文档", "scope": "global"},
-            {"key": "style_guide", "label": "文笔写作风格文档", "scope": "global"},
             {"key": "world_design", "label": "世界观设计文档", "scope": "global"},
             {"key": "world_model", "label": "世界模型文档", "scope": "global"},
+            {"key": "style_guide", "label": "文笔写作风格文档", "scope": "global"},
             {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
             {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
+            {"key": "global_plot_progress", "label": "全局剧情进程文档", "scope": "global"},
             {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
         ]
     return [
-        {"key": "global_plot_progress", "label": "全局剧情进程文档", "scope": "global"},
         {"key": "world_design", "label": "世界观设计文档", "scope": "global"},
         {"key": "world_model", "label": "世界模型文档", "scope": "global"},
         {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
         {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
+        {"key": "global_plot_progress", "label": "全局剧情进程文档", "scope": "global"},
         {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
     ]
 
 
-def build_injected_global_docs(current_docs: dict[str, str]) -> dict[str, str]:
+def build_injected_global_docs(
+    current_docs: dict[str, str],
+    *,
+    exclude_keys: set[str] | None = None,
+) -> dict[str, str]:
+    excluded = exclude_keys or set()
     injected_docs: dict[str, str] = {}
     for doc_key in GLOBAL_INJECTION_DOC_ORDER:
+        if doc_key in excluded:
+            continue
         injected_docs[doc_key] = clip_for_context(current_docs.get(doc_key, ""), limit=30000)
     return injected_docs
 
@@ -969,7 +987,7 @@ def generate_document_operation(
     previous_response_id: str | None,
     prompt_cache_key: str,
 ) -> tuple[document_ops.DocumentOperationCallResult, str | None]:
-    injected_globals = build_injected_global_docs(current_docs)
+    injected_globals = build_injected_global_docs(current_docs, exclude_keys={doc_key})
     document_request = build_document_request(doc_key)
     target_file = build_target_file_context(
         doc_key=doc_key,
@@ -992,7 +1010,6 @@ def generate_document_operation(
             },
             trailing_doc_fields={
                 "target_file": target_file,
-                "existing_style_guide": clip_for_context(current_docs.get("style_guide", ""), limit=18000),
                 "injected_global_docs": injected_globals,
             },
         )
@@ -1558,6 +1575,7 @@ def main() -> int:
                 print_progress(f"第 {index}/{planned_calls} 次调用：生成{doc_label}。")
                 print_request_context_summary(
                     doc_label=doc_label,
+                    current_doc_key=doc_key,
                     volume_material=volume_material,
                     current_docs=current_docs,
                     loaded_files=loaded_files,

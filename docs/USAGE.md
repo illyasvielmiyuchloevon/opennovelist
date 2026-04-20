@@ -164,12 +164,12 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 统一入口会调用 `novelist.cli.novel_adaptation_cli`，逐卷生成：
 
-- 全书大纲
 - 世界观设计
+- 世界模型
 - 文笔写作风格
- - 全局剧情进程
- - 世界模型
+- 全书大纲
 - 伏笔文档
+- 全局剧情进程
 - 卷级大纲
 
 #### 第三步：逐章重写
@@ -332,12 +332,12 @@ python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
 
 全局长期注入文档，典型包括：
 
-- `01_book_outline.md`
-- `02_world_design.md`
+- `01_world_design.md`
+- `02_world_model.md`
 - `03_style_guide.md`
-- `04_world_model.md`
-- `05_global_plot_progress.md`
-- `06_foreshadowing.md`
+- `04_book_outline.md`
+- `05_foreshadowing.md`
+- `06_global_plot_progress.md`
 - `07_character_status_cards.md`
 - `08_character_relationship_graph.md`
 - `09_world_state.md`

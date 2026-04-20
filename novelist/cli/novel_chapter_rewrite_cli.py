@@ -72,12 +72,12 @@ RUN_MODE_LABELS = {
 }
 
 ADAPTATION_GLOBAL_FILE_NAMES = {
-    "book_outline": "01_book_outline.md",
-    "world_design": "02_world_design.md",
+    "world_design": "01_world_design.md",
+    "world_model": "02_world_model.md",
     "style_guide": "03_style_guide.md",
-    "world_model": "04_world_model.md",
-    "global_plot_progress": "05_global_plot_progress.md",
-    "foreshadowing": "06_foreshadowing.md",
+    "book_outline": "04_book_outline.md",
+    "foreshadowing": "05_foreshadowing.md",
+    "global_plot_progress": "06_global_plot_progress.md",
 }
 REWRITE_GLOBAL_FILE_NAMES = {
     "character_status_cards": "07_character_status_cards.md",
@@ -85,6 +85,11 @@ REWRITE_GLOBAL_FILE_NAMES = {
     "world_state": "09_world_state.md",
 }
 LEGACY_GLOBAL_FILE_RENAMES = {
+    "01_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
+    "02_world_design.md": ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
+    "04_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
+    "05_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["global_plot_progress"],
+    "06_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "04_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "05_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "08_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
@@ -133,12 +138,12 @@ WORKFLOW_SUBMISSION_TOOL_DESCRIPTION = (
 FIVE_CHAPTER_REVIEW_NAME = "组审查"
 
 GLOBAL_DOC_LABELS = {
-    "book_outline": "全书大纲",
     "world_design": "世界观设计",
-    "style_guide": "文笔写作风格",
     "world_model": "世界模型",
-    "global_plot_progress": "全局剧情进程",
+    "style_guide": "文笔写作风格",
+    "book_outline": "全书大纲",
     "foreshadowing": "伏笔管理",
+    "global_plot_progress": "全局剧情进程",
     "character_status_cards": "人物状态卡",
     "character_relationship_graph": "人物关系链",
     "world_state": "世界状态",
@@ -266,7 +271,7 @@ HEADING_MANAGED_DOC_SPECS = {
 }
 
 STABLE_INJECTION_KEYS = {
-    "global": ["book_outline", "world_design", "style_guide", "world_model", "global_plot_progress"],
+    "global": ["world_design", "world_model", "style_guide", "book_outline", "global_plot_progress"],
     "volume": ["volume_outline"],
     "chapter": ["chapter_outline"],
 }
@@ -274,14 +279,14 @@ STABLE_INJECTION_KEYS = {
 PHASE_DOC_SELECTIONS = {
     PHASE1_OUTLINE: {
         "global": [
-            "book_outline",
             "world_design",
+            "world_model",
             "style_guide",
+            "book_outline",
             "foreshadowing",
+            "global_plot_progress",
             "character_status_cards",
             "character_relationship_graph",
-            "global_plot_progress",
-            "world_model",
             "world_state",
         ],
         "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
@@ -289,14 +294,14 @@ PHASE_DOC_SELECTIONS = {
     },
     PHASE2_CHAPTER_TEXT: {
         "global": [
-            "book_outline",
             "world_design",
+            "world_model",
             "style_guide",
+            "book_outline",
             "foreshadowing",
+            "global_plot_progress",
             "character_status_cards",
             "character_relationship_graph",
-            "global_plot_progress",
-            "world_model",
             "world_state",
         ],
         "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
@@ -304,33 +309,33 @@ PHASE_DOC_SELECTIONS = {
     },
     PHASE2_SUPPORT_UPDATES: {
         "global": [
-            "book_outline",
             "world_design",
+            "world_model",
             "style_guide",
+            "book_outline",
             "foreshadowing",
+            "global_plot_progress",
             "character_status_cards",
             "character_relationship_graph",
-            "global_plot_progress",
-            "world_model",
             "world_state",
         ],
         "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
-        "chapter": ["chapter_outline", "chapter_review", "rewritten_chapter"],
+        "chapter": ["chapter_outline", "chapter_review"],
     },
     PHASE3_REVIEW: {
         "global": [
-            "book_outline",
             "world_design",
+            "world_model",
             "style_guide",
+            "book_outline",
             "foreshadowing",
+            "global_plot_progress",
             "character_status_cards",
             "character_relationship_graph",
-            "global_plot_progress",
-            "world_model",
             "world_state",
         ],
         "volume": ["volume_outline", "volume_plot_progress", "volume_review"],
-        "chapter": ["chapter_outline", "chapter_review", "rewritten_chapter"],
+        "chapter": ["chapter_outline", "chapter_review"],
     },
 }
 

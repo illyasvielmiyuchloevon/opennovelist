@@ -186,7 +186,60 @@ class SupportUpdateScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
             paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
-        self.assertEqual(paths["global_plot_progress"].name, "05_global_plot_progress.md")
+        self.assertEqual(paths["global_plot_progress"].name, "06_global_plot_progress.md")
+
+    def test_support_updates_and_review_do_not_duplicate_current_chapter_text(self) -> None:
+        volume_material = {
+            "volume_number": "001",
+            "chapters": [
+                {
+                    "chapter_number": "0001",
+                    "file_name": "0001.txt",
+                    "source_title": "第1章 测试",
+                    "text": "这是当前参考章节正文。",
+                }
+            ],
+            "extras": [],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
+            for file_path, content in (
+                (paths["book_outline"], "# 全书大纲\n"),
+                (paths["world_design"], "# 世界观设计\n"),
+                (paths["style_guide"], "# 文笔写作风格\n"),
+                (paths["chapter_outline"], "# 章纲\n"),
+                (paths["chapter_review"], "# 章级审核\n"),
+                (paths["rewritten_chapter"], "这是当前已生成正文。"),
+            ):
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(content, encoding="utf-8")
+
+            catalog = rewrite_cli.read_doc_catalog(project_root, "001", "0001")
+            support_payload, _, _ = rewrite_cli.build_phase_request_payload(
+                phase_key="phase2_support_updates",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number="001",
+                chapter_number="0001",
+                catalog=catalog,
+                chapter_text="这是当前已生成正文。",
+            )
+            review_payload, _, _ = rewrite_cli.build_phase_request_payload(
+                phase_key="phase3_review",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number="001",
+                chapter_number="0001",
+                catalog=catalog,
+                chapter_text="这是当前已生成正文。",
+            )
+
+        self.assertNotIn("rewritten_chapter", support_payload["rolling_injected_chapter_docs"])
+        self.assertNotIn("rewritten_chapter", review_payload["rolling_injected_chapter_docs"])
+        self.assertIn("current_generated_chapter", support_payload)
+        self.assertIn("current_generated_chapter", review_payload)
 
 
 class StableGlobalInjectionOrderingTests(unittest.TestCase):
@@ -241,10 +294,10 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
         self.assertEqual(
             stable_keys,
             [
-                "book_outline",
                 "world_design",
-                "style_guide",
                 "world_model",
+                "style_guide",
+                "book_outline",
                 "global_plot_progress",
             ],
         )

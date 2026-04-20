@@ -15,12 +15,12 @@
   把原始小说 `.txt` 按章节拆分，并按每 50 章归档到卷目录。
 - [novelist/cli/novel_adaptation_cli.py](./novelist/cli/novel_adaptation_cli.py)
   读取 `split_novel` 输出后的书名目录，逐卷生成：
-  - 全书大纲
   - 世界观设计
-  - 文笔写作风格
-  - 全局剧情进程
   - 世界模型
+  - 文笔写作风格
+  - 全书大纲
   - 伏笔文档
+  - 全局剧情进程
   - 卷级大纲
 - [novelist/cli/novel_chapter_rewrite_cli.py](./novelist/cli/novel_chapter_rewrite_cli.py)
   读取改编工程目录，逐章生成：
@@ -159,12 +159,12 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 工程目录/
 ├─ 00_project_manifest.md
 ├─ global_injection/
-│  ├─ 01_book_outline.md
-│  ├─ 02_world_design.md
+│  ├─ 01_world_design.md
+│  ├─ 02_world_model.md
 │  ├─ 03_style_guide.md
-│  ├─ 04_world_model.md
-│  ├─ 05_global_plot_progress.md
-│  └─ 06_foreshadowing.md
+│  ├─ 04_book_outline.md
+│  ├─ 05_foreshadowing.md
+│  └─ 06_global_plot_progress.md
 └─ volume_injection/
    ├─ 001_volume_injection/
    │  ├─ 001_volume_outline.md
