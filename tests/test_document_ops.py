@@ -7,7 +7,12 @@ from unittest import mock
 
 from novelist.core import document_ops
 from novelist.core import responses_runtime as llm_runtime
-from novelist.core.files import migrate_numbered_injection_dirs, read_text_if_exists, replace_text_with_fallbacks
+from novelist.core.files import (
+    migrate_numbered_injection_dirs,
+    migrate_renamed_files,
+    read_text_if_exists,
+    replace_text_with_fallbacks,
+)
 
 
 class FilesPatchTests(unittest.TestCase):
@@ -40,6 +45,24 @@ class FilesPatchTests(unittest.TestCase):
             self.assertTrue(migrated_file.exists())
             self.assertFalse(legacy_dir.exists())
             self.assertIn("旧位置内容", migrated_file.read_text(encoding="utf-8"))
+
+    def test_migrate_renamed_files_moves_legacy_global_file_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_world_model = root / "08_world_model.md"
+            old_world_model.write_text("# 世界模型\n\n- 旧编号内容。\n", encoding="utf-8")
+
+            migrate_renamed_files(
+                root,
+                {
+                    "08_world_model.md": "04_world_model.md",
+                    "04_foreshadowing.md": "05_foreshadowing.md",
+                },
+            )
+
+            self.assertFalse(old_world_model.exists())
+            self.assertTrue((root / "04_world_model.md").exists())
+            self.assertIn("旧编号内容", (root / "04_world_model.md").read_text(encoding="utf-8"))
 
     def test_apply_patch_edits_to_text_supports_multiple_edit_blocks(self) -> None:
         content = (
@@ -150,7 +173,7 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            global_plot = root / "07_global_plot_progress.md"
+            global_plot = root / "08_global_plot_progress.md"
             world_state = root / "09_world_state.md"
             global_plot.write_text(
                 "# 全局剧情进程\n\n## 主线进度\n- 主角刚刚进入宗门外门。\n",

@@ -124,6 +124,28 @@ def migrate_numbered_injection_dirs(
     return container_dir
 
 
+def migrate_renamed_files(directory: Path, rename_map: dict[str, str]) -> None:
+    if not directory.exists():
+        return
+
+    for old_name, new_name in rename_map.items():
+        if old_name == new_name:
+            continue
+        src = directory / old_name
+        dst = directory / new_name
+        if not src.exists():
+            continue
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            continue
+        try:
+            if src.read_bytes() == dst.read_bytes():
+                src.unlink()
+        except OSError:
+            continue
+
+
 def normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 

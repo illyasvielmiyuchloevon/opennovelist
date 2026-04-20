@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from novelist.core.files import (
     extract_json_payload,
     migrate_numbered_injection_dirs,
+    migrate_renamed_files,
     normalize_path,
     now_iso,
     read_text_if_exists,
@@ -74,14 +75,21 @@ ADAPTATION_GLOBAL_FILE_NAMES = {
     "book_outline": "01_book_outline.md",
     "world_design": "02_world_design.md",
     "style_guide": "03_style_guide.md",
-    "foreshadowing": "04_foreshadowing.md",
+    "world_model": "04_world_model.md",
+    "foreshadowing": "05_foreshadowing.md",
 }
 REWRITE_GLOBAL_FILE_NAMES = {
-    "character_status_cards": "05_character_status_cards.md",
-    "character_relationship_graph": "06_character_relationship_graph.md",
-    "global_plot_progress": "07_global_plot_progress.md",
-    "world_model": "08_world_model.md",
+    "character_status_cards": "06_character_status_cards.md",
+    "character_relationship_graph": "07_character_relationship_graph.md",
+    "global_plot_progress": "08_global_plot_progress.md",
     "world_state": "09_world_state.md",
+}
+LEGACY_GLOBAL_FILE_RENAMES = {
+    "04_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
+    "08_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
+    "05_character_status_cards.md": REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
+    "06_character_relationship_graph.md": REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
+    "07_global_plot_progress.md": REWRITE_GLOBAL_FILE_NAMES["global_plot_progress"],
 }
 
 COMMON_FUNCTION_OUTPUT_RULE = (
@@ -750,6 +758,9 @@ def load_rewrite_manifest(project_root: Path) -> dict[str, Any] | None:
 
 
 def ensure_rewrite_dirs(project_root: Path) -> None:
+    global_dir = project_root / GLOBAL_DIRNAME
+    global_dir.mkdir(parents=True, exist_ok=True)
+    migrate_renamed_files(global_dir, LEGACY_GLOBAL_FILE_RENAMES)
     (project_root / REWRITTEN_ROOT_DIRNAME).mkdir(parents=True, exist_ok=True)
     migrate_numbered_injection_dirs(
         project_root,
@@ -829,11 +840,11 @@ def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | 
         "book_outline": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
         "world_design": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
         "style_guide": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["style_guide"],
+        "world_model": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
         "foreshadowing": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
         "character_status_cards": global_dir / REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
         "character_relationship_graph": global_dir / REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
         "global_plot_progress": global_dir / REWRITE_GLOBAL_FILE_NAMES["global_plot_progress"],
-        "world_model": global_dir / REWRITE_GLOBAL_FILE_NAMES["world_model"],
         "world_state": global_dir / REWRITE_GLOBAL_FILE_NAMES["world_state"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
         "volume_plot_progress": volume_dir / f"{volume_number}_volume_plot_progress.md",

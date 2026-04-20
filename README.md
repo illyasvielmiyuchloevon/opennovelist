@@ -160,7 +160,8 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 │  ├─ 01_book_outline.md
 │  ├─ 02_world_design.md
 │  ├─ 03_style_guide.md
-│  └─ 04_foreshadowing.md
+│  ├─ 04_world_model.md
+│  └─ 05_foreshadowing.md
 └─ volume_injection/
    ├─ 001_volume_injection/
    │  ├─ 001_volume_outline.md
@@ -175,10 +176,9 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 工程目录/
 ├─ 00_chapter_rewrite_manifest.md
 ├─ global_injection/
-│  ├─ 05_character_status_cards.md
-│  ├─ 06_character_relationship_graph.md
-│  ├─ 07_global_plot_progress.md
-│  ├─ 08_world_model.md
+│  ├─ 06_character_status_cards.md
+│  ├─ 07_character_relationship_graph.md
+│  ├─ 08_global_plot_progress.md
 │  └─ 09_world_state.md
 ├─ volume_injection/
 │  └─ 001_volume_injection/

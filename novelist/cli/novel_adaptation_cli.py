@@ -12,6 +12,7 @@ from openai import OpenAI
 from novelist.core.files import (
     extract_json_payload,
     migrate_numbered_injection_dirs,
+    migrate_renamed_files,
     normalize_path,
     now_iso,
     read_text,
@@ -35,8 +36,15 @@ GLOBAL_FILE_NAMES = {
     "book_outline": "01_book_outline.md",
     "world_design": "02_world_design.md",
     "style_guide": "03_style_guide.md",
-    "foreshadowing": "04_foreshadowing.md",
-    "world_model": "08_world_model.md",
+    "world_model": "04_world_model.md",
+    "foreshadowing": "05_foreshadowing.md",
+}
+LEGACY_GLOBAL_FILE_RENAMES = {
+    "04_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
+    "08_world_model.md": GLOBAL_FILE_NAMES["world_model"],
+    "05_character_status_cards.md": "06_character_status_cards.md",
+    "06_character_relationship_graph.md": "07_character_relationship_graph.md",
+    "07_global_plot_progress.md": "08_global_plot_progress.md",
 }
 WORLD_MODEL_DEFAULT_SECTIONS = [
     "世界背景与时代",
@@ -317,7 +325,9 @@ def save_manifest(manifest: dict[str, Any]) -> None:
 
 
 def ensure_project_dirs(project_root: Path) -> None:
-    (project_root / GLOBAL_DIRNAME).mkdir(parents=True, exist_ok=True)
+    global_dir = project_root / GLOBAL_DIRNAME
+    global_dir.mkdir(parents=True, exist_ok=True)
+    migrate_renamed_files(global_dir, LEGACY_GLOBAL_FILE_RENAMES)
     migrate_numbered_injection_dirs(
         project_root,
         container_dirname=VOLUME_ROOT_DIRNAME,

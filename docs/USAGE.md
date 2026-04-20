@@ -333,11 +333,11 @@ python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
 - `01_book_outline.md`
 - `02_world_design.md`
 - `03_style_guide.md`
-- `04_foreshadowing.md`
-- `05_character_status_cards.md`
-- `06_character_relationship_graph.md`
-- `07_global_plot_progress.md`
-- `08_world_model.md`
+- `04_world_model.md`
+- `05_foreshadowing.md`
+- `06_character_status_cards.md`
+- `07_character_relationship_graph.md`
+- `08_global_plot_progress.md`
 - `09_world_state.md`
 
 ### 9.4 `volume_injection`
