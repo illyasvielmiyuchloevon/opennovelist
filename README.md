@@ -18,6 +18,8 @@
   - 全书大纲
   - 世界观设计
   - 文笔写作风格
+  - 全局剧情进程
+  - 世界模型
   - 伏笔文档
   - 卷级大纲
 - [novelist/cli/novel_chapter_rewrite_cli.py](./novelist/cli/novel_chapter_rewrite_cli.py)
@@ -25,8 +27,8 @@
   - 章纲
   - 仿写正文
   - 人物状态卡 / 人物关系链
-  - 卷级剧情进程 / 全局剧情进程
-  - 世界模型 / 世界状态
+  - 卷级剧情进程
+  - 世界状态
   - 章级审核 / 组审查 / 卷级审核
 - [novel_workflow_cli.py](./novel_workflow_cli.py)
 - 一键启动脚本：[start_workflow.bat](./start_workflow.bat)
@@ -161,7 +163,8 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 │  ├─ 02_world_design.md
 │  ├─ 03_style_guide.md
 │  ├─ 04_world_model.md
-│  └─ 05_foreshadowing.md
+│  ├─ 05_global_plot_progress.md
+│  └─ 06_foreshadowing.md
 └─ volume_injection/
    ├─ 001_volume_injection/
    │  ├─ 001_volume_outline.md
@@ -176,9 +179,8 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 工程目录/
 ├─ 00_chapter_rewrite_manifest.md
 ├─ global_injection/
-│  ├─ 06_character_status_cards.md
-│  ├─ 07_character_relationship_graph.md
-│  ├─ 08_global_plot_progress.md
+│  ├─ 07_character_status_cards.md
+│  ├─ 08_character_relationship_graph.md
 │  └─ 09_world_state.md
 ├─ volume_injection/
 │  └─ 001_volume_injection/

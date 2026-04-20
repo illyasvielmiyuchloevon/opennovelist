@@ -52,17 +52,37 @@ class FilesPatchTests(unittest.TestCase):
             old_world_model = root / "08_world_model.md"
             old_world_model.write_text("# 世界模型\n\n- 旧编号内容。\n", encoding="utf-8")
 
-            migrate_renamed_files(
+            warnings = migrate_renamed_files(
                 root,
                 {
                     "08_world_model.md": "04_world_model.md",
-                    "04_foreshadowing.md": "05_foreshadowing.md",
+                    "04_foreshadowing.md": "06_foreshadowing.md",
                 },
             )
 
+            self.assertEqual(warnings, [])
             self.assertFalse(old_world_model.exists())
             self.assertTrue((root / "04_world_model.md").exists())
             self.assertIn("旧编号内容", (root / "04_world_model.md").read_text(encoding="utf-8"))
+
+    def test_migrate_renamed_files_warns_when_new_and_old_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_file = root / "08_global_plot_progress.md"
+            new_file = root / "05_global_plot_progress.md"
+            old_file.write_text("# 全局剧情进程\n\n- 旧内容。\n", encoding="utf-8")
+            new_file.write_text("# 全局剧情进程\n\n- 新内容。\n", encoding="utf-8")
+
+            warnings = migrate_renamed_files(
+                root,
+                {
+                    "08_global_plot_progress.md": "05_global_plot_progress.md",
+                },
+            )
+
+            self.assertEqual(len(warnings), 1)
+            self.assertTrue(old_file.exists())
+            self.assertTrue(new_file.exists())
 
     def test_apply_patch_edits_to_text_supports_multiple_edit_blocks(self) -> None:
         content = (
@@ -173,7 +193,7 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            global_plot = root / "08_global_plot_progress.md"
+            global_plot = root / "05_global_plot_progress.md"
             world_state = root / "09_world_state.md"
             global_plot.write_text(
                 "# 全局剧情进程\n\n## 主线进度\n- 主角刚刚进入宗门外门。\n",

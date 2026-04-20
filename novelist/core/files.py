@@ -124,9 +124,10 @@ def migrate_numbered_injection_dirs(
     return container_dir
 
 
-def migrate_renamed_files(directory: Path, rename_map: dict[str, str]) -> None:
+def migrate_renamed_files(directory: Path, rename_map: dict[str, str]) -> list[str]:
+    warnings: list[str] = []
     if not directory.exists():
-        return
+        return warnings
 
     for old_name, new_name in rename_map.items():
         if old_name == new_name:
@@ -142,8 +143,14 @@ def migrate_renamed_files(directory: Path, rename_map: dict[str, str]) -> None:
         try:
             if src.read_bytes() == dst.read_bytes():
                 src.unlink()
+                continue
         except OSError:
             continue
+        warnings.append(
+            f"检测到旧文件 {src.name} 与新文件 {dst.name} 同时存在且内容不同；"
+            "已保留新编号文件为主，旧文件未自动覆盖，请人工检查。"
+        )
+    return warnings
 
 
 def normalize_line_endings(text: str) -> str:

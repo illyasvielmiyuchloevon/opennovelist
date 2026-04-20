@@ -76,20 +76,24 @@ ADAPTATION_GLOBAL_FILE_NAMES = {
     "world_design": "02_world_design.md",
     "style_guide": "03_style_guide.md",
     "world_model": "04_world_model.md",
-    "foreshadowing": "05_foreshadowing.md",
+    "global_plot_progress": "05_global_plot_progress.md",
+    "foreshadowing": "06_foreshadowing.md",
 }
 REWRITE_GLOBAL_FILE_NAMES = {
-    "character_status_cards": "06_character_status_cards.md",
-    "character_relationship_graph": "07_character_relationship_graph.md",
-    "global_plot_progress": "08_global_plot_progress.md",
+    "character_status_cards": "07_character_status_cards.md",
+    "character_relationship_graph": "08_character_relationship_graph.md",
     "world_state": "09_world_state.md",
 }
 LEGACY_GLOBAL_FILE_RENAMES = {
     "04_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
+    "05_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "08_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
+    "07_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["global_plot_progress"],
+    "08_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["global_plot_progress"],
     "05_character_status_cards.md": REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
+    "06_character_status_cards.md": REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
     "06_character_relationship_graph.md": REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
-    "07_global_plot_progress.md": REWRITE_GLOBAL_FILE_NAMES["global_plot_progress"],
+    "07_character_relationship_graph.md": REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
 }
 
 COMMON_FUNCTION_OUTPUT_RULE = (
@@ -132,11 +136,11 @@ GLOBAL_DOC_LABELS = {
     "book_outline": "全书大纲",
     "world_design": "世界观设计",
     "style_guide": "文笔写作风格",
+    "world_model": "世界模型",
+    "global_plot_progress": "全局剧情进程",
     "foreshadowing": "伏笔管理",
     "character_status_cards": "人物状态卡",
     "character_relationship_graph": "人物关系链",
-    "global_plot_progress": "全局剧情进程",
-    "world_model": "世界模型",
     "world_state": "世界状态",
 }
 VOLUME_DOC_LABELS = {
@@ -188,27 +192,6 @@ HEADING_MANAGED_DOC_SPECS = {
             "只更新受当前章节影响的人物关系与本章关系变化。",
             "未变化关系必须原样保留，不得为了统一措辞重写整份人物关系链。",
             "如果当前章节没有新增或变化的人际关系，可以完全不更新此文档。",
-        ],
-    },
-    "global_plot_progress": {
-        "template": [
-            "# 全局剧情进程",
-            "## 主线推进",
-            "## 关键支线 / 反派线 / 终局线",
-            "## 跨卷目标与长期悬念",
-            "## 本章新增推进",
-            "## 可扩展剧情专题",
-        ],
-        "section_policy": [
-            "一级标题固定为《全局剧情进程》。",
-            "二级标题用于管理不同层级的剧情推进，不要写成 line_id 一类的字段表。",
-            "如果已有文档已经形成适合本书的剧情专题，如“朝堂线”“宗门线”“血脉线”，应优先沿用这些二级标题。",
-            "新增二级标题只用于承载本书真实出现的新剧情长期线，不要把所有书压成固定的几类故事线。",
-        ],
-        "update_rules": [
-            "只更新受当前章节影响的全局推进内容和本章新增推进。",
-            "未变化的长期剧情线必须保留，不能把整份全局剧情进程压缩成只剩最近一章。",
-            "如果当前章节没有推动全局层面的剧情线，可以完全不更新此文档。",
         ],
     },
     "volume_plot_progress": {
@@ -283,7 +266,7 @@ HEADING_MANAGED_DOC_SPECS = {
 }
 
 STABLE_INJECTION_KEYS = {
-    "global": ["book_outline", "world_design", "style_guide"],
+    "global": ["book_outline", "world_design", "style_guide", "world_model", "global_plot_progress"],
     "volume": ["volume_outline"],
     "chapter": ["chapter_outline"],
 }
@@ -358,7 +341,6 @@ class WorkflowSubmissionPayload(BaseModel):
     character_status_cards_md: str = Field("", description="人物状态卡 Markdown；无变化则留空。")
     character_relationship_graph_md: str = Field("", description="人物关系链 Markdown；无变化则留空。")
     volume_plot_progress_md: str = Field("", description="卷级剧情进程 Markdown；无变化则留空。")
-    global_plot_progress_md: str = Field("", description="全局剧情进程 Markdown；无变化则留空。")
     foreshadowing_md: str = Field("", description="伏笔管理 Markdown；无变化则留空。")
     world_state_md: str = Field("", description="世界状态 Markdown；无变化则留空。")
     passed: bool | None = Field(None, description="当前审核步骤是否通过。")
@@ -757,10 +739,10 @@ def load_rewrite_manifest(project_root: Path) -> dict[str, Any] | None:
     return extract_json_payload(manifest_path.read_text(encoding="utf-8"))
 
 
-def ensure_rewrite_dirs(project_root: Path) -> None:
+def ensure_rewrite_dirs(project_root: Path) -> list[str]:
     global_dir = project_root / GLOBAL_DIRNAME
     global_dir.mkdir(parents=True, exist_ok=True)
-    migrate_renamed_files(global_dir, LEGACY_GLOBAL_FILE_RENAMES)
+    warnings = migrate_renamed_files(global_dir, LEGACY_GLOBAL_FILE_RENAMES)
     (project_root / REWRITTEN_ROOT_DIRNAME).mkdir(parents=True, exist_ok=True)
     migrate_numbered_injection_dirs(
         project_root,
@@ -772,6 +754,7 @@ def ensure_rewrite_dirs(project_root: Path) -> None:
         container_dirname=GROUP_ROOT_DIRNAME,
         suffix=GROUP_DIR_SUFFIX,
     )
+    return warnings
 
 
 def save_rewrite_manifest(manifest: dict[str, Any]) -> None:
@@ -840,11 +823,11 @@ def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | 
         "book_outline": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
         "world_design": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
         "style_guide": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["style_guide"],
+        "global_plot_progress": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["global_plot_progress"],
         "world_model": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
         "foreshadowing": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
         "character_status_cards": global_dir / REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
         "character_relationship_graph": global_dir / REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
-        "global_plot_progress": global_dir / REWRITE_GLOBAL_FILE_NAMES["global_plot_progress"],
         "world_state": global_dir / REWRITE_GLOBAL_FILE_NAMES["world_state"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
         "volume_plot_progress": volume_dir / f"{volume_number}_volume_plot_progress.md",
@@ -987,7 +970,6 @@ def phase_plan_from_single_rewrite_target(target: str) -> list[str]:
         "character_status_cards",
         "character_relationship_graph",
         "volume_plot_progress",
-        "global_plot_progress",
         "foreshadowing",
         "world_state",
     }
@@ -2034,7 +2016,6 @@ def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
         "character_status_cards": paths["character_status_cards"],
         "character_relationship_graph": paths["character_relationship_graph"],
         "volume_plot_progress": paths["volume_plot_progress"],
-        "global_plot_progress": paths["global_plot_progress"],
         "foreshadowing": paths["foreshadowing"],
         "world_state": paths["world_state"],
     }
@@ -2301,16 +2282,15 @@ def build_phase_request_payload(
                 "document_request": {
                     "phase": phase_key,
                     "role": "连续性编辑与状态维护编辑",
-                    "task": "根据刚写完的章节，按需更新人物状态卡、人物关系链、剧情进程、伏笔、世界状态。",
+                    "task": "根据刚写完的章节，按需更新人物状态卡、人物关系链、卷级剧情进程、伏笔、世界状态。",
                 },
                 "requirements": [
                     *support_update_general_rules(),
-                    "人物关系链、全局剧情进程、卷级剧情进程、世界状态要保持固定标题，并通过贴合本书内容的二级标题来组织信息。",
+                    "人物关系链、卷级剧情进程、世界状态要保持固定标题，并通过贴合本书内容的二级标题来组织信息。",
                     "这些长期知识文档如果已有内容，必须优先沿用现有有效的二级标题结构，只对受当前章节影响的段落、小节或记录做 patch。",
                     "不要把这些小说参考文档改写成字段表、节点表、边表、数据库表或代码化 schema。",
                     "不要每次都更新全部文档；只返回当前章节确实发生变化、必须更新的文档。",
                     "如果某个文档在当前章节没有真实变化，就不要返回该文件，也不要做空更新。",
-                    "全局剧情进程要管理整本书主线、跨卷目标、反派线、终局线。",
                     "卷级剧情进程只写当前卷内容。",
                     "卷级剧情进程必须尽量按“故事线二级标题 + 固定三级标题（起始、已发生发展、关键转折、当前状态、待推进）”维护。",
                     "更新卷级剧情进程时，优先 patch 当前受影响故事线下的对应三级标题，不要整段覆盖整条故事线，更不要让不同故事线互相覆盖。",
@@ -3761,7 +3741,9 @@ def main() -> int:
     try:
         print_progress("开始识别小说工程目录。")
         project_root, source_root, project_manifest = resolve_project_input(args.input_root, global_config)
-        ensure_rewrite_dirs(project_root)
+        migration_warnings = ensure_rewrite_dirs(project_root)
+        for warning in migration_warnings:
+            print_progress(warning, error=True)
         volume_dirs = discover_volume_dirs(source_root)
         readiness_map = {
             volume_dir.name: assess_volume_readiness(project_root, source_root, volume_dir.name)

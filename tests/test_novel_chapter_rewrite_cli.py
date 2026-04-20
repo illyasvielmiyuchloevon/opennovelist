@@ -174,12 +174,83 @@ class RevisionPlanTests(unittest.TestCase):
 
 
 class SupportUpdateScopeTests(unittest.TestCase):
-    def test_support_update_targets_do_not_include_world_model(self) -> None:
+    def test_support_update_targets_do_not_include_adaptation_owned_globals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
             paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
             target_paths = rewrite_cli.support_update_target_paths(paths)
         self.assertNotIn("world_model", target_paths)
+        self.assertNotIn("global_plot_progress", target_paths)
+
+    def test_rewrite_paths_reads_global_plot_progress_from_new_global_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
+        self.assertEqual(paths["global_plot_progress"].name, "05_global_plot_progress.md")
+
+
+class StableGlobalInjectionOrderingTests(unittest.TestCase):
+    def test_world_model_and_global_plot_progress_are_promoted_to_stable_global_docs(self) -> None:
+        volume_material = {
+            "volume_number": "001",
+            "chapters": [
+                {
+                    "chapter_number": "0001",
+                    "file_name": "0001.txt",
+                    "source_title": "第1章 测试",
+                    "text": "这是当前参考章节正文。",
+                }
+            ],
+            "extras": [],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
+            for file_path in (
+                paths["book_outline"],
+                paths["world_design"],
+                paths["style_guide"],
+                paths["world_model"],
+                paths["global_plot_progress"],
+                paths["foreshadowing"],
+                paths["world_state"],
+            ):
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+            paths["book_outline"].write_text("# 全书大纲\n", encoding="utf-8")
+            paths["world_design"].write_text("# 世界观设计\n", encoding="utf-8")
+            paths["style_guide"].write_text("# 文笔写作风格\n", encoding="utf-8")
+            paths["world_model"].write_text("# 世界模型\n", encoding="utf-8")
+            paths["global_plot_progress"].write_text("# 全局剧情进程\n", encoding="utf-8")
+            paths["foreshadowing"].write_text("# 伏笔管理\n", encoding="utf-8")
+            paths["world_state"].write_text("# 世界状态\n", encoding="utf-8")
+
+            catalog = rewrite_cli.read_doc_catalog(project_root, "001", "0001")
+            payload, _, _ = rewrite_cli.build_phase_request_payload(
+                phase_key="phase1_outline",
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number="001",
+                chapter_number="0001",
+                catalog=catalog,
+            )
+
+        stable_keys = list(payload["stable_injected_global_docs"].keys())
+        rolling_keys = list(payload["rolling_injected_global_docs"].keys())
+
+        self.assertEqual(
+            stable_keys,
+            [
+                "book_outline",
+                "world_design",
+                "style_guide",
+                "world_model",
+                "global_plot_progress",
+            ],
+        )
+        self.assertNotIn("world_model", rolling_keys)
+        self.assertNotIn("global_plot_progress", rolling_keys)
+        self.assertEqual(rolling_keys, ["foreshadowing", "world_state"])
 
 
 class VolumePlotProgressStructureTests(unittest.TestCase):

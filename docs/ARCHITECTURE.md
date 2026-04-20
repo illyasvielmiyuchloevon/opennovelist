@@ -55,6 +55,8 @@
 - 全书大纲
 - 世界观设计
 - 文笔写作风格
+ - 全局剧情进程
+ - 世界模型
 - 伏笔文档
 - 卷级大纲
 
@@ -140,7 +142,7 @@ CLI 交互层：
 
 ## 4. 当前总共有几个模型工具
 
-当前对模型暴露的工具总共 **3 个**。
+当前对模型暴露的工具总共 **4 个**。
 
 ### 4.1 `submit_workflow_result`
 
@@ -172,7 +174,17 @@ CLI 交互层：
 - 文件为空
 - 确实需要完整新建文档结构
 
-### 4.3 `submit_document_patches`
+### 4.3 `submit_document_edits`
+
+用于对已有文档做精确编辑。
+
+适用场景：
+
+- 已有段落内容改写
+- 已有记录局部替换
+- 同一文件顺序执行多个 `old_text -> new_text` 编辑
+
+### 4.4 `submit_document_patches`
 
 用于对一个或多个文档做增量 patch。
 
@@ -209,6 +221,7 @@ CLI 交互层：
 使用：
 
 - `submit_document_writes`
+- `submit_document_edits`
 - `submit_document_patches`
 
 主要被：

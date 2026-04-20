@@ -167,6 +167,8 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 - 全书大纲
 - 世界观设计
 - 文笔写作风格
+ - 全局剧情进程
+ - 世界模型
 - 伏笔文档
 - 卷级大纲
 
@@ -334,10 +336,10 @@ python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
 - `02_world_design.md`
 - `03_style_guide.md`
 - `04_world_model.md`
-- `05_foreshadowing.md`
-- `06_character_status_cards.md`
-- `07_character_relationship_graph.md`
-- `08_global_plot_progress.md`
+- `05_global_plot_progress.md`
+- `06_foreshadowing.md`
+- `07_character_status_cards.md`
+- `08_character_relationship_graph.md`
 - `09_world_state.md`
 
 ### 9.4 `volume_injection`
@@ -402,6 +404,13 @@ rewritten_novel/
 - 世界状态
 
 都已经偏向“按需更新、增量 patch”的工作流。
+
+其中：
+
+- `全局剧情进程`
+  现在由 `novelist.cli.novel_adaptation_cli` 按卷维护
+- `人物状态卡 / 人物关系链 / 世界状态`
+  仍由 `novelist.cli.novel_chapter_rewrite_cli` 在章节流程中按需维护
 
 ## 11. 常见工作方式示例
 
