@@ -94,6 +94,43 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             self.assertEqual(resolved_path, project_root)
             self.assertEqual(kind, workflow_cli.INPUT_PROJECT_ROOT)
 
+    def test_try_resolve_existing_project_from_raw_text_prefers_bound_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            source_file = workspace / "book.txt"
+            source_file.write_text("第1章\n内容\n", encoding="utf-8")
+
+            split_root = workspace / "book"
+            (split_root / "001").mkdir(parents=True)
+            (split_root / "001" / "0001.txt").write_text("第1章\n内容\n", encoding="utf-8")
+
+            project_root = workspace / "project"
+            project_root.mkdir()
+            write_markdown_data(
+                project_root / adaptation_cli.PROJECT_MANIFEST_NAME,
+                title="Project Manifest",
+                payload={
+                    "project_root": str(project_root),
+                    "source_root": str(split_root),
+                    "new_book_title": "测试书",
+                    "target_worldview": "测试世界观",
+                    "style": {"mode": adaptation_cli.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_cli.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                    "total_volumes": 1,
+                    "processed_volumes": ["001"],
+                    "last_processed_volume": "001",
+                    "updated_at": "2026-04-24T12:00:00+08:00",
+                },
+                summary_lines=["new_book_title: 测试书"],
+            )
+
+            resolved_source_root, resolved_project_root = workflow_cli.try_resolve_existing_project_from_raw_text(
+                source_file,
+                None,
+            )
+            self.assertEqual(resolved_source_root, split_root)
+            self.assertEqual(resolved_project_root, project_root)
+
     def test_pending_rewrite_volumes_reports_adapted_but_unfinished_volumes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

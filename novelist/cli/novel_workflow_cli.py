@@ -394,6 +394,46 @@ def try_resolve_existing_project_root(
     return None
 
 
+def try_resolve_existing_project_from_raw_text(
+    source_file: Path,
+    requested_project_root: str | None,
+) -> tuple[Path | None, Path | None]:
+    if requested_project_root:
+        candidate = normalize_path(requested_project_root)
+        manifest = adaptation_cli.load_manifest(candidate)
+        if manifest is None:
+            return None, None
+        try:
+            source_root = normalize_path(str(manifest["source_root"]))
+        except Exception:
+            return None, None
+        if source_root.parent != source_file.parent:
+            return None, None
+        if source_root.name != source_file.stem and not source_root.name.startswith(f"{source_file.stem}_"):
+            return None, None
+        return source_root, candidate
+
+    matches: list[tuple[str, Path, Path]] = []
+    for child in source_file.parent.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name != source_file.stem and not child.name.startswith(f"{source_file.stem}_"):
+            continue
+        if not adaptation_cli.discover_volume_dirs(child):
+            continue
+        project_root, manifest = adaptation_cli.find_existing_project_for_source(child)
+        if project_root is None or manifest is None:
+            continue
+        matches.append((str(manifest.get("updated_at", "")), child, project_root))
+
+    if not matches:
+        return None, None
+
+    matches.sort(key=lambda item: item[0], reverse=True)
+    _, source_root, project_root = matches[0]
+    return source_root, project_root
+
+
 def sorted_volume_numbers(volume_numbers: list[str]) -> list[str]:
     normalized = [str(item).zfill(3) for item in volume_numbers if str(item).strip()]
     return sorted(dict.fromkeys(normalized), key=lambda item: int(item))
@@ -514,7 +554,16 @@ def main() -> int:
             if input_kind == INPUT_RAW_TEXT:
                 if args.skip_split:
                     fail("输入为原始小说 txt 时不能跳过 split 阶段。")
-                source_root = run_split_stage(workflow_entry)
+                source_root, project_root = try_resolve_existing_project_from_raw_text(
+                    workflow_entry,
+                    args.project_root,
+                )
+                if source_root is not None and project_root is not None:
+                    print_progress(f"已从原始 txt 匹配到已有拆分目录：{source_root}")
+                    print_progress(f"已从原始 txt 匹配到已有工程目录：{project_root}")
+                    print_progress("统一工作流将直接续跑已有工程，不再重复执行 split_novel。")
+                else:
+                    source_root = run_split_stage(workflow_entry)
             elif input_kind == INPUT_SPLIT_ROOT:
                 source_root = workflow_entry
                 print_progress(f"已识别为 split_novel 书名目录：{source_root}")
