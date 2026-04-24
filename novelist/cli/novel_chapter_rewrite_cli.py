@@ -52,6 +52,7 @@ REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
 FIVE_CHAPTER_REVIEW_SIZE = 5
 MAX_CHAPTER_REWRITE_ATTEMPTS = 3
 MAX_VOLUME_REVIEW_ATTEMPTS = 3
+MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS = 2
 RUN_MODE_CHAPTER = "chapter"
 RUN_MODE_GROUP = "group"
 RUN_MODE_VOLUME = "volume"
@@ -1936,6 +1937,156 @@ def write_response_debug_snapshot(
     )
 
 
+def document_operation_payload(operation: document_ops.DocumentOperationCallResult) -> dict[str, Any]:
+    if operation.mode == "write":
+        payload = operation.write_payload or document_ops.DocumentWritePayload()
+    elif operation.mode == "edit":
+        payload = operation.edit_payload or document_ops.DocumentEditPayload()
+    else:
+        payload = operation.patch_payload or document_ops.DocumentPatchPayload()
+    return {
+        "mode": operation.mode,
+        "response_id": operation.response_id,
+        "output_types": operation.output_types,
+        "payload": payload.model_dump(mode="json"),
+    }
+
+
+def document_operation_target_snapshot(
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for file_key, target in allowed_files.items():
+        path = target.path if isinstance(target, document_ops.DocumentTarget) else target
+        current_content = read_text_if_exists(path).strip()
+        snapshots.append(
+            {
+                "file_key": file_key,
+                "file_name": path.name,
+                "file_path": str(path),
+                "exists": path.exists(),
+                "current_char_count": len(current_content),
+                "current_content": clip_for_context(current_content, limit=30000),
+            }
+        )
+    return snapshots
+
+
+def build_document_operation_repair_payload(
+    *,
+    phase_key: str,
+    role: str,
+    task: str,
+    apply_error: Exception,
+    failed_operation: document_ops.DocumentOperationCallResult,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> dict[str, Any]:
+    return {
+        "document_request": {
+            "phase": phase_key,
+            "role": role,
+            "task": task,
+        },
+        "previous_tool_call_failed": {
+            "error": str(apply_error),
+            "failed_operation": document_operation_payload(failed_operation),
+        },
+        "update_target_files": document_operation_target_snapshot(allowed_files),
+        "requirements": [
+            "只修正上一次工具调用中无法定位的 old_text 或 match_text，不要改成整篇写入。",
+            "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
+            "replace、insert_before、insert_after 的定位文本必须在当前文件中唯一匹配。",
+            "如果短句无法唯一定位，必须扩大到包含前后连续段落的稳定上下文块。",
+            "保留原本的修改意图，只修正定位与必要的新文本，不要额外改写无关内容。",
+        ],
+    }
+
+
+def write_document_operation_apply_debug_snapshot(
+    debug_path: Path,
+    *,
+    error_message: str,
+    operation: document_ops.DocumentOperationCallResult,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> None:
+    write_response_debug_snapshot(
+        debug_path,
+        error_message=error_message,
+        preview=operation.preview,
+        raw_body_text=json.dumps(
+            {
+                "failed_operation": document_operation_payload(operation),
+                "target_files": document_operation_target_snapshot(allowed_files),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+
+
+def apply_document_operation_with_repair(
+    *,
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    shared_prompt: str,
+    operation: document_ops.DocumentOperationCallResult,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    previous_response_id: str | None,
+    prompt_cache_key: str | None,
+    phase_key: str,
+    repair_role: str,
+    repair_task: str,
+    debug_path: Path,
+) -> tuple[document_ops.AppliedDocumentOperation, str | None, list[str]]:
+    current_operation = operation
+    current_response_id = previous_response_id
+    repair_response_ids: list[str] = []
+
+    for repair_attempt in range(MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS + 1):
+        try:
+            applied = document_ops.apply_document_operation(
+                current_operation,
+                allowed_files=allowed_files,
+            )
+            return applied, current_response_id, repair_response_ids
+        except ValueError as error:
+            if repair_attempt >= MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS:
+                write_document_operation_apply_debug_snapshot(
+                    debug_path,
+                    error_message=str(error),
+                    operation=current_operation,
+                    allowed_files=allowed_files,
+                )
+                raise
+
+            print_progress(
+                "模型返回的编辑定位未能应用："
+                f"{error} 正在请求修正定位块（{repair_attempt + 1}/{MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS}）。",
+                error=True,
+            )
+            repair_payload = build_document_operation_repair_payload(
+                phase_key=phase_key,
+                role=repair_role,
+                task=repair_task,
+                apply_error=error,
+                failed_operation=current_operation,
+                allowed_files=allowed_files,
+            )
+            current_operation = document_ops.call_document_operation_tools(
+                client,
+                model=model,
+                instructions=instructions,
+                user_input=shared_prompt + json.dumps(repair_payload, ensure_ascii=False, indent=2),
+                previous_response_id=current_response_id,
+                prompt_cache_key=prompt_cache_key,
+            )
+            current_response_id = current_operation.response_id
+            repair_response_ids.append(str(current_operation.response_id or ""))
+
+    raise RuntimeError("目标文件编辑修正流程异常结束。")
+
+
 def write_chapter_stage_snapshot(
     stage_manifest_path: Path,
     *,
@@ -2723,15 +2874,32 @@ def run_five_chapter_review(
             ],
             dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
         )
-        review, response_id, _ = call_five_chapter_review_response(
-            client,
-            model,
-            COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
-            shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-            allowed_chapters=chapter_numbers,
-            previous_response_id=None,
-            prompt_cache_key=prompt_cache_key,
-        )
+        try:
+            review, response_id, _ = call_five_chapter_review_response(
+                client,
+                model,
+                COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
+                shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                allowed_chapters=chapter_numbers,
+                previous_response_id=None,
+                prompt_cache_key=prompt_cache_key,
+            )
+        except llm_runtime.ModelOutputError as error:
+            write_response_debug_snapshot(
+                review_path.with_name(f"{batch_id}_group_review_debug.md"),
+                error_message=str(error),
+                preview=error.preview,
+                raw_body_text=getattr(error, "raw_body_text", ""),
+            )
+            update_five_chapter_review_state(
+                rewrite_manifest,
+                volume_number,
+                batch_id,
+                chapter_numbers,
+                status="failed",
+                attempts=attempt,
+            )
+            raise
         group_review_changed = write_artifact(review_path, review.review_md)
         print_call_artifact_report(
             f"{FIVE_CHAPTER_REVIEW_NAME}调用",
@@ -3211,10 +3379,21 @@ def run_chapter_workflow(
                         prompt_cache_key=chapter_session_key,
                     )
                     response_ids.append(str(chapter_text_result.response_id or ""))
-                    applied_chapter_text_update = document_ops.apply_document_operation(
-                        chapter_text_update,
+                    applied_chapter_text_update, previous_response_id, repair_response_ids = apply_document_operation_with_repair(
+                        client=client,
+                        model=model,
+                        instructions=COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS,
+                        shared_prompt=stage_shared_prompt,
+                        operation=chapter_text_update,
                         allowed_files={"rewritten_chapter": paths["rewritten_chapter"]},
+                        previous_response_id=previous_response_id,
+                        prompt_cache_key=chapter_session_key,
+                        phase_key=PHASE2_CHAPTER_TEXT,
+                        repair_role="章节仿写修订作者",
+                        repair_task="修正上一次正文修订工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
+                        debug_path=paths["chapter_response_debug"],
                     )
+                    response_ids.extend(repair_response_ids)
                     current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
                     print_call_artifact_report(
                         f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用",
@@ -3303,10 +3482,21 @@ def run_chapter_workflow(
                     prompt_cache_key=chapter_session_key,
                 )
                 response_ids.append(str(support_result.response_id or ""))
-                applied_updates = document_ops.apply_document_operation(
-                    support_updates,
+                applied_updates, previous_response_id, repair_response_ids = apply_document_operation_with_repair(
+                    client=client,
+                    model=model,
+                    instructions=COMMON_SUPPORT_UPDATE_INSTRUCTIONS,
+                    shared_prompt=stage_shared_prompt,
+                    operation=support_updates,
                     allowed_files=support_update_target_paths(paths),
+                    previous_response_id=previous_response_id,
+                    prompt_cache_key=chapter_session_key,
+                    phase_key=PHASE2_SUPPORT_UPDATES,
+                    repair_role="连续性编辑与状态维护编辑",
+                    repair_task="修正上一次配套文档更新工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
+                    debug_path=paths["chapter_response_debug"],
                 )
+                response_ids.extend(repair_response_ids)
                 emitted_docs = applied_updates.emitted_keys
                 changed_docs = applied_updates.changed_keys
                 print_call_artifact_report(
@@ -3478,6 +3668,7 @@ def run_chapter_workflow(
                     volume_material["volume_number"],
                     chapter_number,
                 ).get("last_stage"),
+                response_ids=response_ids,
             )
             raise
 

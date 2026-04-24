@@ -168,7 +168,31 @@ def convert_to_line_ending(text: str, ending: str) -> str:
     return normalized
 
 
-def _trimmed_block_candidates(content: str, find: str) -> list[str]:
+def _line_block_text(lines: list[str], start: int, end: int) -> str:
+    return "\n".join(lines[start : end + 1])
+
+
+def _levenshtein(a: str, b: str) -> int:
+    if not a or not b:
+        return max(len(a), len(b))
+
+    previous = list(range(len(b) + 1))
+    for index_a, char_a in enumerate(a, start=1):
+        current = [index_a]
+        for index_b, char_b in enumerate(b, start=1):
+            cost = 0 if char_a == char_b else 1
+            current.append(
+                min(
+                    previous[index_b] + 1,
+                    current[index_b - 1] + 1,
+                    previous[index_b - 1] + cost,
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _line_trimmed_candidates(content: str, find: str) -> list[str]:
     original_lines = content.split("\n")
     search_lines = find.split("\n")
     if search_lines and search_lines[-1] == "":
@@ -181,7 +205,7 @@ def _trimmed_block_candidates(content: str, find: str) -> list[str]:
     for start in range(0, len(original_lines) - search_len + 1):
         block = original_lines[start : start + search_len]
         if all(block[index].strip() == search_lines[index].strip() for index in range(search_len)):
-            candidates.append("\n".join(block))
+            candidates.append(_line_block_text(original_lines, start, start + search_len - 1))
     return candidates
 
 
@@ -219,16 +243,59 @@ def _block_anchor_candidates(content: str, find: str) -> list[str]:
     original_lines = content.split("\n")
     first_line = search_lines[0].strip()
     last_line = search_lines[-1].strip()
-    candidates: list[str] = []
+    positions: list[tuple[int, int]] = []
     for start in range(len(original_lines)):
         if original_lines[start].strip() != first_line:
             continue
         for end in range(start + 2, len(original_lines)):
             if original_lines[end].strip() == last_line:
-                block = "\n".join(original_lines[start : end + 1])
-                candidates.append(block)
+                positions.append((start, end))
                 break
-    return candidates
+    if not positions:
+        return []
+
+    search_block_size = len(search_lines)
+    if len(positions) == 1:
+        start, end = positions[0]
+        actual_block_size = end - start + 1
+        lines_to_check = min(search_block_size - 2, actual_block_size - 2)
+        similarity = 1.0 if lines_to_check <= 0 else 0.0
+        for offset in range(1, lines_to_check + 1):
+            original_line = original_lines[start + offset].strip()
+            search_line = search_lines[offset].strip()
+            max_len = max(len(original_line), len(search_line))
+            if max_len == 0:
+                continue
+            similarity += (1 - _levenshtein(original_line, search_line) / max_len) / lines_to_check
+            if similarity >= 0.0:
+                break
+        if similarity >= 0.0:
+            return [_line_block_text(original_lines, start, end)]
+        return []
+
+    best_position: tuple[int, int] | None = None
+    max_similarity = -1.0
+    for start, end in positions:
+        actual_block_size = end - start + 1
+        lines_to_check = min(search_block_size - 2, actual_block_size - 2)
+        similarity = 1.0 if lines_to_check <= 0 else 0.0
+        for offset in range(1, lines_to_check + 1):
+            original_line = original_lines[start + offset].strip()
+            search_line = search_lines[offset].strip()
+            max_len = max(len(original_line), len(search_line))
+            if max_len == 0:
+                continue
+            similarity += 1 - _levenshtein(original_line, search_line) / max_len
+        if lines_to_check > 0:
+            similarity /= lines_to_check
+        if similarity > max_similarity:
+            max_similarity = similarity
+            best_position = (start, end)
+
+    if best_position is not None and max_similarity >= 0.3:
+        start, end = best_position
+        return [_line_block_text(original_lines, start, end)]
+    return []
 
 
 def _whitespace_normalized_candidates(content: str, find: str) -> list[str]:
@@ -240,6 +307,18 @@ def _whitespace_normalized_candidates(content: str, find: str) -> list[str]:
     for line in lines:
         if " ".join(line.split()) == normalized_find:
             candidates.append(line)
+            continue
+        normalized_line = " ".join(line.split())
+        if normalized_find in normalized_line:
+            words = find.strip().split()
+            if words:
+                pattern = r"\s+".join(re.escape(word) for word in words)
+                try:
+                    match = re.search(pattern, line)
+                except re.error:
+                    match = None
+                if match:
+                    candidates.append(match.group(0))
     find_lines = find.split("\n")
     if len(find_lines) > 1:
         block_len = len(find_lines)
@@ -248,6 +327,107 @@ def _whitespace_normalized_candidates(content: str, find: str) -> list[str]:
             if " ".join(block.split()) == normalized_find:
                 candidates.append(block)
     return candidates
+
+
+def _unescape_for_edit_match(text: str) -> str:
+    def replace_match(match: re.Match[str]) -> str:
+        captured = match.group(1)
+        replacements = {
+            "n": "\n",
+            "t": "\t",
+            "r": "\r",
+            "'": "'",
+            '"': '"',
+            "`": "`",
+            "\\": "\\",
+            "\n": "\n",
+            "$": "$",
+        }
+        return replacements.get(captured, match.group(0))
+
+    return re.sub(r"\\(n|t|r|'|\"|`|\\|\n|\$)", replace_match, text)
+
+
+def _escape_normalized_candidates(content: str, find: str) -> list[str]:
+    unescaped_find = _unescape_for_edit_match(find)
+    candidates: list[str] = []
+    if unescaped_find in content:
+        candidates.append(unescaped_find)
+
+    lines = content.split("\n")
+    find_lines = unescaped_find.split("\n")
+    for start in range(0, len(lines) - len(find_lines) + 1):
+        block = "\n".join(lines[start : start + len(find_lines)])
+        if _unescape_for_edit_match(block) == unescaped_find:
+            candidates.append(block)
+    return candidates
+
+
+def _trimmed_boundary_candidates(content: str, find: str) -> list[str]:
+    trimmed_find = find.strip()
+    if trimmed_find == find:
+        return []
+
+    candidates: list[str] = []
+    if trimmed_find in content:
+        candidates.append(trimmed_find)
+
+    lines = content.split("\n")
+    find_lines = find.split("\n")
+    for start in range(0, len(lines) - len(find_lines) + 1):
+        block = "\n".join(lines[start : start + len(find_lines)])
+        if block.strip() == trimmed_find:
+            candidates.append(block)
+    return candidates
+
+
+def _context_aware_candidates(content: str, find: str) -> list[str]:
+    find_lines = find.split("\n")
+    if find_lines and find_lines[-1] == "":
+        find_lines.pop()
+    if len(find_lines) < 3:
+        return []
+
+    content_lines = content.split("\n")
+    first_line = find_lines[0].strip()
+    last_line = find_lines[-1].strip()
+    candidates: list[str] = []
+    for start in range(len(content_lines)):
+        if content_lines[start].strip() != first_line:
+            continue
+        for end in range(start + 2, len(content_lines)):
+            if content_lines[end].strip() != last_line:
+                continue
+            block_lines = content_lines[start : end + 1]
+            if len(block_lines) != len(find_lines):
+                break
+            matching_lines = 0
+            total_non_empty_lines = 0
+            for index in range(1, len(block_lines) - 1):
+                block_line = block_lines[index].strip()
+                find_line = find_lines[index].strip()
+                if block_line or find_line:
+                    total_non_empty_lines += 1
+                    if block_line == find_line:
+                        matching_lines += 1
+            if total_non_empty_lines == 0 or matching_lines / total_non_empty_lines >= 0.5:
+                candidates.append(_line_block_text(content_lines, start, end))
+            break
+    return candidates
+
+
+def _edit_match_candidates(content: str, find: str) -> list[str]:
+    return _dedupe_candidates(
+        [find]
+        + _line_trimmed_candidates(content, find)
+        + _block_anchor_candidates(content, find)
+        + _whitespace_normalized_candidates(content, find)
+        + _indentation_flexible_candidates(content, find)
+        + _escape_normalized_candidates(content, find)
+        + _trimmed_boundary_candidates(content, find)
+        + _context_aware_candidates(content, find)
+        + ([find] if find in content else [])
+    )
 
 
 def _dedupe_candidates(candidates: list[str]) -> list[str]:
@@ -267,13 +447,7 @@ def find_unique_text_match(content: str, target: str) -> str:
 
     normalized_content = normalize_line_endings(content)
     normalized_target = normalize_line_endings(target)
-    candidates = _dedupe_candidates(
-        ([normalized_target] if normalized_target in normalized_content else [])
-        + _trimmed_block_candidates(normalized_content, normalized_target)
-        + _indentation_flexible_candidates(normalized_content, normalized_target)
-        + _block_anchor_candidates(normalized_content, normalized_target)
-        + _whitespace_normalized_candidates(normalized_content, normalized_target)
-    )
+    candidates = _edit_match_candidates(normalized_content, normalized_target)
 
     not_found = True
     for candidate in candidates:
@@ -300,13 +474,7 @@ def replace_text_with_fallbacks(content: str, old_text: str, new_text: str, *, r
     normalized_old = normalize_line_endings(old_text)
     normalized_new = normalize_line_endings(new_text)
 
-    candidates = _dedupe_candidates(
-        ([normalized_old] if normalized_old in normalized_content else [])
-        + _trimmed_block_candidates(normalized_content, normalized_old)
-        + _indentation_flexible_candidates(normalized_content, normalized_old)
-        + _block_anchor_candidates(normalized_content, normalized_old)
-        + _whitespace_normalized_candidates(normalized_content, normalized_old)
-    )
+    candidates = _edit_match_candidates(normalized_content, normalized_old)
 
     not_found = True
     for candidate in candidates:

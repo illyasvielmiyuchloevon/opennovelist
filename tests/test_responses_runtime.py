@@ -86,6 +86,43 @@ class _FakeClient:
         self.chat = SimpleNamespace(completions=_FakeChatCompletions(stream_chunks))
 
 
+class _FakeResponsesStream:
+    def __init__(self, events: list[SimpleNamespace], final_response: dict | Exception | None = None) -> None:
+        self._events = events
+        self._final_response = final_response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def __iter__(self):
+        yield from self._events
+
+    def get_final_response(self):
+        if isinstance(self._final_response, Exception):
+            raise self._final_response
+        return self._final_response
+
+
+class _FakeResponses:
+    def __init__(self, events: list[SimpleNamespace], final_response: dict | Exception | None = None) -> None:
+        self._events = events
+        self._final_response = final_response
+        self.last_request: dict | None = None
+
+    def stream(self, **kwargs):
+        self.last_request = kwargs
+        return _FakeResponsesStream(self._events, self._final_response)
+
+
+class _FakeResponsesClient:
+    def __init__(self, events: list[SimpleNamespace], final_response: dict | Exception | None = None) -> None:
+        self._codex_protocol = llm_runtime.PROTOCOL_RESPONSES
+        self.responses = _FakeResponses(events, final_response)
+
+
 class ResponsesRuntimeCompatibleTests(unittest.TestCase):
     def test_build_openai_client_sets_explicit_timeouts_and_disables_sdk_retries(self) -> None:
         captured: dict[str, object] = {}
@@ -114,6 +151,63 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(timeout.read, llm_runtime.DEFAULT_OPENAI_READ_TIMEOUT_SECONDS)
         self.assertEqual(timeout.write, llm_runtime.DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS)
         self.assertEqual(timeout.pool, llm_runtime.DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS)
+
+    def test_responses_stream_merges_final_and_reconstructed_function_call_items(self) -> None:
+        events = [
+            SimpleNamespace(
+                type="response.created",
+                response={"id": "resp_merge", "status": "in_progress", "output": []},
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item={"type": "function_call", "name": "submit_tool", "arguments": ""},
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.done",
+                output_index=0,
+                arguments="{\"value\": \"ok\"}",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response={
+                    "id": "resp_merge",
+                    "status": "completed",
+                    "output": [{"type": "function_call", "arguments": ""}],
+                },
+            ),
+        ]
+        client = _FakeResponsesClient(
+            events,
+            final_response={
+                "id": "resp_merge",
+                "status": "completed",
+                "output": [{"type": "function_call", "arguments": ""}],
+            },
+        )
+
+        result = llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="test-model",
+            instructions="system instruction",
+            user_input="user input",
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            tool_choice={"type": "function", "name": "submit_tool"},
+            retries=1,
+        )
+
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(result.response_id, "resp_merge")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.raw_json["output"][0]["name"], "submit_tool")
+        self.assertEqual(json.loads(result.raw_json["output"][0]["arguments"]), {"value": "ok"})
 
     def test_call_function_tool_uses_auto_tool_choice_for_compatible(self) -> None:
         stream_chunks = [

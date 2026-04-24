@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Generic, TypeVar
@@ -244,6 +245,74 @@ def safe_json_loads(text: str) -> dict[str, Any] | list[Any] | None:
     return None
 
 
+def _has_response_value(value: Any) -> bool:
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _function_arguments_quality(value: Any) -> int:
+    if not isinstance(value, str) or not value.strip():
+        return 0
+    loaded = safe_json_loads(value)
+    if isinstance(loaded, dict):
+        return 3
+    if isinstance(loaded, list):
+        return 2
+    return 1
+
+
+def _response_output_item_score(item: Any) -> int:
+    if not isinstance(item, dict):
+        return 0
+    score = 0
+    if isinstance(item.get("type"), str) and item["type"]:
+        score += 1
+    if isinstance(item.get("name"), str) and item["name"]:
+        score += 4
+    score += _function_arguments_quality(item.get("arguments")) * 3
+    if _has_response_value(item.get("parsed_arguments")):
+        score += 6
+    if _has_response_value(item.get("content")):
+        score += 4
+    if _has_response_value(item.get("id")):
+        score += 1
+    return score
+
+
+def _merge_response_output_item(primary: Any, fallback: Any) -> Any:
+    if not isinstance(primary, dict) or not isinstance(fallback, dict):
+        return primary
+
+    merged = dict(primary)
+    for key, value in fallback.items():
+        if not _has_response_value(merged.get(key)) and _has_response_value(value):
+            merged[key] = value
+
+    if _function_arguments_quality(fallback.get("arguments")) > _function_arguments_quality(merged.get("arguments")):
+        merged["arguments"] = fallback["arguments"]
+    return merged
+
+
+def _merge_response_outputs(final_output: Any, reconstructed_output: list[dict[str, Any]]) -> list[Any]:
+    if isinstance(final_output, list) and final_output:
+        merged_output: list[Any] = list(final_output)
+    else:
+        merged_output = []
+
+    for index, reconstructed_item in enumerate(reconstructed_output):
+        if index >= len(merged_output):
+            merged_output.append(reconstructed_item)
+            continue
+        current_item = merged_output[index]
+        if not isinstance(current_item, dict) or not isinstance(reconstructed_item, dict):
+            continue
+        if _response_output_item_score(reconstructed_item) > _response_output_item_score(current_item):
+            merged_output[index] = _merge_response_output_item(reconstructed_item, current_item)
+        else:
+            merged_output[index] = _merge_response_output_item(current_item, reconstructed_item)
+
+    return merged_output or reconstructed_output
+
+
 def normalize_content_text(value: Any) -> list[str]:
     plain = to_plain_data(value)
     if isinstance(plain, str):
@@ -322,78 +391,98 @@ def collect_stream_response(
 ) -> tuple[Any, str, Any]:
     response_payload: dict[str, Any] = {}
     output_items_by_index: dict[int, dict[str, Any]] = {}
+    final_response_payload: dict[str, Any] | None = None
 
-    with client.responses.stream(**request_params) as stream:
-        for event in stream:
-            event_type = getattr(event, "type", "")
+    with warnings.catch_warnings():
+        # openai-python 1.109.x can emit Pydantic serializer warnings when
+        # serializing newer Responses tool variants (for example image_generation
+        # model values newer than the local SDK type hints). They are SDK type
+        # noise and otherwise break the CLI spinner line.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Pydantic serializer warnings:.*",
+            category=UserWarning,
+            module=r"pydantic\.main",
+        )
+        with client.responses.stream(**request_params) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", "")
 
-            if event_type in {"response.created", "response.in_progress", "response.completed"}:
-                payload = to_plain_data(getattr(event, "response", None))
-                if isinstance(payload, dict):
-                    response_payload = payload
-                continue
-
-            if event_type == "response.output_item.added":
-                item = to_plain_data(getattr(event, "item", None))
-                output_index = getattr(event, "output_index", None)
-                if isinstance(item, dict) and isinstance(output_index, int):
-                    output_items_by_index[output_index] = item
-                continue
-
-            if event_type == "response.output_item.done":
-                item = to_plain_data(getattr(event, "item", None))
-                output_index = getattr(event, "output_index", None)
-                if isinstance(item, dict) and isinstance(output_index, int):
-                    output_items_by_index[output_index] = item
-                continue
-
-            if event_type == "response.function_call_arguments.delta":
-                output_index = getattr(event, "output_index", None)
-                if not isinstance(output_index, int):
+                if event_type in {"response.created", "response.in_progress", "response.completed"}:
+                    payload = to_plain_data(getattr(event, "response", None))
+                    if isinstance(payload, dict):
+                        response_payload = payload
                     continue
-                item = output_items_by_index.setdefault(
-                    output_index,
-                    {"type": "function_call", "arguments": "", "name": ""},
-                )
-                arguments = item.get("arguments")
-                if not isinstance(arguments, str):
-                    arguments = ""
-                delta = getattr(event, "delta", "")
-                if isinstance(delta, str):
-                    item["arguments"] = arguments + delta
-                continue
 
-            if event_type == "response.function_call_arguments.done":
-                output_index = getattr(event, "output_index", None)
-                if not isinstance(output_index, int):
+                if event_type == "response.output_item.added":
+                    item = to_plain_data(getattr(event, "item", None))
+                    output_index = getattr(event, "output_index", None)
+                    if isinstance(item, dict) and isinstance(output_index, int):
+                        output_items_by_index[output_index] = item
                     continue
-                item = output_items_by_index.setdefault(
-                    output_index,
-                    {"type": "function_call", "arguments": "", "name": ""},
-                )
-                arguments = getattr(event, "arguments", "")
-                if isinstance(arguments, str):
-                    item["arguments"] = arguments
-                continue
 
-            if event_type == "response.output_text.done":
-                output_index = getattr(event, "output_index", None)
-                content_index = getattr(event, "content_index", None)
-                if not isinstance(output_index, int) or not isinstance(content_index, int):
+                if event_type == "response.output_item.done":
+                    item = to_plain_data(getattr(event, "item", None))
+                    output_index = getattr(event, "output_index", None)
+                    if isinstance(item, dict) and isinstance(output_index, int):
+                        output_items_by_index[output_index] = item
                     continue
-                item = output_items_by_index.setdefault(output_index, {"type": "message", "content": []})
-                content = item.setdefault("content", [])
-                if not isinstance(content, list):
-                    item["content"] = []
-                    content = item["content"]
-                while len(content) <= content_index:
-                    content.append({"type": "output_text", "text": ""})
-                text = getattr(event, "text", "")
-                if isinstance(text, str):
-                    content[content_index] = {"type": "output_text", "text": text}
 
-    output_items = [output_items_by_index[index] for index in sorted(output_items_by_index)]
-    response_payload = dict(response_payload)
+                if event_type == "response.function_call_arguments.delta":
+                    output_index = getattr(event, "output_index", None)
+                    if not isinstance(output_index, int):
+                        continue
+                    item = output_items_by_index.setdefault(
+                        output_index,
+                        {"type": "function_call", "arguments": "", "name": ""},
+                    )
+                    arguments = item.get("arguments")
+                    if not isinstance(arguments, str):
+                        arguments = ""
+                    delta = getattr(event, "delta", "")
+                    if isinstance(delta, str):
+                        item["arguments"] = arguments + delta
+                    continue
+
+                if event_type == "response.function_call_arguments.done":
+                    output_index = getattr(event, "output_index", None)
+                    if not isinstance(output_index, int):
+                        continue
+                    item = output_items_by_index.setdefault(
+                        output_index,
+                        {"type": "function_call", "arguments": "", "name": ""},
+                    )
+                    arguments = getattr(event, "arguments", "")
+                    if isinstance(arguments, str):
+                        item["arguments"] = arguments
+                    continue
+
+                if event_type == "response.output_text.done":
+                    output_index = getattr(event, "output_index", None)
+                    content_index = getattr(event, "content_index", None)
+                    if not isinstance(output_index, int) or not isinstance(content_index, int):
+                        continue
+                    item = output_items_by_index.setdefault(output_index, {"type": "message", "content": []})
+                    content = item.setdefault("content", [])
+                    if not isinstance(content, list):
+                        item["content"] = []
+                        content = item["content"]
+                    while len(content) <= content_index:
+                        content.append({"type": "output_text", "text": ""})
+                    text = getattr(event, "text", "")
+                    if isinstance(text, str):
+                        content[content_index] = {"type": "output_text", "text": text}
+            try:
+                final_response = stream.get_final_response()
+                final_payload = to_plain_data(final_response)
+                if isinstance(final_payload, dict):
+                    final_response_payload = final_payload
+            except RuntimeError:
+                final_response_payload = None
+
+    reconstructed_output = [output_items_by_index[index] for index in sorted(output_items_by_index)]
+    response_payload = dict(final_response_payload or response_payload)
+    output_items = _merge_response_outputs(response_payload.get("output"), reconstructed_output)
     response_payload["output"] = output_items
     output_text = synthesize_output_text_from_output_items(output_items)
     synthetic_response = SimpleNamespace(

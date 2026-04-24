@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from novelist.cli import novel_chapter_rewrite_cli as rewrite_cli
 
@@ -171,6 +171,89 @@ class RevisionPlanTests(unittest.TestCase):
         )
         self.assertEqual(plan["0003"], ["phase2_chapter_text", "phase3_review"])
         self.assertEqual(plan["0005"], ["phase2_support_updates", "phase3_review"])
+
+
+class DocumentOperationRepairTests(unittest.TestCase):
+    def test_apply_document_operation_with_repair_retries_bad_old_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "0005.txt"
+            target.write_text("第一段原文。\n\n第二段原文。\n", encoding="utf-8")
+            debug_path = Path(temp_dir) / "debug.md"
+
+            failed_operation = rewrite_cli.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_initial",
+                status="completed",
+                output_types=["function_call"],
+                preview="bad edit",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=rewrite_cli.document_ops.DocumentEditPayload(
+                    files=[
+                        rewrite_cli.document_ops.DocumentEditFile(
+                            file_key="rewritten_chapter",
+                            edits=[
+                                rewrite_cli.document_ops.DocumentEditEdit(
+                                    old_text="第二段被模型改写后的文字。",
+                                    new_text="第二段修订后文本。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+            repaired_operation = rewrite_cli.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_repair",
+                status="completed",
+                output_types=["function_call"],
+                preview="fixed edit",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=rewrite_cli.document_ops.DocumentEditPayload(
+                    files=[
+                        rewrite_cli.document_ops.DocumentEditFile(
+                            file_key="rewritten_chapter",
+                            edits=[
+                                rewrite_cli.document_ops.DocumentEditEdit(
+                                    old_text="第二段原文。",
+                                    new_text="第二段修订后文本。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with patch.object(
+                rewrite_cli.document_ops,
+                "call_document_operation_tools",
+                return_value=repaired_operation,
+            ) as call_tools:
+                applied, response_id, repair_response_ids = rewrite_cli.apply_document_operation_with_repair(
+                    client=Mock(),
+                    model="test-model",
+                    instructions="instructions",
+                    shared_prompt="shared prompt\n",
+                    operation=failed_operation,
+                    allowed_files={"rewritten_chapter": target},
+                    previous_response_id="resp_initial",
+                    prompt_cache_key="cache-key",
+                    phase_key=rewrite_cli.PHASE2_CHAPTER_TEXT,
+                    repair_role="章节仿写修订作者",
+                    repair_task="修正定位文本。",
+                    debug_path=debug_path,
+                )
+
+            self.assertEqual(response_id, "resp_repair")
+            self.assertEqual(repair_response_ids, ["resp_repair"])
+            self.assertEqual(applied.changed_keys, ["rewritten_chapter"])
+            self.assertIn("第二段修订后文本。", target.read_text(encoding="utf-8"))
+            call_tools.assert_called_once()
+            repair_input = call_tools.call_args.kwargs["user_input"]
+            self.assertIn("第二段被模型改写后的文字。", repair_input)
+            self.assertIn("第二段原文。", repair_input)
+            self.assertIn("逐字复制", repair_input)
 
 
 class SupportUpdateScopeTests(unittest.TestCase):

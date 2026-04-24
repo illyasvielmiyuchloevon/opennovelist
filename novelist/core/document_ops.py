@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from .files import (
     convert_to_line_ending,
@@ -21,20 +21,20 @@ from . import responses_runtime as llm_runtime
 
 DOCUMENT_WRITE_TOOL_NAME = "submit_document_writes"
 DOCUMENT_WRITE_TOOL_DESCRIPTION = (
-    "提交一个或多个完整文档正文。"
+    "提交一个或多个完整目标文件正文，目标文件可以是章节正文 txt、Markdown 状态文档或其他工作流文件。"
     "仅在首次创建文件、文件为空、或确实需要完整新建文档结构时使用。"
     "如果目标文件已经存在且只需要局部修改，优先改用 patch 工具。"
 )
 DOCUMENT_EDIT_TOOL_NAME = "submit_document_edits"
 DOCUMENT_EDIT_TOOL_DESCRIPTION = (
-    "提交一个或多个文档的精确编辑计划。"
+    "提交一个或多个目标文件的精确编辑计划，目标文件可以是章节正文 txt、Markdown 状态文档或其他工作流文件。"
     "适用于已有文件中的某一段、某一条记录、某几行或某个已有块的局部修改。"
     "每个文件可以包含多个顺序执行的 old_text -> new_text 编辑。"
     "如果只是修改已有内容本身，优先使用 edit 工具，而不是大块 patch 替换。"
 )
 DOCUMENT_PATCH_TOOL_NAME = "submit_document_patches"
 DOCUMENT_PATCH_TOOL_DESCRIPTION = (
-    "提交一个或多个文档的增量 patch 计划。"
+    "提交一个或多个目标文件的增量 patch 计划，目标文件可以是章节正文 txt、Markdown 状态文档或其他工作流文件。"
     "一次调用可以更新多个文件，每个文件可以包含多个编辑块。"
     "优先保留未变化内容，只对受当前任务影响的局部做替换、插入、追加或前置更新。"
     "对于带 Markdown 标题结构的文档，优先使用按标题锚点的局部编辑动作，而不是整段替换。"
@@ -50,7 +50,14 @@ DOCUMENT_OPERATION_RULE = (
 
 
 class DocumentWriteFile(BaseModel):
-    file_key: str = Field(..., description="目标文件的逻辑 key。必须来自输入中允许写入的 file_key。")
+    model_config = ConfigDict(populate_by_name=True)
+
+    file_key: str = Field("", description="目标文件的逻辑 key；可选。如果提供，必须来自输入中允许写入的 file_key。")
+    file_path: str = Field(
+        "",
+        validation_alias=AliasChoices("file_path", "filePath"),
+        description="目标文件路径；可选。可以直接使用输入中 update_target_files 的 file_path。",
+    )
     content: str = Field(..., description="目标文件的完整正文内容。")
 
 
@@ -60,14 +67,27 @@ class DocumentWritePayload(BaseModel):
 
 
 class DocumentEditEdit(BaseModel):
-    old_text: str = Field(..., description="需要替换的原文片段。")
-    new_text: str = Field(..., description="替换后的新内容。")
-    replace_all: bool = Field(False, description="是否替换该文件内所有匹配。默认 false。")
+    model_config = ConfigDict(populate_by_name=True)
+
+    old_text: str = Field(..., validation_alias=AliasChoices("old_text", "oldString"), description="需要替换的原文片段。")
+    new_text: str = Field(..., validation_alias=AliasChoices("new_text", "newString"), description="替换后的新内容。")
+    replace_all: bool = Field(
+        False,
+        validation_alias=AliasChoices("replace_all", "replaceAll"),
+        description="是否替换该文件内所有匹配。默认 false。",
+    )
     description: str = Field("", description="当前编辑块的目的说明。")
 
 
 class DocumentEditFile(BaseModel):
-    file_key: str = Field(..., description="目标文件的逻辑 key。必须来自输入中允许写入的 file_key。")
+    model_config = ConfigDict(populate_by_name=True)
+
+    file_key: str = Field("", description="目标文件的逻辑 key；可选。如果提供，必须来自输入中允许写入的 file_key。")
+    file_path: str = Field(
+        "",
+        validation_alias=AliasChoices("file_path", "filePath"),
+        description="目标文件路径；可选。可以直接使用输入中 update_target_files 的 file_path。",
+    )
     edits: list[DocumentEditEdit] = Field(default_factory=list, description="按顺序执行的编辑块。")
 
 
@@ -77,6 +97,8 @@ class DocumentEditPayload(BaseModel):
 
 
 class DocumentPatchEdit(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     action: Literal[
         "replace",
         "insert_before",
@@ -91,19 +113,31 @@ class DocumentPatchEdit(BaseModel):
     )
     match_text: str = Field(
         "",
+        validation_alias=AliasChoices("match_text", "matchText", "oldString"),
         description=(
             "replace/insert_before/insert_after 时用于定位原文片段；"
             "append_under_heading/replace_section_body 时用于定位 Markdown 标题；"
             "append/prepend 留空。"
         ),
     )
-    new_text: str = Field(..., description="替换或插入的新内容。")
-    replace_all: bool = Field(False, description="仅 replace 动作可用；为 true 时替换所有匹配。")
+    new_text: str = Field(..., validation_alias=AliasChoices("new_text", "newString"), description="替换或插入的新内容。")
+    replace_all: bool = Field(
+        False,
+        validation_alias=AliasChoices("replace_all", "replaceAll"),
+        description="仅 replace 动作可用；为 true 时替换所有匹配。",
+    )
     description: str = Field("", description="当前编辑块的目的说明。")
 
 
 class DocumentPatchFile(BaseModel):
-    file_key: str = Field(..., description="目标文件的逻辑 key。必须来自输入中允许写入的 file_key。")
+    model_config = ConfigDict(populate_by_name=True)
+
+    file_key: str = Field("", description="目标文件的逻辑 key；可选。如果提供，必须来自输入中允许写入的 file_key。")
+    file_path: str = Field(
+        "",
+        validation_alias=AliasChoices("file_path", "filePath"),
+        description="目标文件路径；可选。可以直接使用输入中 update_target_files 的 file_path。",
+    )
     edits: list[DocumentPatchEdit] = Field(default_factory=list, description="按顺序执行的编辑块。")
 
 
@@ -154,6 +188,46 @@ class AppliedDocumentOperation:
 class DocumentTarget:
     path: Path
     allow_write_on_existing: bool = False
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    return str(left.expanduser().resolve()).casefold() == str(right.expanduser().resolve()).casefold()
+
+
+def _resolve_document_target(
+    *,
+    file_key: str,
+    file_path: str,
+    normalized_targets: dict[str, DocumentTarget],
+    operation_label: str,
+) -> tuple[str, DocumentTarget]:
+    cleaned_key = file_key.strip()
+    cleaned_path = file_path.strip().strip('"').strip("'")
+
+    if cleaned_key:
+        if cleaned_key not in normalized_targets:
+            raise ValueError(f"{operation_label} 返回了未授权文件：{cleaned_key}")
+        target = normalized_targets[cleaned_key]
+        if cleaned_path and not _same_resolved_path(Path(cleaned_path), target.path):
+            raise ValueError(f"{operation_label} 返回的 file_key 与 file_path 不一致：{cleaned_key} -> {cleaned_path}")
+        return cleaned_key, target
+
+    if cleaned_path:
+        requested = Path(cleaned_path)
+        matches = [
+            (candidate_key, candidate_target)
+            for candidate_key, candidate_target in normalized_targets.items()
+            if _same_resolved_path(requested, candidate_target.path)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(f"{operation_label} 返回的 file_path 匹配到多个授权文件：{cleaned_path}")
+        if not normalized_targets:
+            return cleaned_path, DocumentTarget(path=requested.expanduser().resolve())
+        raise ValueError(f"{operation_label} 返回了未授权文件路径：{cleaned_path}")
+
+    raise ValueError(f"{operation_label} 必须提供 file_key 或 file_path。")
 
 
 def document_tool_specs() -> list[llm_runtime.FunctionToolSpec[Any]]:
@@ -399,16 +473,19 @@ def apply_document_operation(
     if operation.mode == "write":
         payload = operation.write_payload or DocumentWritePayload()
         for item in payload.files:
-            if item.file_key not in normalized_targets:
-                raise ValueError(f"整篇写入返回了未授权文件：{item.file_key}")
-            target = normalized_targets[item.file_key]
+            resolved_key, target = _resolve_document_target(
+                file_key=item.file_key,
+                file_path=item.file_path,
+                normalized_targets=normalized_targets,
+                operation_label="整篇写入",
+            )
             path = target.path
             if path.exists() and read_text_if_exists(path).strip() and not target.allow_write_on_existing:
-                raise ValueError(f"目标文件已存在，禁止整篇写入：{item.file_key}")
+                raise ValueError(f"目标文件已存在，禁止整篇写入：{resolved_key}")
             changed = write_text_if_changed(path, item.content)
             file_results.append(
                 AppliedDocumentFile(
-                    file_key=item.file_key,
+                    file_key=resolved_key,
                     path=path,
                     mode="write",
                     emitted=True,
@@ -421,9 +498,13 @@ def apply_document_operation(
     if operation.mode == "edit":
         payload = operation.edit_payload or DocumentEditPayload()
         for item in payload.files:
-            if item.file_key not in normalized_targets:
-                raise ValueError(f"Edit 返回了未授权文件：{item.file_key}")
-            path = normalized_targets[item.file_key].path
+            resolved_key, target = _resolve_document_target(
+                file_key=item.file_key,
+                file_path=item.file_path,
+                normalized_targets=normalized_targets,
+                operation_label="Edit",
+            )
+            path = target.path
             current = read_text_if_exists(path)
             updated = current
             for edit in item.edits:
@@ -436,7 +517,7 @@ def apply_document_operation(
             changed = write_text_if_changed(path, updated)
             file_results.append(
                 AppliedDocumentFile(
-                    file_key=item.file_key,
+                    file_key=resolved_key,
                     path=path,
                     mode="edit",
                     emitted=True,
@@ -448,15 +529,19 @@ def apply_document_operation(
 
     payload = operation.patch_payload or DocumentPatchPayload()
     for item in payload.files:
-        if item.file_key not in normalized_targets:
-            raise ValueError(f"Patch 返回了未授权文件：{item.file_key}")
-        path = normalized_targets[item.file_key].path
+        resolved_key, target = _resolve_document_target(
+            file_key=item.file_key,
+            file_path=item.file_path,
+            normalized_targets=normalized_targets,
+            operation_label="Patch",
+        )
+        path = target.path
         current = read_text_if_exists(path)
         updated = apply_patch_edits_to_text(current, item.edits)
         changed = write_text_if_changed(path, updated)
         file_results.append(
             AppliedDocumentFile(
-                file_key=item.file_key,
+                file_key=resolved_key,
                 path=path,
                 mode="patch",
                 emitted=True,

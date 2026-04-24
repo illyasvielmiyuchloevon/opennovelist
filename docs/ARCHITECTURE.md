@@ -92,17 +92,17 @@
 
 - 路径规范化
 - Markdown / JSON 读写
-- 文本 patch 的基础匹配与替换
+- 文本 patch 的多策略匹配与替换，匹配策略对齐 `.external/edit.ts` 的 oldString/newString 工具
 - 行尾兼容
 
 ### 3.2 `novelist.core.document_ops`
 
-文档写入/patch 工具层：
+目标文件写入/patch 工具层：
 
-- 定义文档写入工具 schema
-- 定义文档 patch 工具 schema
+- 定义章节正文、Markdown 状态文档等目标文件的写入工具 schema
+- 定义章节正文、Markdown 状态文档等目标文件的 patch/edit 工具 schema
 - 执行多文件、多块 patch
-- 应用模型返回的文档操作结果
+- 应用模型返回的目标文件操作结果
 
 ### 3.3 `novelist.core.novel_source`
 
@@ -176,23 +176,27 @@ CLI 交互层：
 
 ### 4.3 `submit_document_edits`
 
-用于对已有文档做精确编辑。
+用于对已有目标文件做精确编辑。目标文件可以是章节正文 `.txt`、Markdown 状态文档或其他工作流文件。
 
 适用场景：
 
 - 已有段落内容改写
 - 已有记录局部替换
 - 同一文件顺序执行多个 `old_text -> new_text` 编辑
+- 模型可以用 `file_key` 指定输入清单里的目标，也可以用 `file_path` 直接指定目标文件路径
 
 ### 4.4 `submit_document_patches`
 
-用于对一个或多个文档做增量 patch。
+用于对一个或多个目标文件做增量 patch。
 
 适用场景：
 
-- 已有文档的局部修改
+- 已有目标文件的局部修改
 - 多文件 patch
 - 单文件内多个编辑块
+- 模型可以用 `file_key` 指定输入清单里的目标，也可以用 `file_path` 直接指定目标文件路径
+
+落盘时不执行 format，也不执行 LSP 检查；只做文本匹配、唯一性校验和文件写入。
 
 对应代码：
 
@@ -216,7 +220,7 @@ CLI 交互层：
 - 组审查
 - 卷审查
 
-### 5.2 文档操作工具链
+### 5.2 目标文件操作工具链
 
 使用：
 
@@ -224,9 +228,12 @@ CLI 交互层：
 - `submit_document_edits`
 - `submit_document_patches`
 
+主要用于所有“已有目标文件需要局部更新”的场景，包括章节正文 `.txt` 修订和长期状态文档更新。
+
 主要被：
 
 - `novel_adaptation_cli`
+- `novel_chapter_rewrite_cli` 的正文修订阶段
 - `novel_chapter_rewrite_cli` 的状态文档更新阶段
 
 使用。

@@ -26,6 +26,26 @@ class FilesPatchTests(unittest.TestCase):
         self.assertIn("value: 2", updated)
         self.assertNotIn("value: 1", updated)
 
+    def test_replace_text_with_fallbacks_matches_block_anchors_aggressively(self) -> None:
+        content = "第一段。\n\n锚点起。\n真实中间内容。\n锚点止。\n\n最后段。"
+        old_text = "锚点起。\n模型记错的中间内容。\n锚点止。"
+        new_text = "锚点起。\n修订后的中间内容。\n锚点止。"
+
+        updated = replace_text_with_fallbacks(content, old_text, new_text)
+
+        self.assertIn("修订后的中间内容", updated)
+        self.assertNotIn("真实中间内容", updated)
+
+    def test_replace_text_with_fallbacks_matches_escaped_newlines(self) -> None:
+        content = "第一句。\n第二句。\n第三句。"
+        old_text = "第一句。\\n第二句。"
+        new_text = "第一句。\n第二句已经修订。"
+
+        updated = replace_text_with_fallbacks(content, old_text, new_text)
+
+        self.assertIn("第二句已经修订。", updated)
+        self.assertNotIn("第二句。\n第三句。", updated)
+
     def test_migrate_numbered_injection_dirs_moves_legacy_dirs_into_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -189,6 +209,66 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertIn("并开始接触核心对手", updated)
             self.assertIn("### 起始", updated)
             self.assertIn("### 已发生发展", updated)
+
+    def test_apply_document_operation_can_target_file_by_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            chapter_path = root / "0005.txt"
+            chapter_path.write_text("第一段。\n\n第二段。\n", encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_path",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=document_ops.DocumentEditPayload(
+                    files=[
+                        document_ops.DocumentEditFile(
+                            file_path=str(chapter_path),
+                            edits=[
+                                document_ops.DocumentEditEdit(
+                                    old_text="第二段。",
+                                    new_text="第二段已经修订。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={"rewritten_chapter": chapter_path},
+            )
+
+            self.assertEqual(applied.changed_keys, ["rewritten_chapter"])
+            self.assertIn("第二段已经修订。", chapter_path.read_text(encoding="utf-8"))
+
+    def test_document_edit_payload_accepts_external_field_names(self) -> None:
+        payload = document_ops.DocumentEditPayload.model_validate(
+            {
+                "files": [
+                    {
+                        "filePath": "F:/books/0005.txt",
+                        "edits": [
+                            {
+                                "oldString": "旧句子。",
+                                "newString": "新句子。",
+                                "replaceAll": True,
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(payload.files[0].file_path, "F:/books/0005.txt")
+        self.assertEqual(payload.files[0].edits[0].old_text, "旧句子。")
+        self.assertEqual(payload.files[0].edits[0].new_text, "新句子。")
+        self.assertTrue(payload.files[0].edits[0].replace_all)
 
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
