@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from novelist.workflows import novel_adaptation as adaptation_workflow
@@ -176,8 +177,13 @@ class WorkflowCliDetectionTests(unittest.TestCase):
 
 
 class WorkflowCliArgumentTests(unittest.TestCase):
+    class TtyInput:
+        def isatty(self) -> bool:
+            return True
+
     def build_args(self) -> argparse.Namespace:
         return argparse.Namespace(
+            input_path=None,
             new_title="玄幻忍者",
             target_worldview="玄幻修仙",
             style_mode=adaptation_workflow.STYLE_MODE_SOURCE,
@@ -190,6 +196,8 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             rewrite_chapter="0003",
             startup_mode=None,
             reconfigure_openai=False,
+            skip_adaptation=False,
+            skip_rewrite=False,
             dry_run=True,
         )
 
@@ -292,6 +300,127 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             workflow_entry.STARTUP_MODE_CONFIG_ONLY,
             workflow_entry.STARTUP_MODE_LABELS,
         )
+
+    def test_interrupted_workflow_continue_scope_skips_adaptation(self) -> None:
+        args = self.build_args()
+        args.rewrite_volume = None
+
+        with (
+            mock.patch.object(workflow_entry.sys, "stdin", self.TtyInput()),
+            mock.patch.object(
+                workflow_entry,
+                "prompt_choice",
+                return_value=workflow_entry.WORKFLOW_SCOPE_CONTINUE_INTERRUPTED,
+            ) as prompt_choice,
+        ):
+            workflow_scope = workflow_entry.resolve_workflow_scope(args, ["002"])
+
+        self.assertEqual(workflow_scope, workflow_entry.WORKFLOW_SCOPE_CONTINUE_INTERRUPTED)
+        self.assertEqual(workflow_entry.effective_stage_skips(args, workflow_scope), (True, False))
+        self.assertEqual(
+            workflow_entry.resolve_rewrite_volume_override(
+                args,
+                adapted_volume_number=None,
+                rewrite_backlog_volumes=["002", "003"],
+            ),
+            "002",
+        )
+        prompt_choice.assert_called_once()
+
+    def test_interrupted_workflow_reselect_full_keeps_both_stages(self) -> None:
+        args = self.build_args()
+        args.rewrite_volume = None
+
+        with (
+            mock.patch.object(workflow_entry.sys, "stdin", self.TtyInput()),
+            mock.patch.object(
+                workflow_entry,
+                "prompt_choice",
+                side_effect=["reselect", workflow_entry.WORKFLOW_SCOPE_FULL],
+            ) as prompt_choice,
+        ):
+            workflow_scope = workflow_entry.resolve_workflow_scope(args, ["001"])
+
+        self.assertEqual(workflow_scope, workflow_entry.WORKFLOW_SCOPE_FULL)
+        self.assertEqual(workflow_entry.effective_stage_skips(args, workflow_scope), (False, False))
+        self.assertEqual(
+            workflow_entry.resolve_rewrite_volume_override(
+                args,
+                adapted_volume_number="004",
+                rewrite_backlog_volumes=["001"],
+            ),
+            "004",
+        )
+        self.assertEqual(prompt_choice.call_count, 2)
+
+    def test_interrupted_workflow_reselect_adaptation_only_skips_rewrite(self) -> None:
+        args = self.build_args()
+
+        with (
+            mock.patch.object(workflow_entry.sys, "stdin", self.TtyInput()),
+            mock.patch.object(
+                workflow_entry,
+                "prompt_choice",
+                side_effect=["reselect", workflow_entry.WORKFLOW_SCOPE_ADAPTATION_ONLY],
+            ),
+        ):
+            workflow_scope = workflow_entry.resolve_workflow_scope(args, ["001"])
+
+        self.assertEqual(workflow_scope, workflow_entry.WORKFLOW_SCOPE_ADAPTATION_ONLY)
+        self.assertEqual(workflow_entry.effective_stage_skips(args, workflow_scope), (False, True))
+
+    def test_interrupted_workflow_reselect_rewrite_only_skips_adaptation(self) -> None:
+        args = self.build_args()
+        args.rewrite_volume = None
+
+        with (
+            mock.patch.object(workflow_entry.sys, "stdin", self.TtyInput()),
+            mock.patch.object(
+                workflow_entry,
+                "prompt_choice",
+                side_effect=["reselect", workflow_entry.WORKFLOW_SCOPE_REWRITE_ONLY],
+            ),
+        ):
+            workflow_scope = workflow_entry.resolve_workflow_scope(args, ["003"])
+
+        self.assertEqual(workflow_scope, workflow_entry.WORKFLOW_SCOPE_REWRITE_ONLY)
+        self.assertEqual(workflow_entry.effective_stage_skips(args, workflow_scope), (True, False))
+        self.assertEqual(
+            workflow_entry.resolve_rewrite_volume_override(
+                args,
+                adapted_volume_number=None,
+                rewrite_backlog_volumes=["003"],
+            ),
+            "003",
+        )
+
+    def test_interrupted_workflow_with_input_path_keeps_automatic_resume(self) -> None:
+        args = self.build_args()
+        args.input_path = "F:/books/source"
+
+        with (
+            mock.patch.object(workflow_entry.sys, "stdin", self.TtyInput()),
+            mock.patch.object(workflow_entry, "prompt_choice") as prompt_choice,
+        ):
+            workflow_scope = workflow_entry.resolve_workflow_scope(args, ["002"])
+
+        self.assertEqual(workflow_scope, workflow_entry.WORKFLOW_SCOPE_CONTINUE_INTERRUPTED)
+        self.assertEqual(workflow_entry.effective_stage_skips(args, workflow_scope), (True, False))
+        prompt_choice.assert_not_called()
+
+    def test_interrupted_workflow_explicit_skip_flags_are_not_overridden(self) -> None:
+        args = self.build_args()
+        args.skip_rewrite = True
+
+        with (
+            mock.patch.object(workflow_entry.sys, "stdin", self.TtyInput()),
+            mock.patch.object(workflow_entry, "prompt_choice") as prompt_choice,
+        ):
+            workflow_scope = workflow_entry.resolve_workflow_scope(args, ["002"])
+
+        self.assertEqual(workflow_scope, workflow_entry.WORKFLOW_SCOPE_FULL)
+        self.assertEqual(workflow_entry.effective_stage_skips(args, workflow_scope), (False, True))
+        prompt_choice.assert_not_called()
 
     def test_openai_provider_labels_cover_compatible(self) -> None:
         self.assertIn(

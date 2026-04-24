@@ -25,6 +25,10 @@ STARTUP_MODE_LABELS = {
     STARTUP_MODE_CONFIG_AND_WORKFLOW: "先重新配置 OpenAI 设置，再进入统一工作流",
     STARTUP_MODE_CONFIG_ONLY: "只重新配置 OpenAI 设置",
 }
+WORKFLOW_SCOPE_FULL = "full"
+WORKFLOW_SCOPE_CONTINUE_INTERRUPTED = "continue_interrupted"
+WORKFLOW_SCOPE_ADAPTATION_ONLY = "adaptation_only"
+WORKFLOW_SCOPE_REWRITE_ONLY = "rewrite_only"
 WORKDIR = Path(__file__).resolve().parents[2]
 GLOBAL_CONFIG_PATH = adaptation_workflow.GLOBAL_CONFIG_PATH
 LEGACY_GLOBAL_CONFIG_PATH = adaptation_workflow.LEGACY_GLOBAL_CONFIG_PATH
@@ -461,6 +465,76 @@ def pending_rewrite_volumes(project_root: Path) -> list[str]:
     return [volume for volume in adapted_volumes if volume not in rewritten_volumes]
 
 
+def should_prompt_interrupted_workflow(args: argparse.Namespace, rewrite_backlog_volumes: list[str]) -> bool:
+    return (
+        bool(rewrite_backlog_volumes)
+        and not getattr(args, "input_path", None)
+        and not getattr(args, "skip_adaptation", False)
+        and not getattr(args, "skip_rewrite", False)
+        and bool(sys.stdin)
+        and sys.stdin.isatty()
+    )
+
+
+def prompt_interrupted_workflow_scope(rewrite_backlog_volumes: list[str]) -> str:
+    backlog_label = "、".join(rewrite_backlog_volumes)
+    print_progress(f"检测到已有已适配但未完成重写的卷：{backlog_label}")
+    choice = prompt_choice(
+        "请选择本次统一入口的处理方式",
+        [
+            (WORKFLOW_SCOPE_CONTINUE_INTERRUPTED, f"继续上一次中断任务（续跑章节重写：第 {backlog_label} 卷）"),
+            ("reselect", "重新选择工作模式"),
+        ],
+    )
+    if choice == WORKFLOW_SCOPE_CONTINUE_INTERRUPTED:
+        return WORKFLOW_SCOPE_CONTINUE_INTERRUPTED
+
+    return prompt_choice(
+        "请选择本次要运行的工作模式",
+        [
+            (WORKFLOW_SCOPE_FULL, "完整流程（资料适配完成后继续章节重写）"),
+            (WORKFLOW_SCOPE_ADAPTATION_ONLY, "只跑资料适配"),
+            (WORKFLOW_SCOPE_REWRITE_ONLY, "只跑章节重写"),
+        ],
+    )
+
+
+def resolve_workflow_scope(args: argparse.Namespace, rewrite_backlog_volumes: list[str]) -> str:
+    if not rewrite_backlog_volumes:
+        return WORKFLOW_SCOPE_FULL
+    if getattr(args, "skip_adaptation", False) or getattr(args, "skip_rewrite", False):
+        return WORKFLOW_SCOPE_FULL
+    if not should_prompt_interrupted_workflow(args, rewrite_backlog_volumes):
+        return WORKFLOW_SCOPE_CONTINUE_INTERRUPTED
+    return prompt_interrupted_workflow_scope(rewrite_backlog_volumes)
+
+
+def effective_stage_skips(args: argparse.Namespace, workflow_scope: str) -> tuple[bool, bool]:
+    effective_skip_adaptation = bool(getattr(args, "skip_adaptation", False))
+    effective_skip_rewrite = bool(getattr(args, "skip_rewrite", False))
+
+    if workflow_scope == WORKFLOW_SCOPE_CONTINUE_INTERRUPTED:
+        effective_skip_adaptation = True
+    elif workflow_scope == WORKFLOW_SCOPE_ADAPTATION_ONLY:
+        effective_skip_rewrite = True
+    elif workflow_scope == WORKFLOW_SCOPE_REWRITE_ONLY:
+        effective_skip_adaptation = True
+
+    return effective_skip_adaptation, effective_skip_rewrite
+
+
+def resolve_rewrite_volume_override(
+    args: argparse.Namespace,
+    *,
+    adapted_volume_number: str | None,
+    rewrite_backlog_volumes: list[str],
+) -> str | None:
+    rewrite_volume_override = args.rewrite_volume or adapted_volume_number
+    if rewrite_volume_override is None and rewrite_backlog_volumes:
+        rewrite_volume_override = rewrite_backlog_volumes[0]
+    return rewrite_volume_override
+
+
 def build_adaptation_workflow_args(
     args: argparse.Namespace,
     *,
@@ -597,20 +671,28 @@ def main() -> int:
             if project_root is not None and not args.skip_rewrite:
                 rewrite_backlog_volumes = pending_rewrite_volumes(project_root)
 
-            adaptation_enabled = not args.skip_adaptation
-            if adaptation_enabled and not args.skip_rewrite and rewrite_backlog_volumes:
-                adaptation_enabled = False
-                print_progress(
-                    "检测到已有已适配但未完成重写的卷："
-                    + "、".join(rewrite_backlog_volumes)
-                )
+            workflow_scope = resolve_workflow_scope(args, rewrite_backlog_volumes)
+            effective_skip_adaptation, effective_skip_rewrite = effective_stage_skips(args, workflow_scope)
+            if workflow_scope == WORKFLOW_SCOPE_CONTINUE_INTERRUPTED and rewrite_backlog_volumes:
+                if not should_prompt_interrupted_workflow(args, rewrite_backlog_volumes):
+                    print_progress(
+                        "检测到已有已适配但未完成重写的卷："
+                        + "、".join(rewrite_backlog_volumes)
+                    )
                 print_progress("统一工作流将优先续跑章节重写，当前轮次暂时跳过继续处理下一卷适配。")
+            elif workflow_scope == WORKFLOW_SCOPE_ADAPTATION_ONLY:
+                print_progress("本轮统一工作流只运行资料适配阶段。")
+            elif workflow_scope == WORKFLOW_SCOPE_REWRITE_ONLY:
+                print_progress("本轮统一工作流只运行章节重写阶段。")
+            elif workflow_scope == WORKFLOW_SCOPE_FULL and rewrite_backlog_volumes:
+                print_progress("本轮统一工作流将按完整流程运行，不自动跳过资料适配。")
 
+            adaptation_enabled = not effective_skip_adaptation
             adaptation_run_mode = resolve_adaptation_run_mode(args) if adaptation_enabled else ""
-            rewrite_run_mode = resolve_rewrite_run_mode(args) if not args.skip_rewrite else ""
+            rewrite_run_mode = resolve_rewrite_run_mode(args) if not effective_skip_rewrite else ""
             adaptation_workflow_controlled = (
                 adaptation_enabled
-                and not args.skip_rewrite
+                and not effective_skip_rewrite
                 and adaptation_run_mode == adaptation_workflow.RUN_MODE_STAGE
             )
             rewrite_workflow_controlled = adaptation_workflow_controlled
@@ -636,13 +718,15 @@ def main() -> int:
                 if adapted_volume_number:
                     print_progress(f"本轮统一工作流已完成适配卷：{adapted_volume_number}")
 
-            if not args.skip_rewrite:
+            if not effective_skip_rewrite:
                 if project_root is None:
                     assert source_root is not None
                     project_root = resolve_project_root_for_source(source_root, args.project_root)
-                rewrite_volume_override = args.rewrite_volume or adapted_volume_number
-                if rewrite_volume_override is None and rewrite_backlog_volumes:
-                    rewrite_volume_override = rewrite_backlog_volumes[0]
+                rewrite_volume_override = resolve_rewrite_volume_override(
+                    args,
+                    adapted_volume_number=adapted_volume_number,
+                    rewrite_backlog_volumes=rewrite_backlog_volumes,
+                )
                 run_python_workflow(
                     "novel_chapter_rewrite.py",
                     build_rewrite_workflow_args(
@@ -654,7 +738,7 @@ def main() -> int:
                     ),
                 )
 
-            if args.skip_adaptation and args.skip_rewrite and input_kind != INPUT_RAW_TEXT:
+            if effective_skip_adaptation and effective_skip_rewrite and input_kind != INPUT_RAW_TEXT:
                 print_progress("未启用 adaptation / rewrite 阶段，本次没有更多可执行步骤。")
 
             print_progress("统一工作流执行完成。")
