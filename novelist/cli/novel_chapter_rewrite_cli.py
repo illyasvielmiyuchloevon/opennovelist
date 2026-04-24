@@ -53,6 +53,7 @@ FIVE_CHAPTER_REVIEW_SIZE = 5
 MAX_CHAPTER_REWRITE_ATTEMPTS = 3
 MAX_VOLUME_REVIEW_ATTEMPTS = 3
 MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS = 2
+MAX_REVIEW_FIX_ATTEMPTS = 2
 RUN_MODE_CHAPTER = "chapter"
 RUN_MODE_GROUP = "group"
 RUN_MODE_VOLUME = "volume"
@@ -2177,6 +2178,180 @@ def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
     }
 
 
+def review_fix_instructions(review_kind: str) -> str:
+    label = REVIEW_KIND_LABELS.get(review_kind, "审核")
+    return (
+        f"你是资深网络小说{label}原地返修编辑。"
+        "用户拥有参考源文本权利。"
+        "当前任务不是重新审核，也不是重新生成章节工作流；"
+        "你只能根据上一轮未通过的审核结果，直接修复允许范围内的目标文件。"
+        + COMMON_FUNCTION_OUTPUT_RULE
+        + document_ops.DOCUMENT_OPERATION_RULE
+    )
+
+
+def review_fix_phase_key(review_kind: str) -> str:
+    if review_kind == "group":
+        return "five_chapter_review_fix"
+    if review_kind == "volume":
+        return "volume_review_fix"
+    return "chapter_review_fix"
+
+
+def review_fix_role(review_kind: str) -> str:
+    label = REVIEW_KIND_LABELS.get(review_kind, "审核")
+    return f"{label}原地返修编辑"
+
+
+def review_has_fix_target(review_kind: str, review: WorkflowSubmissionPayload) -> bool:
+    if review_kind == "chapter":
+        return bool(review.rewrite_targets)
+    return bool(review.chapters_to_revise or review.rewrite_targets)
+
+
+def chapter_review_fix_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
+    return {
+        "rewritten_chapter": paths["rewritten_chapter"],
+        "chapter_outline": paths["chapter_outline"],
+        "chapter_review": paths["chapter_review"],
+        **support_update_target_paths(paths),
+    }
+
+
+def multi_chapter_review_fix_target_paths(
+    project_root: Path,
+    volume_number: str,
+    chapter_numbers: list[str],
+    *,
+    group_review_path: Path | None = None,
+    include_volume_docs: bool = False,
+) -> dict[str, Path]:
+    if not chapter_numbers:
+        return {}
+    paths = rewrite_paths(project_root, volume_number, chapter_numbers[0])
+    targets: dict[str, Path] = dict(support_update_target_paths(paths))
+    if include_volume_docs:
+        volume_paths = rewrite_paths(project_root, volume_number)
+        targets["volume_outline"] = volume_paths["volume_outline"]
+        targets["volume_review"] = volume_paths["volume_review"]
+    if group_review_path is not None:
+        targets["group_review"] = group_review_path
+    for chapter_number in chapter_numbers:
+        chapter_paths = rewrite_paths(project_root, volume_number, chapter_number)
+        targets[f"{chapter_number}_rewritten_chapter"] = chapter_paths["rewritten_chapter"]
+        targets[f"{chapter_number}_chapter_outline"] = chapter_paths["chapter_outline"]
+        targets[f"{chapter_number}_chapter_review"] = chapter_paths["chapter_review"]
+    return targets
+
+
+def build_review_fix_payload(
+    *,
+    review_kind: str,
+    review: WorkflowSubmissionPayload,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> dict[str, Any]:
+    label = REVIEW_KIND_LABELS.get(review_kind, "审核")
+    return {
+        "document_request": {
+            "phase": review_fix_phase_key(review_kind),
+            "role": review_fix_role(review_kind),
+            "task": f"根据刚才未通过的{label}结果，直接修复允许范围内的目标文件；不要重新生成整章工作流。",
+        },
+        "failed_review_result": {
+            "passed": review.passed,
+            "review_md": review.review_md,
+            "blocking_issues": review.blocking_issues,
+            "rewrite_targets": review.rewrite_targets,
+            "chapters_to_revise": review.chapters_to_revise,
+        },
+        "update_target_files": document_operation_target_snapshot(allowed_files),
+        "requirements": [
+            "这是审核不通过后的原地修复步骤，不要返回新的审核报告。",
+            "必须调用目标文件 write/edit/patch 工具提交修改；已有非空文件优先 patch 或 edit，禁止无理由整篇覆盖。",
+            "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
+            "如果问题只涉及章节正文，只修改对应章节 txt；如果问题只涉及状态或进度文档，只修改对应文档。",
+            "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
+            "不要把审核失败降级为重新跑章纲、正文生成或配套文档生成阶段。",
+            "修复后仍必须符合原审核阶段的风格、连续性、反 AI 痕迹和参考源转换要求。",
+        ],
+    }
+
+
+def apply_review_fix_with_repair(
+    *,
+    client: OpenAI,
+    model: str,
+    review_kind: str,
+    shared_prompt: str,
+    review: WorkflowSubmissionPayload,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    previous_response_id: str | None,
+    prompt_cache_key: str | None,
+    debug_path: Path,
+) -> tuple[document_ops.AppliedDocumentOperation, str | None, list[str]]:
+    if not review_has_fix_target(review_kind, review):
+        error_message = f"{REVIEW_KIND_LABELS.get(review_kind, '审核')}未通过，但模型未返回可修复目标。"
+        write_response_debug_snapshot(
+            debug_path,
+            error_message=error_message,
+            preview=review.review_md,
+            raw_body_text=json.dumps(
+                {
+                    "failed_review_result": {
+                        "passed": review.passed,
+                        "review_md": review.review_md,
+                        "blocking_issues": review.blocking_issues,
+                        "rewrite_targets": review.rewrite_targets,
+                        "chapters_to_revise": review.chapters_to_revise,
+                    },
+                    "target_files": document_operation_target_snapshot(allowed_files),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
+    fix_payload = build_review_fix_payload(
+        review_kind=review_kind,
+        review=review,
+        allowed_files=allowed_files,
+    )
+    operation = document_ops.call_document_operation_tools(
+        client,
+        model=model,
+        instructions=review_fix_instructions(review_kind),
+        user_input=shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2),
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+    )
+    response_ids = [str(operation.response_id or "")]
+    applied, current_response_id, repair_response_ids = apply_document_operation_with_repair(
+        client=client,
+        model=model,
+        instructions=review_fix_instructions(review_kind),
+        shared_prompt=shared_prompt,
+        operation=operation,
+        allowed_files=allowed_files,
+        previous_response_id=operation.response_id,
+        prompt_cache_key=prompt_cache_key,
+        phase_key=review_fix_phase_key(review_kind),
+        repair_role=review_fix_role(review_kind),
+        repair_task="修正上一次审核原地返修工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
+        debug_path=debug_path,
+    )
+    response_ids.extend(repair_response_ids)
+    if not applied.emitted_keys or not applied.changed_keys:
+        error_message = "审核原地返修没有实际修改任何目标文件。"
+        write_document_operation_apply_debug_snapshot(
+            debug_path,
+            error_message=error_message,
+            operation=operation,
+            allowed_files=allowed_files,
+        )
+        raise llm_runtime.ModelOutputError(error_message, preview=operation.preview, raw_body_text=operation.raw_body_text)
+    return applied, current_response_id, response_ids
+
+
 def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> list[dict[str, Any]]:
     return [
         {
@@ -2824,8 +2999,11 @@ def run_five_chapter_review(
         source_bundle=source_bundle,
         rewritten_chapters=rewritten_chapters,
     )
+    previous_response_id: str | None = None
+    response_ids: list[str] = []
 
-    for attempt in range(1, MAX_VOLUME_REVIEW_ATTEMPTS + 1):
+    for attempt in range(1, MAX_REVIEW_FIX_ATTEMPTS + 2):
+        rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
         update_five_chapter_review_state(
             rewrite_manifest,
             volume_number,
@@ -2860,7 +3038,7 @@ def run_five_chapter_review(
             ),
             included_docs=included_docs,
             omitted_docs=omitted_docs,
-            previous_response_id=None,
+            previous_response_id=previous_response_id,
             prompt_cache_key=prompt_cache_key,
             shared_prefix_lines=[
                 *group_review_shared_prefix_summary_lines(
@@ -2881,16 +3059,19 @@ def run_five_chapter_review(
                 COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
                 shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
                 allowed_chapters=chapter_numbers,
-                previous_response_id=None,
+                previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
             )
-        except llm_runtime.ModelOutputError as error:
-            write_response_debug_snapshot(
-                review_path.with_name(f"{batch_id}_group_review_debug.md"),
-                error_message=str(error),
-                preview=error.preview,
-                raw_body_text=getattr(error, "raw_body_text", ""),
-            )
+            previous_response_id = response_id
+            response_ids.append(str(response_id or ""))
+        except Exception as error:
+            if isinstance(error, llm_runtime.ModelOutputError):
+                write_response_debug_snapshot(
+                    review_path.with_name(f"{batch_id}_group_review_debug.md"),
+                    error_message=str(error),
+                    preview=error.preview,
+                    raw_body_text=getattr(error, "raw_body_text", ""),
+                )
             update_five_chapter_review_state(
                 rewrite_manifest,
                 volume_number,
@@ -2924,36 +3105,78 @@ def run_five_chapter_review(
             return True
 
         chapters_to_revise = [item.zfill(4) for item in review.chapters_to_revise if item]
-        revision_plan = build_multi_chapter_revision_plan(
-            chapters_to_revise=chapters_to_revise,
-            rewrite_targets=review.rewrite_targets,
-        )
+        if attempt > MAX_REVIEW_FIX_ATTEMPTS:
+            update_five_chapter_review_state(
+                rewrite_manifest,
+                volume_number,
+                batch_id,
+                chapter_numbers,
+                status="failed",
+                attempts=attempt,
+                chapters_to_revise=chapters_to_revise,
+                blocking_issues=review.blocking_issues,
+            )
+            fail(
+                f"第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} "
+                f"{FIVE_CHAPTER_REVIEW_NAME}原地返修 {MAX_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+            )
+
         update_five_chapter_review_state(
             rewrite_manifest,
             volume_number,
             batch_id,
             chapter_numbers,
-            status="needs_revision",
+            status="in_review_fix",
             attempts=attempt,
             chapters_to_revise=chapters_to_revise,
             blocking_issues=review.blocking_issues,
         )
-        for chapter_number in chapters_to_revise:
-            update_chapter_state(
+        print_progress(
+            f"{FIVE_CHAPTER_REVIEW_NAME} 未通过，将在当前审核阶段直接修复。"
+            f" 目标章节：{'、'.join(chapters_to_revise) or '未明确'}。"
+        )
+        try:
+            applied_fix, previous_response_id, fix_response_ids = apply_review_fix_with_repair(
+                client=client,
+                model=model,
+                review_kind="group",
+                shared_prompt=shared_prompt,
+                review=review,
+                allowed_files=multi_chapter_review_fix_target_paths(
+                    project_root,
+                    volume_number,
+                    chapter_numbers,
+                    group_review_path=review_path,
+                ),
+                previous_response_id=previous_response_id,
+                prompt_cache_key=prompt_cache_key,
+                debug_path=review_path.with_name(f"{batch_id}_group_review_debug.md"),
+            )
+        except Exception as error:
+            if isinstance(error, llm_runtime.ModelOutputError):
+                write_response_debug_snapshot(
+                    review_path.with_name(f"{batch_id}_group_review_debug.md"),
+                    error_message=str(error),
+                    preview=error.preview,
+                    raw_body_text=getattr(error, "raw_body_text", ""),
+                )
+            update_five_chapter_review_state(
                 rewrite_manifest,
                 volume_number,
-                chapter_number,
-                status="needs_revision",
+                batch_id,
+                chapter_numbers,
+                status="failed",
+                attempts=attempt,
+                chapters_to_revise=chapters_to_revise,
                 blocking_issues=review.blocking_issues,
-                pending_phases=revision_plan.get(chapter_number, full_chapter_workflow_plan()),
-                rewrite_targets=rewrite_targets_for_chapter(chapter_number, review.rewrite_targets),
-                revision_origin="group_review",
             )
-        print_progress(
-            f"{FIVE_CHAPTER_REVIEW_NAME} 未通过，需要返工章节："
-            f"{'、'.join(chapters_to_revise) or '未返回明确章节，请人工检查审查文档。'}"
+            raise
+        response_ids.extend(fix_response_ids)
+        print_call_artifact_report(
+            f"{FIVE_CHAPTER_REVIEW_NAME}原地返修调用",
+            [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
+            applied_fix.changed_keys,
         )
-        return False
 
     fail(f"第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} 连续审查失败。")
 
@@ -3530,117 +3753,160 @@ def run_chapter_workflow(
                     )
 
             if PHASE3_REVIEW in phase_plan:
-                current_chapter_text = current_chapter_text or read_text_if_exists(paths["rewritten_chapter"]).strip()
-                if not current_chapter_text:
-                    fail(f"第 {chapter_number} 章缺少正文，无法执行章级审核。")
-                catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
-                payload, included_docs, omitted_docs = build_phase_request_payload(
-                    phase_key=PHASE3_REVIEW,
-                    project_root=project_root,
-                    volume_material=volume_material,
-                    volume_number=volume_material["volume_number"],
-                    chapter_number=chapter_number,
-                    catalog=catalog,
-                    chapter_text=current_chapter_text,
-                )
-                print_progress(f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用：审核第 {chapter_number} 章全部产物。")
-                print_request_context_summary(
-                    request_label="第三阶段：章级审核",
-                    volume_number=volume_material["volume_number"],
-                    chapter_number=chapter_number,
-                    source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
-                    included_docs=included_docs,
-                    omitted_docs=omitted_docs,
-                    previous_response_id=previous_response_id,
-                    prompt_cache_key=chapter_session_key,
-                    shared_prefix_lines=[
-                        *chapter_shared_prefix_summary_lines(
+                for review_cycle in range(1, MAX_REVIEW_FIX_ATTEMPTS + 2):
+                    current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
+                    if not current_chapter_text:
+                        fail(f"第 {chapter_number} 章缺少正文，无法执行章级审核。")
+                    catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
+                    payload, included_docs, omitted_docs = build_phase_request_payload(
+                        phase_key=PHASE3_REVIEW,
+                        project_root=project_root,
+                        volume_material=volume_material,
+                        volume_number=volume_material["volume_number"],
+                        chapter_number=chapter_number,
+                        catalog=catalog,
+                        chapter_text=current_chapter_text,
+                    )
+                    review_label = "第三阶段：章级审核" if review_cycle == 1 else "第三阶段：章级复审"
+                    print_progress(
+                        f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用："
+                        f"{'审核' if review_cycle == 1 else '复审'}第 {chapter_number} 章全部产物。"
+                    )
+                    print_request_context_summary(
+                        request_label=review_label,
+                        volume_number=volume_material["volume_number"],
+                        chapter_number=chapter_number,
+                        source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                        included_docs=included_docs,
+                        omitted_docs=omitted_docs,
+                        previous_response_id=previous_response_id,
+                        prompt_cache_key=chapter_session_key,
+                        shared_prefix_lines=[
+                            *chapter_shared_prefix_summary_lines(
+                                rewrite_manifest,
+                                volume_material,
+                                chapter_number,
+                                source_char_count,
+                            ),
+                            *payload_prefix_doc_summary_lines(payload),
+                        ],
+                        dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+                    )
+                    chapter_review, previous_response_id, review_result = call_chapter_review_response(
+                        client,
+                        model,
+                        COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                        stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                        previous_response_id=previous_response_id,
+                        prompt_cache_key=chapter_session_key,
+                    )
+                    response_ids.append(str(review_result.response_id or ""))
+                    chapter_review_changed = write_artifact(paths["chapter_review"], chapter_review.review_md)
+                    print_call_artifact_report(
+                        f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用",
+                        [("章级审核文档", paths["chapter_review"])],
+                        ["chapter_review"] if chapter_review_changed else [],
+                    )
+
+                    if chapter_review.passed:
+                        update_chapter_state(
+                            rewrite_manifest,
+                            volume_material["volume_number"],
+                            chapter_number,
+                            status="passed",
+                            attempts=attempt,
+                            last_stage=PHASE3_REVIEW,
+                            blocking_issues=[],
+                            pending_phases=[],
+                            rewrite_targets=[],
+                            revision_origin=None,
+                        )
+                        write_chapter_stage_snapshot(
+                            paths["chapter_stage_manifest"],
+                            volume_number=volume_material["volume_number"],
+                            chapter_number=chapter_number,
+                            status="passed",
+                            note="当前章节已通过章级审核。",
+                            attempt=attempt,
+                            last_phase=PHASE3_REVIEW,
+                            response_ids=response_ids,
+                        )
+                        mark_five_chapter_group_pending_for_chapter(
                             rewrite_manifest,
                             volume_material,
                             chapter_number,
-                            source_char_count,
-                        ),
-                        *payload_prefix_doc_summary_lines(payload),
-                    ],
-                    dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
-                )
-                chapter_review, previous_response_id, review_result = call_chapter_review_response(
-                    client,
-                    model,
-                    COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
-                    stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-                    previous_response_id=previous_response_id,
-                    prompt_cache_key=chapter_session_key,
-                )
-                response_ids.append(str(review_result.response_id or ""))
-                chapter_review_changed = write_artifact(paths["chapter_review"], chapter_review.review_md)
-                print_call_artifact_report(
-                    f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用",
-                    [("章级审核文档", paths["chapter_review"])],
-                    ["chapter_review"] if chapter_review_changed else [],
-                )
+                        )
+                        print_progress(f"第 {chapter_number} 章已通过章级审核。")
+                        return
 
-                if chapter_review.passed:
+                    if review_cycle > MAX_REVIEW_FIX_ATTEMPTS:
+                        update_chapter_state(
+                            rewrite_manifest,
+                            volume_material["volume_number"],
+                            chapter_number,
+                            status="failed",
+                            attempts=attempt,
+                            last_stage=PHASE3_REVIEW,
+                            blocking_issues=chapter_review.blocking_issues,
+                            pending_phases=[],
+                            rewrite_targets=chapter_review.rewrite_targets,
+                            revision_origin="chapter_review",
+                        )
+                        write_chapter_stage_snapshot(
+                            paths["chapter_stage_manifest"],
+                            volume_number=volume_material["volume_number"],
+                            chapter_number=chapter_number,
+                            status="failed",
+                            note="章级审核原地返修次数耗尽，仍未通过。",
+                            attempt=attempt,
+                            last_phase=PHASE3_REVIEW,
+                            response_ids=response_ids,
+                        )
+                        fail(f"第 {chapter_number} 章章级审核原地返修 {MAX_REVIEW_FIX_ATTEMPTS} 次后仍未通过。")
+
                     update_chapter_state(
                         rewrite_manifest,
                         volume_material["volume_number"],
                         chapter_number,
-                        status="passed",
+                        status="in_review_fix",
                         attempts=attempt,
                         last_stage=PHASE3_REVIEW,
-                        blocking_issues=[],
+                        blocking_issues=chapter_review.blocking_issues,
                         pending_phases=[],
-                        rewrite_targets=[],
-                        revision_origin=None,
+                        rewrite_targets=chapter_review.rewrite_targets,
+                        revision_origin="chapter_review",
                     )
                     write_chapter_stage_snapshot(
                         paths["chapter_stage_manifest"],
                         volume_number=volume_material["volume_number"],
                         chapter_number=chapter_number,
-                        status="passed",
-                        note="当前章节已通过章级审核。",
+                        status="in_review_fix",
+                        note="章级审核未通过，正在当前审核阶段直接修复目标文件。",
                         attempt=attempt,
                         last_phase=PHASE3_REVIEW,
                         response_ids=response_ids,
                     )
-                    mark_five_chapter_group_pending_for_chapter(
-                        rewrite_manifest,
-                        volume_material,
-                        chapter_number,
+                    print_progress(
+                        f"第 {chapter_number} 章章级审核未通过，将在审核阶段直接修复。"
+                        f" 本轮问题：{'; '.join(chapter_review.blocking_issues) or '见审核文档'}。"
                     )
-                    print_progress(f"第 {chapter_number} 章已通过章级审核。")
-                    return
-
-                revision_plan = build_chapter_revision_plan(
-                    rewrite_targets=chapter_review.rewrite_targets,
-                )
-                update_chapter_state(
-                    rewrite_manifest,
-                    volume_material["volume_number"],
-                    chapter_number,
-                    status="needs_revision",
-                    attempts=attempt,
-                    last_stage=PHASE3_REVIEW,
-                    blocking_issues=chapter_review.blocking_issues,
-                    pending_phases=revision_plan,
-                    rewrite_targets=chapter_review.rewrite_targets,
-                    revision_origin="chapter_review",
-                )
-                write_chapter_stage_snapshot(
-                    paths["chapter_stage_manifest"],
-                    volume_number=volume_material["volume_number"],
-                    chapter_number=chapter_number,
-                    status="needs_revision",
-                    note=f"章级审核未通过，待重跑阶段：{revision_plan_label(revision_plan)}。",
-                    attempt=attempt,
-                    last_phase=PHASE3_REVIEW,
-                    response_ids=response_ids,
-                )
-                print_progress(
-                    f"第 {chapter_number} 章章级审核未通过，将按审核意见重试。"
-                    f" 本轮问题：{'; '.join(chapter_review.blocking_issues) or '见审核文档'}。"
-                    f" 待重跑阶段：{revision_plan_label(revision_plan)}。"
-                )
+                    applied_fix, previous_response_id, fix_response_ids = apply_review_fix_with_repair(
+                        client=client,
+                        model=model,
+                        review_kind="chapter",
+                        shared_prompt=stage_shared_prompt,
+                        review=chapter_review,
+                        allowed_files=chapter_review_fix_target_paths(paths),
+                        previous_response_id=previous_response_id,
+                        prompt_cache_key=chapter_session_key,
+                        debug_path=paths["chapter_response_debug"],
+                    )
+                    response_ids.extend(fix_response_ids)
+                    print_call_artifact_report(
+                        "章级审核原地返修调用",
+                        [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
+                        applied_fix.changed_keys,
+                    )
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):
                 write_response_debug_snapshot(
@@ -3692,8 +3958,9 @@ def run_volume_review(
         volume_material=volume_material,
         rewritten_chapters=rewritten_chapters,
     )
+    previous_response_id: str | None = None
 
-    for attempt in range(1, MAX_VOLUME_REVIEW_ATTEMPTS + 1):
+    for attempt in range(1, MAX_REVIEW_FIX_ATTEMPTS + 2):
         update_volume_review_state(
             rewrite_manifest,
             volume_material["volume_number"],
@@ -3710,6 +3977,11 @@ def run_volume_review(
             attempt=attempt,
         )
         try:
+            rewritten_chapters = build_rewritten_chapters_payload(
+                project_root,
+                volume_material["volume_number"],
+                chapter_numbers,
+            )
             catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_numbers[0])
             payload, included_docs, omitted_docs = build_volume_review_payload(
                 project_root=project_root,
@@ -3727,7 +3999,7 @@ def run_volume_review(
                 source_summary_lines=volume_review_source_summary_lines(rewritten_chapters),
                 included_docs=included_docs,
                 omitted_docs=omitted_docs,
-                previous_response_id=None,
+                previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
                 shared_prefix_lines=[
                     *volume_review_shared_prefix_summary_lines(
@@ -3745,9 +4017,10 @@ def run_volume_review(
                 COMMON_VOLUME_REVIEW_INSTRUCTIONS,
                 shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
                 allowed_chapters=list(rewritten_chapters.keys()),
-                previous_response_id=None,
+                previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
             )
+            previous_response_id = response_id
             volume_review_changed = write_artifact(paths["volume_review"], volume_review.review_md)
             print_call_artifact_report(
                 "卷级审核调用",
@@ -3781,34 +4054,53 @@ def run_volume_review(
                 return True
 
             chapters_to_revise = [item.zfill(4) for item in volume_review.chapters_to_revise if item]
-            revision_plan = build_multi_chapter_revision_plan(
-                chapters_to_revise=chapters_to_revise,
-                rewrite_targets=volume_review.rewrite_targets,
-            )
+            if attempt > MAX_REVIEW_FIX_ATTEMPTS:
+                update_volume_review_state(
+                    rewrite_manifest,
+                    volume_material["volume_number"],
+                    status="failed",
+                    attempts=attempt,
+                    chapters_to_revise=chapters_to_revise,
+                    blocking_issues=volume_review.blocking_issues,
+                )
+                fail(
+                    f"第 {volume_material['volume_number']} 卷卷级审核原地返修 "
+                    f"{MAX_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+                )
+
             update_volume_review_state(
                 rewrite_manifest,
                 volume_material["volume_number"],
-                status="needs_revision",
+                status="in_review_fix",
                 attempts=attempt,
                 chapters_to_revise=chapters_to_revise,
                 blocking_issues=volume_review.blocking_issues,
             )
-            for chapter_number in chapters_to_revise:
-                update_chapter_state(
-                    rewrite_manifest,
-                    volume_material["volume_number"],
-                    chapter_number,
-                    status="needs_revision",
-                    blocking_issues=volume_review.blocking_issues,
-                    pending_phases=revision_plan.get(chapter_number, full_chapter_workflow_plan()),
-                    rewrite_targets=rewrite_targets_for_chapter(chapter_number, volume_review.rewrite_targets),
-                    revision_origin="volume_review",
-                )
             print_progress(
-                f"第 {volume_material['volume_number']} 卷卷级审核未通过，需要返工章节："
-                f"{'、'.join(chapters_to_revise) or '未返回明确章节，请人工检查卷级审核文档。'}"
+                f"第 {volume_material['volume_number']} 卷卷级审核未通过，将在审核阶段直接修复。"
+                f" 目标章节：{'、'.join(chapters_to_revise) or '未明确'}。"
             )
-            return False
+            applied_fix, previous_response_id, _ = apply_review_fix_with_repair(
+                client=client,
+                model=model,
+                review_kind="volume",
+                shared_prompt=shared_prompt,
+                review=volume_review,
+                allowed_files=multi_chapter_review_fix_target_paths(
+                    project_root,
+                    volume_material["volume_number"],
+                    chapter_numbers,
+                    include_volume_docs=True,
+                ),
+                previous_response_id=previous_response_id,
+                prompt_cache_key=prompt_cache_key,
+                debug_path=paths["volume_response_debug"],
+            )
+            print_call_artifact_report(
+                "卷级审核原地返修调用",
+                [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
+                applied_fix.changed_keys,
+            )
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):
                 write_response_debug_snapshot(

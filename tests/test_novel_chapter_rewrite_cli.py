@@ -8,6 +8,56 @@ from unittest.mock import Mock, patch
 from novelist.cli import novel_chapter_rewrite_cli as rewrite_cli
 
 
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _manifest(project_root: Path) -> dict:
+    return {
+        "project_root": str(project_root),
+        "source_root": str(project_root / "source"),
+        "new_book_title": "测试书",
+        "target_worldview": "玄幻",
+        "rewrite_output_root": str(project_root / rewrite_cli.REWRITTEN_ROOT_DIRNAME),
+        "processed_volumes": [],
+        "last_processed_volume": None,
+        "last_processed_chapter": None,
+        "chapter_states": {},
+        "volume_review_states": {},
+        "five_chapter_review_states": {},
+    }
+
+
+def _volume_material(chapter_numbers: list[str]) -> dict:
+    return {
+        "volume_number": "001",
+        "chapters": [
+            {
+                "chapter_number": chapter_number,
+                "file_name": f"{chapter_number}.txt",
+                "file_path": f"source/001/{chapter_number}.txt",
+                "source_title": f"第{int(chapter_number)}章 测试",
+                "text": f"参考源章节 {chapter_number}。",
+            }
+            for chapter_number in chapter_numbers
+        ],
+        "extras": [],
+    }
+
+
+def _seed_rewrite_files(project_root: Path, chapter_numbers: list[str]) -> None:
+    for chapter_number in chapter_numbers:
+        paths = rewrite_cli.rewrite_paths(project_root, "001", chapter_number)
+        _write_text(paths["chapter_outline"], f"# {chapter_number} 章纲\n")
+        _write_text(paths["chapter_review"], f"# {chapter_number} 章级审核\n")
+        _write_text(paths["rewritten_chapter"], f"{chapter_number} 原正文问题。\n")
+    volume_paths = rewrite_cli.rewrite_paths(project_root, "001")
+    _write_text(volume_paths["volume_outline"], "# 卷级大纲\n")
+    _write_text(volume_paths["volume_plot_progress"], "# 卷级剧情进程\n")
+    _write_text(volume_paths["volume_review"], "# 卷级审核\n")
+
+
 class ReviewPayloadNormalizationTests(unittest.TestCase):
     def test_finalize_review_payload_infers_passed_from_review_text(self) -> None:
         payload = rewrite_cli.WorkflowSubmissionPayload(
@@ -254,6 +304,255 @@ class DocumentOperationRepairTests(unittest.TestCase):
             self.assertIn("第二段被模型改写后的文字。", repair_input)
             self.assertIn("第二段原文。", repair_input)
             self.assertIn("逐字复制", repair_input)
+
+
+class ReviewFixLoopTests(unittest.TestCase):
+    def test_review_fix_without_targets_writes_debug_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            target = project_root / "rewritten_novel" / "001" / "0001.txt"
+            _write_text(target, "原正文。\n")
+            debug_path = project_root / "debug.md"
+            review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="不通过，但没有返回返工对象。",
+                blocking_issues=["缺少目标"],
+            )
+
+            with (
+                self.assertRaises(rewrite_cli.llm_runtime.ModelOutputError),
+                patch.object(rewrite_cli.document_ops, "call_document_operation_tools") as call_tools,
+            ):
+                rewrite_cli.apply_review_fix_with_repair(
+                    client=Mock(),
+                    model="test-model",
+                    review_kind="chapter",
+                    shared_prompt="shared\n",
+                    review=review,
+                    allowed_files={"rewritten_chapter": target},
+                    previous_response_id="resp_review",
+                    prompt_cache_key="cache-key",
+                    debug_path=debug_path,
+                )
+
+            call_tools.assert_not_called()
+            self.assertTrue(debug_path.exists())
+            self.assertIn("未返回可修复目标", debug_path.read_text(encoding="utf-8"))
+
+    def test_chapter_review_failure_repairs_without_restarting_generation_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material(["0001"])
+            _seed_rewrite_files(project_root, ["0001"])
+            rewrite_cli.update_chapter_state(
+                manifest,
+                "001",
+                "0001",
+                status="in_progress",
+                pending_phases=[rewrite_cli.PHASE3_REVIEW],
+            )
+            paths = rewrite_cli.rewrite_paths(project_root, "001", "0001")
+            failed_review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="不通过，需要修改正文。",
+                blocking_issues=["原正文问题"],
+                rewrite_targets=["chapter_text"],
+            )
+            passed_review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="通过。",
+            )
+            fix_operation = rewrite_cli.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_fix",
+                status="completed",
+                output_types=["function_call"],
+                preview="fix",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=rewrite_cli.document_ops.DocumentEditPayload(
+                    files=[
+                        rewrite_cli.document_ops.DocumentEditFile(
+                            file_key="rewritten_chapter",
+                            edits=[
+                                rewrite_cli.document_ops.DocumentEditEdit(
+                                    old_text="0001 原正文问题。",
+                                    new_text="0001 修复后的正文。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with (
+                patch.object(
+                    rewrite_cli,
+                    "call_chapter_review_response",
+                    side_effect=[
+                        (failed_review, "resp_review_1", Mock(response_id="resp_review_1")),
+                        (passed_review, "resp_review_2", Mock(response_id="resp_review_2")),
+                    ],
+                ) as review_call,
+                patch.object(rewrite_cli.document_ops, "call_document_operation_tools", return_value=fix_operation),
+                patch.object(rewrite_cli, "call_chapter_text_revision_response", side_effect=AssertionError("should not restart text phase")),
+                patch.object(rewrite_cli, "print_request_context_summary"),
+            ):
+                rewrite_cli.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+            state = rewrite_cli.get_chapter_state(manifest, "001", "0001")
+            self.assertEqual(review_call.call_count, 2)
+            self.assertEqual(state["status"], "passed")
+            self.assertEqual(state["pending_phases"], [])
+            self.assertIn("修复后的正文", paths["rewritten_chapter"].read_text(encoding="utf-8"))
+
+    def test_group_review_failure_repairs_in_review_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
+            volume_material = _volume_material(chapter_numbers)
+            _seed_rewrite_files(project_root, chapter_numbers)
+            failed_review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="组审查不通过，需要修复 0003。",
+                blocking_issues=["0003 偏移"],
+                rewrite_targets=["0003:chapter_text"],
+                chapters_to_revise=["0003"],
+            )
+            passed_review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="组审查通过。",
+            )
+            fix_operation = rewrite_cli.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_group_fix",
+                status="completed",
+                output_types=["function_call"],
+                preview="fix",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=rewrite_cli.document_ops.DocumentEditPayload(
+                    files=[
+                        rewrite_cli.document_ops.DocumentEditFile(
+                            file_key="0003_rewritten_chapter",
+                            edits=[
+                                rewrite_cli.document_ops.DocumentEditEdit(
+                                    old_text="0003 原正文问题。",
+                                    new_text="0003 组审修复后的正文。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with (
+                patch.object(
+                    rewrite_cli,
+                    "call_five_chapter_review_response",
+                    side_effect=[
+                        (failed_review, "resp_group_review_1", Mock(response_id="resp_group_review_1")),
+                        (passed_review, "resp_group_review_2", Mock(response_id="resp_group_review_2")),
+                    ],
+                ) as review_call,
+                patch.object(rewrite_cli.document_ops, "call_document_operation_tools", return_value=fix_operation),
+                patch.object(rewrite_cli, "print_request_context_summary"),
+            ):
+                passed = rewrite_cli.run_five_chapter_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_numbers=chapter_numbers,
+                )
+
+            group_state = rewrite_cli.get_five_chapter_review_state(
+                manifest,
+                "001",
+                rewrite_cli.five_chapter_batch_id(chapter_numbers),
+                chapter_numbers,
+            )
+            chapter_state = manifest.get("chapter_states", {}).get("001", {}).get("0003", {})
+            self.assertTrue(passed)
+            self.assertEqual(review_call.call_count, 2)
+            self.assertEqual(group_state["status"], "passed")
+            self.assertNotEqual(chapter_state.get("status"), "needs_revision")
+
+    def test_volume_review_failure_repairs_in_review_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002"]
+            volume_material = _volume_material(chapter_numbers)
+            _seed_rewrite_files(project_root, chapter_numbers)
+            failed_review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="卷级审核不通过，需要修复 0002。",
+                blocking_issues=["0002 偏移"],
+                rewrite_targets=["0002:chapter_text"],
+                chapters_to_revise=["0002"],
+            )
+            passed_review = rewrite_cli.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="卷级审核通过。",
+            )
+            fix_operation = rewrite_cli.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_volume_fix",
+                status="completed",
+                output_types=["function_call"],
+                preview="fix",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=rewrite_cli.document_ops.DocumentEditPayload(
+                    files=[
+                        rewrite_cli.document_ops.DocumentEditFile(
+                            file_key="0002_rewritten_chapter",
+                            edits=[
+                                rewrite_cli.document_ops.DocumentEditEdit(
+                                    old_text="0002 原正文问题。",
+                                    new_text="0002 卷审修复后的正文。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with (
+                patch.object(
+                    rewrite_cli,
+                    "call_volume_review_response",
+                    side_effect=[
+                        (failed_review, "resp_volume_review_1", Mock(response_id="resp_volume_review_1")),
+                        (passed_review, "resp_volume_review_2", Mock(response_id="resp_volume_review_2")),
+                    ],
+                ) as review_call,
+                patch.object(rewrite_cli.document_ops, "call_document_operation_tools", return_value=fix_operation),
+                patch.object(rewrite_cli, "print_request_context_summary"),
+            ):
+                passed = rewrite_cli.run_volume_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                )
+
+            volume_state = rewrite_cli.get_volume_review_state(manifest, "001")
+            chapter_state = manifest.get("chapter_states", {}).get("001", {}).get("0002", {})
+            self.assertTrue(passed)
+            self.assertEqual(review_call.call_count, 2)
+            self.assertEqual(volume_state["status"], "passed")
+            self.assertIn("001", manifest["processed_volumes"])
+            self.assertNotEqual(chapter_state.get("status"), "needs_revision")
 
 
 class SupportUpdateScopeTests(unittest.TestCase):
