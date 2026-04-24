@@ -1,6 +1,6 @@
 # 架构说明
 
-本文档面向开发者，说明当前仓库的代码分层、工具体系、Prompt 结构，以及统一工作流如何调度各个 CLI。
+本文档面向开发者，说明当前仓库的代码分层、工具体系、Prompt 结构，以及统一工作流如何调度各个工作流入口。
 
 ## 1. 仓库分层
 
@@ -8,14 +8,14 @@
 
 ```text
 仓库根目录/
-├─ novel_workflow_cli.py      # 根目录统一入口包装脚本
+├─ novel_workflow.py      # 根目录统一入口包装脚本
 ├─ start_workflow.bat         # Windows 一键启动脚本
 ├─ novelist/
-│  ├─ cli/                    # 业务 CLI
+│  ├─ workflows/              # 业务工作流
 │  │  ├─ split_novel.py
-│  │  ├─ novel_adaptation_cli.py
-│  │  ├─ novel_chapter_rewrite_cli.py
-│  │  └─ novel_workflow_cli.py
+│  │  ├─ novel_adaptation.py
+│  │  ├─ novel_chapter_rewrite.py
+│  │  └─ novel_workflow.py
 │  └─ core/                   # 可复用核心模块
 │     ├─ files.py
 │     ├─ document_ops.py
@@ -29,16 +29,16 @@
 
 职责划分：
 
-- `novelist/cli/`
+- `novelist/workflows/`
   负责具体业务流程编排。
 - `novelist/core/`
   负责可复用能力，不直接承载业务流程。
-- 根目录 `novel_workflow_cli.py`
+- 根目录 `novel_workflow.py`
   只是统一入口包装层，方便直接运行。
 
-## 2. 四个 CLI 的职责
+## 2. 四个工作流入口的职责
 
-### 2.1 `novelist.cli.split_novel`
+### 2.1 `novelist.workflows.split_novel`
 
 负责把原始小说 `.txt` 拆成：
 
@@ -48,7 +48,7 @@
 
 输出是后续工作流的参考源目录。
 
-### 2.2 `novelist.cli.novel_adaptation_cli`
+### 2.2 `novelist.workflows.novel_adaptation`
 
 负责逐卷生成改编规划，包括：
 
@@ -62,7 +62,7 @@
 
 它面向“卷级规划层”。
 
-### 2.3 `novelist.cli.novel_chapter_rewrite_cli`
+### 2.3 `novelist.workflows.novel_chapter_rewrite`
 
 负责逐章重写与审核，包括：
 
@@ -75,7 +75,7 @@
 
 它面向“章节生产层”。
 
-### 2.4 `novelist.cli.novel_workflow_cli`
+### 2.4 `novelist.workflows.novel_workflow`
 
 负责统一调度：
 
@@ -134,7 +134,7 @@ LLM 运行时：
 
 ### 3.6 `novelist.core.ui`
 
-CLI 交互层：
+交互入口层：
 
 - 进度输出
 - 选择输入
@@ -146,7 +146,7 @@ CLI 交互层：
 
 ### 4.1 `submit_workflow_result`
 
-这是 `novel_chapter_rewrite_cli` 主工作流使用的统一函数工具。
+这是 `novel_chapter_rewrite` 主工作流使用的统一函数工具。
 
 用途：
 
@@ -157,7 +157,7 @@ CLI 交互层：
 
 对应代码：
 
-- [novelist/cli/novel_chapter_rewrite_cli.py](../novelist/cli/novel_chapter_rewrite_cli.py)
+- [novelist/workflows/novel_chapter_rewrite.py](../novelist/workflows/novel_chapter_rewrite.py)
   - `WORKFLOW_SUBMISSION_TOOL_NAME = "submit_workflow_result"`
   - `WorkflowSubmissionPayload`
 
@@ -212,7 +212,7 @@ CLI 交互层：
 
 - `submit_workflow_result`
 
-主要被 `novel_chapter_rewrite_cli` 的这些步骤使用：
+主要被 `novel_chapter_rewrite` 的这些步骤使用：
 
 - 章纲
 - 正文
@@ -232,15 +232,15 @@ CLI 交互层：
 
 主要被：
 
-- `novel_adaptation_cli`
-- `novel_chapter_rewrite_cli` 的正文修订阶段
-- `novel_chapter_rewrite_cli` 的状态文档更新阶段
+- `novel_adaptation`
+- `novel_chapter_rewrite` 的正文修订阶段
+- `novel_chapter_rewrite` 的状态文档更新阶段
 
 使用。
 
 ## 6. Prompt 结构总览
 
-当前 `novel_chapter_rewrite_cli` 的 prompt 由四层组成。
+当前 `novel_chapter_rewrite` 的 prompt 由四层组成。
 
 ### 6.1 `instructions`
 
@@ -410,21 +410,21 @@ CLI 交互层：
 
 1. 识别输入类型
 2. 如需要，先 `split_novel`
-3. 运行 `novel_adaptation_cli`
-4. 再运行 `novel_chapter_rewrite_cli`
+3. 运行 `novel_adaptation`
+4. 再运行 `novel_chapter_rewrite`
 5. 结束后回到统一入口菜单
 
 同时它支持：
 
 - adaptation 已完成但 rewrite 未完成时优先续跑 rewrite
-- workflow-controlled 子 CLI 模式
+- workflow-controlled 子流程模式
 - 重新配置 OpenAI 设置
 
 ## 11. 开发建议
 
 如果你后续继续改这里，建议优先遵守这几条：
 
-1. 业务流程改动尽量放在 `novelist/cli/`
+1. 业务流程改动尽量放在 `novelist/workflows/`
 2. 工具 schema、运行时兼容、文件 patch 能力尽量放在 `novelist/core/`
 3. 新增 prompt 资料时优先考虑它属于：
    - `instructions`

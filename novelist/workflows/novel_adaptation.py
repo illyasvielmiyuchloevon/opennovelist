@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
+from pydantic import BaseModel, Field
 from novelist.core.files import (
     extract_json_payload,
     migrate_numbered_injection_dirs,
@@ -16,8 +17,10 @@ from novelist.core.files import (
     normalize_path,
     now_iso,
     read_text,
+    read_text_if_exists,
     sanitize_file_name,
     write_markdown_data,
+    write_text_if_changed,
 )
 from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
 import novelist.core.document_ops as document_ops
@@ -27,8 +30,10 @@ import novelist.core.responses_runtime as llm_runtime
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"
 LEGACY_PROJECT_MANIFEST_NAME = "00_project_manifest.json"
-GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
+GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "config.json"
+LEGACY_GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
+LEGACY_GLOBAL_CONFIG_PATH = LEGACY_GLOBAL_CONFIG_DIR / "config.json"
 GLOBAL_DIRNAME = "global_injection"
 VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
@@ -95,12 +100,19 @@ PROTAGONIST_MODE_CUSTOM = "custom_design"
 PROTAGONIST_MODE_ADAPTIVE = "adaptive_from_source"
 DEFAULT_API_RETRIES = 10
 DEFAULT_RETRY_DELAY_SECONDS = 5
+MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS = 2
+MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS = 2
 RUN_MODE_STAGE = "stage"
 RUN_MODE_BOOK = "book"
 RUN_MODE_LABELS = {
     RUN_MODE_STAGE: "按阶段运行",
     RUN_MODE_BOOK: "按全书运行",
 }
+ADAPTATION_REVIEW_TOOL_NAME = "submit_adaptation_review"
+ADAPTATION_REVIEW_TOOL_DESCRIPTION = (
+    "提交每卷改编资料审核结果。必须判断当前卷资料文档是否已经满足后续仿写需要，"
+    "并在不通过时给出阻塞问题与可原地修复的目标文件 key。"
+)
 
 
 COMMON_DOCUMENT_OUTPUT_RULE = (
@@ -115,6 +127,49 @@ COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
     + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_DOCUMENT_OUTPUT_RULE
 )
+COMMON_ADAPTATION_REVIEW_INSTRUCTIONS = (
+    "你是资深网络小说仿写资料总审核编辑。"
+    "用户拥有参考源文本权利。"
+    "当前任务是审核本卷已经生成或继承的改编资料是否能支撑后续章节仿写。"
+    "不要直接输出普通文本答案，必须调用 submit_adaptation_review 提交结构化审核结果。"
+)
+COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS = (
+    "你是资深网络小说仿写资料原地返修编辑。"
+    "用户拥有参考源文本权利。"
+    "当前任务不是重新审核，也不是重新生成整卷资料；"
+    "你只能根据上一轮未通过的审核结果，直接修复允许范围内的目标资料文档。"
+    + document_ops.DOCUMENT_OPERATION_RULE
+    + COMMON_DOCUMENT_OUTPUT_RULE
+)
+
+
+class AdaptationReviewTarget(BaseModel):
+    file_key: str = Field(..., description="审核或修复目标的逻辑 key。")
+    file_name: str = Field(..., description="文件名。")
+    file_path: str = Field(..., description="文件绝对路径或工程内路径。")
+    label: str = Field("", description="中文文档名。")
+    scope: str = Field("", description="global 或 volume。")
+    exists: bool = Field(False, description="文件当前是否存在。")
+    current_char_count: int = Field(0, description="当前正文字符数。")
+    current_content: str = Field("", description="当前文件正文，必要时会被截断。")
+    preferred_mode: str = Field("patch", description="建议工具模式。")
+
+
+class AdaptationReviewPayload(BaseModel):
+    passed: bool | None = Field(None, description="本卷资料审核是否通过。")
+    review_md: str = Field("", description="Markdown 审核报告正文。")
+    blocking_issues: list[str] = Field(default_factory=list, description="阻塞后续仿写的资料问题。")
+    rewrite_targets: list[str] = Field(
+        default_factory=list,
+        description="需要原地修复的目标文件 key，必须来自 adaptation_documents 或 update_target_files。",
+    )
+
+
+class AdaptationReviewResult(BaseModel):
+    payload: AdaptationReviewPayload
+    response_ids: list[str] = Field(default_factory=list)
+    review_path: str = ""
+    fix_attempts: int = 0
 
 
 def world_model_scope_text() -> str:
@@ -187,7 +242,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workflow-controlled",
         action="store_true",
-        help="由统一工作流入口调度时启用：当前只处理本次目标卷，完成后直接返回，不在子 CLI 内继续下一卷。",
+        help="由统一工作流入口调度时启用：当前只处理本次目标卷，完成后直接返回，不在子流程 内继续下一卷。",
     )
     return parser.parse_args()
 def validate_source_root(source_root: Path) -> None:
@@ -771,6 +826,42 @@ def call_document_operation_response(
     return result, result.response_id
 
 
+def call_adaptation_review_response(
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    *,
+    previous_response_id: str | None = None,
+    prompt_cache_key: str | None = None,
+) -> tuple[
+    AdaptationReviewPayload,
+    str | None,
+    llm_runtime.FunctionToolResult[AdaptationReviewPayload],
+]:
+    result = llm_runtime.call_function_tool(
+        client,
+        model=model,
+        instructions=instructions,
+        user_input=user_input,
+        tool_model=AdaptationReviewPayload,
+        tool_name=ADAPTATION_REVIEW_TOOL_NAME,
+        tool_description=ADAPTATION_REVIEW_TOOL_DESCRIPTION,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+        retries=DEFAULT_API_RETRIES,
+        retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+    )
+    payload = result.parsed
+    if payload.passed is None or not payload.review_md.strip():
+        raise llm_runtime.ModelOutputError(
+            "模型未通过卷资料审核工具返回完整的 passed / review_md 字段。",
+            preview=result.preview,
+            raw_body_text=result.raw_body_text,
+        )
+    return payload, result.response_id, result
+
+
 def style_reference_context(manifest: dict[str, Any]) -> str:
     style_mode = manifest["style"]["mode"]
     if style_mode == STYLE_MODE_CUSTOM:
@@ -1202,6 +1293,7 @@ def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
         "foreshadowing": global_dir / GLOBAL_FILE_NAMES["foreshadowing"],
         "world_model": global_dir / GLOBAL_FILE_NAMES["world_model"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
+        "adaptation_review": volume_dir / f"{volume_number}_adaptation_review.md",
         "source_digest": volume_dir / "00_source_digest.md",
         "stage_manifest": volume_dir / "00_stage_manifest.md",
         "response_debug": volume_dir / "00_last_response_debug.md",
@@ -1321,6 +1413,460 @@ def write_response_debug_snapshot(
     )
 
 
+def adaptation_doc_label(doc_key: str) -> str:
+    labels = {
+        "world_design": "世界观设计",
+        "world_model": "世界模型",
+        "style_guide": "文笔写作风格",
+        "book_outline": "全书大纲",
+        "foreshadowing": "伏笔管理",
+        "global_plot_progress": "全局剧情进程",
+        "volume_outline": "卷级大纲",
+    }
+    return labels.get(doc_key, doc_key)
+
+
+def adaptation_doc_scope(doc_key: str) -> str:
+    return "volume" if doc_key == "volume_outline" else "global"
+
+
+def adaptation_review_allowed_files(paths: dict[str, Path]) -> dict[str, Path]:
+    targets = {doc_key: paths[doc_key] for doc_key in GLOBAL_INJECTION_DOC_ORDER}
+    targets["volume_outline"] = paths["volume_outline"]
+    return targets
+
+
+def adaptation_review_target_snapshot(
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    *,
+    content_limit: int = 30000,
+) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for file_key, target in allowed_files.items():
+        path = target.path if isinstance(target, document_ops.DocumentTarget) else target
+        current_content = read_text_if_exists(path).strip()
+        snapshots.append(
+            AdaptationReviewTarget(
+                file_key=file_key,
+                file_name=path.name,
+                file_path=str(path),
+                label=adaptation_doc_label(file_key),
+                scope=adaptation_doc_scope(file_key),
+                exists=path.exists(),
+                current_char_count=len(current_content),
+                current_content=clip_for_context(current_content, limit=content_limit),
+                preferred_mode="patch" if current_content else "write",
+            ).model_dump(mode="json")
+        )
+    return snapshots
+
+
+def document_operation_payload(operation: document_ops.DocumentOperationCallResult) -> dict[str, Any]:
+    if operation.mode == "write":
+        payload = operation.write_payload or document_ops.DocumentWritePayload()
+    elif operation.mode == "edit":
+        payload = operation.edit_payload or document_ops.DocumentEditPayload()
+    else:
+        payload = operation.patch_payload or document_ops.DocumentPatchPayload()
+    return {
+        "mode": operation.mode,
+        "response_id": operation.response_id,
+        "output_types": operation.output_types,
+        "payload": payload.model_dump(mode="json"),
+    }
+
+
+def build_document_operation_repair_payload(
+    *,
+    apply_error: Exception,
+    failed_operation: document_ops.DocumentOperationCallResult,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> dict[str, Any]:
+    return {
+        "document_request": {
+            "phase": "adaptation_review_fix_locator_repair",
+            "role": "卷资料审核原地返修定位修正",
+            "task": "修正上一次工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
+        },
+        "previous_tool_call_failed": {
+            "error": str(apply_error),
+            "failed_operation": document_operation_payload(failed_operation),
+        },
+        "update_target_files": adaptation_review_target_snapshot(allowed_files),
+        "requirements": [
+            "只修正上一次工具调用中无法定位的 old_text 或 match_text，不要改成整篇写入。",
+            "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
+            "replace、insert_before、insert_after 的定位文本必须在当前文件中唯一匹配。",
+            "如果短句无法唯一定位，必须扩大到包含前后连续段落的稳定上下文块。",
+            "保留原本的修改意图，只修正定位与必要的新文本，不要额外改写无关内容。",
+        ],
+    }
+
+
+def write_document_operation_apply_debug_snapshot(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    *,
+    error_message: str,
+    operation: document_ops.DocumentOperationCallResult,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> None:
+    write_response_debug_snapshot(
+        manifest,
+        volume_material,
+        error_message=error_message,
+        preview=operation.preview,
+        raw_body_text=json.dumps(
+            {
+                "failed_operation": document_operation_payload(operation),
+                "target_files": adaptation_review_target_snapshot(allowed_files),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+
+
+def apply_document_operation_with_repair(
+    *,
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    shared_prompt: str,
+    operation: document_ops.DocumentOperationCallResult,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    previous_response_id: str | None,
+    prompt_cache_key: str | None,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+) -> tuple[document_ops.AppliedDocumentOperation, str | None, list[str]]:
+    current_operation = operation
+    current_response_id = previous_response_id
+    repair_response_ids: list[str] = []
+
+    for repair_attempt in range(MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS + 1):
+        try:
+            applied = document_ops.apply_document_operation(
+                current_operation,
+                allowed_files=allowed_files,
+            )
+            return applied, current_response_id, repair_response_ids
+        except ValueError as error:
+            if repair_attempt >= MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS:
+                write_document_operation_apply_debug_snapshot(
+                    manifest,
+                    volume_material,
+                    error_message=str(error),
+                    operation=current_operation,
+                    allowed_files=allowed_files,
+                )
+                raise
+
+            print_progress(
+                "模型返回的资料修复定位未能应用："
+                f"{error} 正在请求修正定位块（{repair_attempt + 1}/{MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS}）。",
+                error=True,
+            )
+            repair_payload = build_document_operation_repair_payload(
+                apply_error=error,
+                failed_operation=current_operation,
+                allowed_files=allowed_files,
+            )
+            current_operation = document_ops.call_document_operation_tools(
+                client,
+                model=model,
+                instructions=instructions,
+                user_input=shared_prompt + json.dumps(repair_payload, ensure_ascii=False, indent=2),
+                previous_response_id=current_response_id,
+                prompt_cache_key=prompt_cache_key,
+                retries=DEFAULT_API_RETRIES,
+                retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+            )
+            current_response_id = current_operation.response_id
+            repair_response_ids.append(str(current_operation.response_id or ""))
+
+    raise RuntimeError("卷资料审核修复定位流程异常结束。")
+
+
+def build_adaptation_review_request(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> dict[str, Any]:
+    volume_number = volume_material["volume_number"]
+    return {
+        "document_request": {
+            "phase": "adaptation_volume_review",
+            "role": "卷资料审核",
+            "task": "审核当前卷资料文档是否已经满足后续章节仿写需要，并判断是否可以结束本卷资料阶段。",
+        },
+        "review_scope": {
+            "new_book_title": manifest["new_book_title"],
+            "target_worldview": manifest["target_worldview"],
+            "current_volume": volume_number,
+            "document_set_policy": (
+                "审核下游仿写实际会用到的完整当前资料集。第 001 卷应包含 7 个核心资料文档；"
+                "后续卷审核本卷更新文档，并带上已存在的文笔写作风格文档。"
+            ),
+        },
+        "requirements": [
+            "判断资料是否足够支撑后续章节仿写，而不是只检查格式是否完整。",
+            "检查参考源人物名、地名、姓氏、事件名称、专用术语是否已经替换或映射，不得直接照搬。",
+            "检查世界观设定是否已经改成目标世界观，并与参考源明显区分。",
+            "检查世界模型中的地点、势力、能力、资源、规则和术语是否有清晰的新书映射。",
+            "检查全书大纲是否是仿写书籍的大纲，不得把参考源原大纲照抄为新书大纲。",
+            "检查当前卷卷级大纲的角色推进、冲突、高潮、结尾钩子是否正确映射。",
+            "检查全局剧情进程是否把时间线、故事线、支线、反派线和跨卷线整理清楚。",
+            "检查伏笔文档是否保留功能映射，同时改成新书自己的伏笔、回收点与命名。",
+            "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容。",
+            "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_design、world_model、book_outline、volume_outline。",
+        ],
+        "adaptation_documents": adaptation_review_target_snapshot(allowed_files),
+        "output_contract": {
+            "passed": "布尔值；只有所有阻塞问题解决才为 true。",
+            "review_md": "Markdown 审核报告；必须写清通过/不通过原因。",
+            "blocking_issues": "不通过时列出会阻塞后续仿写的具体问题。",
+            "rewrite_targets": "不通过时列出需要原地修复的目标 file_key；通过时为空数组。",
+        },
+    }
+
+
+def write_adaptation_review_report(
+    path: Path,
+    *,
+    volume_number: str,
+    review: AdaptationReviewPayload,
+    attempt: int,
+    response_id: str | None,
+) -> None:
+    lines = [
+        f"# Adaptation Review {volume_number}",
+        "",
+        f"- generated_at: {now_iso()}",
+        f"- volume_number: {volume_number}",
+        f"- attempt: {attempt}",
+        f"- passed: {review.passed}",
+        f"- response_id: {response_id or 'none'}",
+        f"- rewrite_targets: {', '.join(review.rewrite_targets) if review.rewrite_targets else 'none'}",
+        "",
+    ]
+    if review.blocking_issues:
+        lines.append("## Blocking Issues")
+        lines.append("")
+        lines.extend(f"- {issue}" for issue in review.blocking_issues)
+        lines.append("")
+    lines.append("## Review")
+    lines.append("")
+    lines.append(review.review_md.strip())
+    write_text_if_changed(path, "\n".join(lines))
+
+
+def build_adaptation_review_fix_request(
+    *,
+    review: AdaptationReviewPayload,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> dict[str, Any]:
+    return {
+        "document_request": {
+            "phase": "adaptation_review_fix",
+            "role": "卷资料审核原地返修编辑",
+            "task": "根据刚才未通过的卷资料审核结果，直接修复允许范围内的目标资料文档；不要重新生成整卷资料阶段。",
+        },
+        "failed_review_result": {
+            "passed": review.passed,
+            "review_md": review.review_md,
+            "blocking_issues": review.blocking_issues,
+            "rewrite_targets": review.rewrite_targets,
+        },
+        "update_target_files": adaptation_review_target_snapshot(allowed_files),
+        "requirements": [
+            "这是卷资料审核不通过后的原地修复步骤，不要返回新的审核报告。",
+            "必须调用目标文件 write/edit/patch 工具提交修改；已有非空文件优先 patch 或 edit，禁止无理由整篇覆盖。",
+            "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
+            "所有 file_key 或 file_path 必须来自 update_target_files，禁止修改未授权文件。",
+            "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
+            "不得把审核失败降级为重新跑整卷资料生成阶段。",
+            "修复后仍必须符合目标世界观、实体改名、事件改名、术语映射、时间线和故事线整理要求。",
+        ],
+    }
+
+
+def apply_adaptation_review_fix_with_repair(
+    *,
+    client: OpenAI,
+    model: str,
+    shared_prompt: str,
+    review: AdaptationReviewPayload,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    previous_response_id: str | None,
+    prompt_cache_key: str | None,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+) -> tuple[document_ops.AppliedDocumentOperation, str | None, list[str]]:
+    if not review.rewrite_targets:
+        error_message = "卷资料审核未通过，但模型未返回可修复目标。"
+        write_response_debug_snapshot(
+            manifest,
+            volume_material,
+            error_message=error_message,
+            preview=review.review_md,
+            raw_body_text=json.dumps(
+                {
+                    "failed_review_result": review.model_dump(mode="json"),
+                    "target_files": adaptation_review_target_snapshot(allowed_files),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
+
+    fix_payload = build_adaptation_review_fix_request(
+        review=review,
+        allowed_files=allowed_files,
+    )
+    operation = document_ops.call_document_operation_tools(
+        client,
+        model=model,
+        instructions=COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS,
+        user_input=shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2),
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+        retries=DEFAULT_API_RETRIES,
+        retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+    )
+    response_ids = [str(operation.response_id or "")]
+    applied, current_response_id, repair_response_ids = apply_document_operation_with_repair(
+        client=client,
+        model=model,
+        instructions=COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS,
+        shared_prompt=shared_prompt,
+        operation=operation,
+        allowed_files=allowed_files,
+        previous_response_id=operation.response_id,
+        prompt_cache_key=prompt_cache_key,
+        manifest=manifest,
+        volume_material=volume_material,
+    )
+    response_ids.extend(repair_response_ids)
+    if not applied.emitted_keys or not applied.changed_keys:
+        error_message = "卷资料审核原地返修没有实际修改任何目标文件。"
+        write_document_operation_apply_debug_snapshot(
+            manifest,
+            volume_material,
+            error_message=error_message,
+            operation=operation,
+            allowed_files=allowed_files,
+        )
+        raise llm_runtime.ModelOutputError(error_message, preview=operation.preview, raw_body_text=operation.raw_body_text)
+    return applied, current_response_id, response_ids
+
+
+def run_adaptation_review_until_passed(
+    *,
+    client: OpenAI,
+    model: str,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    stage_shared_prompt: str,
+    previous_response_id: str | None,
+    prompt_cache_key: str,
+) -> tuple[AdaptationReviewResult, str | None]:
+    project_root = Path(manifest["project_root"])
+    paths = stage_paths(project_root, volume_material["volume_number"])
+    allowed_files = adaptation_review_allowed_files(paths)
+    response_ids: list[str] = []
+    current_response_id = previous_response_id
+    last_review: AdaptationReviewPayload | None = None
+
+    for attempt in range(1, MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS + 2):
+        write_stage_status_snapshot(
+            manifest,
+            volume_material,
+            status="adaptation_reviewing",
+            note=f"正在进行第 {attempt} 次卷资料审核；审核通过后才会标记本卷完成。",
+        )
+        print_progress(f"卷资料审核第 {attempt}/{MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS + 1} 次调用：审核第 {volume_material['volume_number']} 卷资料。")
+        review_payload = build_adaptation_review_request(
+            manifest=manifest,
+            volume_material=volume_material,
+            allowed_files=allowed_files,
+        )
+        review, current_response_id, _ = call_adaptation_review_response(
+            client,
+            model,
+            COMMON_ADAPTATION_REVIEW_INSTRUCTIONS,
+            stage_shared_prompt + json.dumps(review_payload, ensure_ascii=False, indent=2),
+            previous_response_id=current_response_id,
+            prompt_cache_key=prompt_cache_key,
+        )
+        if current_response_id:
+            response_ids.append(current_response_id)
+        last_review = review
+        write_adaptation_review_report(
+            paths["adaptation_review"],
+            volume_number=volume_material["volume_number"],
+            review=review,
+            attempt=attempt,
+            response_id=current_response_id,
+        )
+
+        if review.passed:
+            print_progress("卷资料审核已通过。")
+            return (
+                AdaptationReviewResult(
+                    payload=review,
+                    response_ids=response_ids,
+                    review_path=str(paths["adaptation_review"]),
+                    fix_attempts=attempt - 1,
+                ),
+                current_response_id,
+            )
+
+        if attempt > MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS:
+            error_message = f"卷资料审核原地返修 {MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+            write_response_debug_snapshot(
+                manifest,
+                volume_material,
+                error_message=error_message,
+                preview=review.review_md,
+                raw_body_text=json.dumps(
+                    {
+                        "failed_review_result": review.model_dump(mode="json"),
+                        "target_files": adaptation_review_target_snapshot(allowed_files),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+            raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
+
+        print_progress(
+            "卷资料审核未通过，进入当前审核阶段原地返修；"
+            f"目标：{', '.join(review.rewrite_targets) if review.rewrite_targets else '未返回'}。"
+        )
+        applied_fix, current_response_id, fix_response_ids = apply_adaptation_review_fix_with_repair(
+            client=client,
+            model=model,
+            shared_prompt=stage_shared_prompt,
+            review=review,
+            allowed_files=allowed_files,
+            previous_response_id=current_response_id,
+            prompt_cache_key=prompt_cache_key,
+            manifest=manifest,
+            volume_material=volume_material,
+        )
+        response_ids.extend(fix_response_ids)
+        print_progress(
+            "卷资料审核返修已应用："
+            f"模式={applied_fix.mode}，文件={', '.join(applied_fix.changed_keys)}。"
+        )
+
+    error_message = "卷资料审核流程异常结束。"
+    raise llm_runtime.ModelOutputError(error_message, preview=last_review.review_md if last_review else "")
+
+
 def write_stage_outputs(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
@@ -1355,7 +1901,7 @@ def write_stage_outputs(
 
     stage_manifest_payload = {
         "generated_at": now_iso(),
-        "status": "completed",
+        "status": "review_pending",
         "processed_volume": volume_material["volume_number"],
         "source_volume_dir": volume_material["volume_dir"],
         "request_mode": "per_document_function_call_with_volume_session",
@@ -1370,7 +1916,13 @@ def write_stage_outputs(
         },
         "volume_files": {
             "volume_outline": str(paths["volume_outline"]),
+            "adaptation_review": str(paths["adaptation_review"]),
             "source_digest": str(paths["source_digest"]),
+        },
+        "adaptation_review": {
+            "status": "pending",
+            "review_file": str(paths["adaptation_review"]),
+            "note": "资料文档已生成，等待卷资料审核通过后才会标记本卷完成。",
         },
         "stage_summary": {
             "processed_volume": volume_material["volume_number"],
@@ -1384,19 +1936,86 @@ def write_stage_outputs(
         title=f"Stage Manifest {volume_material['volume_number']}",
         payload=stage_manifest_payload,
         summary_lines=[
-            f"status: completed",
+            f"status: review_pending",
             f"processed_volume: {volume_material['volume_number']}",
             f"request_mode: per_document_function_call_with_volume_session",
             f"global_dir: {paths['global_dir']}",
             f"volume_dir: {paths['volume_dir']}",
+            f"adaptation_review: {paths['adaptation_review']}",
         ],
     )
 
+    return paths
+
+
+def mark_volume_processed_after_review(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    *,
+    generated_documents: list[dict[str, Any]],
+    source_char_count: int,
+    loaded_file_count: int,
+    review_result: AdaptationReviewResult,
+) -> dict[str, Path]:
+    project_root = Path(manifest["project_root"])
+    paths = stage_paths(project_root, volume_material["volume_number"])
     processed = set(manifest.get("processed_volumes", []))
     processed.add(volume_material["volume_number"])
     manifest["processed_volumes"] = sorted(processed)
     manifest["last_processed_volume"] = volume_material["volume_number"]
     save_manifest(manifest)
+
+    review = review_result.payload
+    stage_manifest_payload = {
+        "generated_at": now_iso(),
+        "status": "completed",
+        "processed_volume": volume_material["volume_number"],
+        "source_volume_dir": volume_material["volume_dir"],
+        "request_mode": "per_document_function_call_with_volume_session_with_volume_review",
+        "api_calls": generated_documents,
+        "loaded_file_count": loaded_file_count,
+        "source_char_count": source_char_count,
+        "generated_document_keys": [item.get("key") for item in generated_documents],
+        "global_files": {
+            key: str(paths[key])
+            for key in ("book_outline", "world_design", "style_guide", "world_model", "global_plot_progress", "foreshadowing")
+            if paths[key].exists()
+        },
+        "volume_files": {
+            "volume_outline": str(paths["volume_outline"]),
+            "adaptation_review": str(paths["adaptation_review"]),
+            "source_digest": str(paths["source_digest"]),
+        },
+        "adaptation_review": {
+            "status": "passed" if review.passed else "failed",
+            "passed": review.passed,
+            "review_file": review_result.review_path,
+            "response_ids": review_result.response_ids,
+            "fix_attempts": review_result.fix_attempts,
+            "blocking_issues": review.blocking_issues,
+            "rewrite_targets": review.rewrite_targets,
+        },
+        "stage_summary": {
+            "processed_volume": volume_material["volume_number"],
+            "generated_documents": [item.get("label") for item in generated_documents],
+            "loaded_file_count": loaded_file_count,
+            "source_char_count": source_char_count,
+            "adaptation_review_status": "passed" if review.passed else "failed",
+        },
+    }
+    write_markdown_data(
+        paths["stage_manifest"],
+        title=f"Stage Manifest {volume_material['volume_number']}",
+        payload=stage_manifest_payload,
+        summary_lines=[
+            "status: completed",
+            f"processed_volume: {volume_material['volume_number']}",
+            "request_mode: per_document_function_call_with_volume_session_with_volume_review",
+            f"global_dir: {paths['global_dir']}",
+            f"volume_dir: {paths['volume_dir']}",
+            f"adaptation_review: {paths['adaptation_review']}",
+        ],
+    )
 
     return paths
 
@@ -1419,7 +2038,7 @@ def render_dry_run_summary(
     print(f"补充资料数：{len(volume_material['extras'])}")
     print(f"总字符数：{source_char_count}")
     print(
-        f"请求模式：逐文档函数工具调用生成，共 {len(plan)} 次调用，"
+        f"请求模式：逐文档函数工具调用生成 {len(plan)} 次，随后至少 1 次卷资料审核；"
         "每次调用都会携带当前卷全部文件原文，并沿用同一卷 previous_response_id 会话链。"
     )
     print(f"运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
@@ -1428,7 +2047,7 @@ def render_dry_run_summary(
 
 def main() -> int:
     args = parse_args()
-    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
+    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)
     manifest: dict[str, Any] | None = None
     volume_material: dict[str, Any] | None = None
     target_volume: Path | None = None
@@ -1617,13 +2236,30 @@ def main() -> int:
                     f"{'已更新' if applied.changed_keys else '内容无变化'}。"
                 )
 
-            print_progress("本阶段文档生成完成，开始更新阶段索引文件。")
+            print_progress("本阶段文档生成完成，开始更新阶段索引文件并进入卷资料审核。")
             paths = write_stage_outputs(
                 manifest=manifest,
                 volume_material=volume_material,
                 generated_documents=generated_documents,
                 source_char_count=source_char_count,
                 loaded_file_count=len(loaded_files),
+            )
+            review_result, previous_response_id = run_adaptation_review_until_passed(
+                client=client,
+                model=openai_settings["model"],
+                manifest=manifest,
+                volume_material=volume_material,
+                stage_shared_prompt=stage_shared_prompt,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=prompt_cache_key,
+            )
+            paths = mark_volume_processed_after_review(
+                manifest,
+                volume_material,
+                generated_documents=generated_documents,
+                source_char_count=source_char_count,
+                loaded_file_count=len(loaded_files),
+                review_result=review_result,
             )
 
             print_progress(f"已处理卷：{volume_material['volume_number']}")
@@ -1642,6 +2278,7 @@ def main() -> int:
                 print_progress("文笔风格：本阶段未生成，当前工程中也暂无现成文档。")
             print_progress(f"伏笔文档：{paths['foreshadowing']}")
             print_progress(f"卷级大纲：{paths['volume_outline']}")
+            print_progress(f"卷资料审核：{paths['adaptation_review']}")
 
             next_volume = find_next_pending_volume_after(
                 volume_dirs,

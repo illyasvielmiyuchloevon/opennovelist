@@ -105,7 +105,14 @@ def resolve_provider_protocol_metadata(
     return provider, protocol
 
 
-def load_global_config(config_path: Path) -> dict[str, Any]:
+def load_global_config(config_path: Path, *, legacy_path: Path | None = None) -> dict[str, Any]:
+    if config_path.exists():
+        return load_json_file(config_path)
+    if legacy_path is not None and legacy_path.exists():
+        loaded = load_json_file(legacy_path)
+        if loaded:
+            save_json_file(config_path, loaded)
+        return loaded
     return load_json_file(config_path)
 
 

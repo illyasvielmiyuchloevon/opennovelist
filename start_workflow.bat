@@ -13,12 +13,12 @@ pause
 exit /b 1
 
 :run_python
-python "%~dp0novel_workflow_cli.py" %*
+python "%~dp0novel_workflow.py" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 goto finish
 
 :run_py
-py -3 "%~dp0novel_workflow_cli.py" %*
+py -3 "%~dp0novel_workflow.py" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 goto finish
 

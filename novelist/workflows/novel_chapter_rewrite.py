@@ -37,8 +37,10 @@ import novelist.core.responses_runtime as llm_runtime
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"
 LEGACY_PROJECT_MANIFEST_NAME = "00_project_manifest.json"
 REWRITE_MANIFEST_NAME = "00_chapter_rewrite_manifest.md"
-GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
+GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "config.json"
+LEGACY_GLOBAL_CONFIG_DIR = Path.home() / ".novel_adaptation_cli"
+LEGACY_GLOBAL_CONFIG_PATH = LEGACY_GLOBAL_CONFIG_DIR / "config.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHAPTER_REVIEW_SKILL_PATH = REPO_ROOT / "skill" / "chapter_review" / "SKILL.md"
 CHAPTER_WRITING_SKILL_PATH = REPO_ROOT / "skill" / "chapter_writing" / "SKILL.md"
@@ -607,7 +609,7 @@ def finalize_review_payload(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "基于 novel_adaptation_cli 产出的工程目录，逐章生成仿写章节、配套状态文档与审核文档，"
+            "基于 novel_adaptation 产出的工程目录，逐章生成仿写章节、配套状态文档与审核文档，"
             "使用 OpenAI Responses API 与 core 运行时。"
         )
     )
@@ -634,7 +636,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workflow-controlled",
         action="store_true",
-        help="由统一工作流入口调度时启用：当前只处理本次目标范围，完成后直接返回，不在子 CLI 内继续下一章/组/卷。",
+        help="由统一工作流入口调度时启用：当前只处理本次目标范围，完成后直接返回，不在子流程 内继续下一章/组/卷。",
     )
     return parser.parse_args()
 
@@ -699,7 +701,7 @@ def resolve_project_input(
     )
     if raw_path is None:
         raw_path = prompt_text(
-            "请输入 novel_adaptation_cli 的工程目录路径，或 split_novel 的来源目录路径",
+            "请输入 novel_adaptation 的工程目录路径，或 split_novel 的来源目录路径",
             default=str(default_path) if default_path else None,
         )
 
@@ -720,8 +722,8 @@ def resolve_project_input(
     project_root, manifest = find_existing_project_for_source(source_root)
     if project_root is None or manifest is None:
         fail(
-            "未在该来源目录旁边识别到 novel_adaptation_cli 的工程目录。"
-            "请传入已有工程目录，或先运行 novel_adaptation_cli。"
+            "未在该来源目录旁边识别到 novel_adaptation 的工程目录。"
+            "请传入已有工程目录，或先运行 novel_adaptation。"
         )
     return project_root, source_root, manifest
 
@@ -3283,7 +3285,7 @@ def select_volume_to_process(
         readiness = readiness_map.get(normalized)
         if readiness and not readiness["eligible"]:
             fail(
-                f"第 {normalized} 卷的 novel_adaptation_cli 产物尚不完善，暂不可进入章节工作流：\n"
+                f"第 {normalized} 卷的 novel_adaptation 产物尚不完善，暂不可进入章节工作流：\n"
                 + "\n".join(readiness["missing"])
             )
         return volume_map[normalized]
@@ -4224,7 +4226,7 @@ def process_volume_workflow(
 
 def main() -> int:
     args = parse_args()
-    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
+    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)
 
     try:
         print_progress("开始识别小说工程目录。")

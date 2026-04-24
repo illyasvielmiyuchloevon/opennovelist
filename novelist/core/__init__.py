@@ -1,1 +1,1 @@
-"""Shared core utilities for CLI tools in this workspace."""
+"""Shared core utilities for workflow tools in this workspace."""

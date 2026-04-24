@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from novelist.cli import novel_adaptation_cli as adaptation_cli
-from novelist.cli import novel_chapter_rewrite_cli as rewrite_cli
-from novelist.cli import split_novel
+from novelist.workflows import novel_adaptation as adaptation_workflow
+from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
+from novelist.workflows import split_novel
 import novelist.core.openai_config as openai_config
 from novelist.core.files import normalize_path
 from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
@@ -26,13 +26,14 @@ STARTUP_MODE_LABELS = {
     STARTUP_MODE_CONFIG_ONLY: "只重新配置 OpenAI 设置",
 }
 WORKDIR = Path(__file__).resolve().parents[2]
-GLOBAL_CONFIG_PATH = adaptation_cli.GLOBAL_CONFIG_PATH
+GLOBAL_CONFIG_PATH = adaptation_workflow.GLOBAL_CONFIG_PATH
+LEGACY_GLOBAL_CONFIG_PATH = adaptation_workflow.LEGACY_GLOBAL_CONFIG_PATH
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "统一调度 split_novel、novel_adaptation_cli、novel_chapter_rewrite_cli，"
+            "统一调度 split_novel、novel_adaptation、novel_chapter_rewrite，"
             "支持从原始小说文本、拆分后的书名目录或已有工程目录启动全流程。"
         )
     )
@@ -45,30 +46,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-worldview", help="目标世界观。")
     parser.add_argument(
         "--style-mode",
-        choices=(adaptation_cli.STYLE_MODE_CUSTOM, adaptation_cli.STYLE_MODE_SOURCE),
+        choices=(adaptation_workflow.STYLE_MODE_CUSTOM, adaptation_workflow.STYLE_MODE_SOURCE),
         help="写作风格来源模式。",
     )
     parser.add_argument("--style-file", help="自定义写作风格文件路径。")
     parser.add_argument(
         "--protagonist-mode",
-        choices=(adaptation_cli.PROTAGONIST_MODE_CUSTOM, adaptation_cli.PROTAGONIST_MODE_ADAPTIVE),
+        choices=(adaptation_workflow.PROTAGONIST_MODE_CUSTOM, adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE),
         help="主角设定来源模式。",
     )
     parser.add_argument("--protagonist-text", help="自定义主角设定和性格描述。")
     parser.add_argument("--project-root", help="工程目录路径。")
     parser.add_argument(
         "--adaptation-run-mode",
-        choices=(adaptation_cli.RUN_MODE_STAGE, adaptation_cli.RUN_MODE_BOOK),
-        help="novel_adaptation_cli 的运行方式。",
+        choices=(adaptation_workflow.RUN_MODE_STAGE, adaptation_workflow.RUN_MODE_BOOK),
+        help="novel_adaptation 的运行方式。",
     )
     parser.add_argument(
         "--rewrite-run-mode",
-        choices=(rewrite_cli.RUN_MODE_CHAPTER, rewrite_cli.RUN_MODE_GROUP, rewrite_cli.RUN_MODE_VOLUME),
-        help="novel_chapter_rewrite_cli 的运行方式。",
+        choices=(rewrite_workflow.RUN_MODE_CHAPTER, rewrite_workflow.RUN_MODE_GROUP, rewrite_workflow.RUN_MODE_VOLUME),
+        help="novel_chapter_rewrite 的运行方式。",
     )
-    parser.add_argument("--adaptation-volume", help="只让 novel_adaptation_cli 处理指定卷，例如 001。")
-    parser.add_argument("--rewrite-volume", help="只让 novel_chapter_rewrite_cli 处理指定卷，例如 001。")
-    parser.add_argument("--rewrite-chapter", help="只让 novel_chapter_rewrite_cli 处理指定章，例如 0001。")
+    parser.add_argument("--adaptation-volume", help="只让 novel_adaptation 处理指定卷，例如 001。")
+    parser.add_argument("--rewrite-volume", help="只让 novel_chapter_rewrite 处理指定卷，例如 001。")
+    parser.add_argument("--rewrite-chapter", help="只让 novel_chapter_rewrite 处理指定章，例如 0001。")
     parser.add_argument("--base-url", help="OpenAI Responses API 的 base_url。")
     parser.add_argument("--api-key", help="OpenAI API Key。")
     parser.add_argument("--model", help="调用的模型名称。")
@@ -95,12 +96,12 @@ def parse_args() -> argparse.Namespace:
         help="重新设置并记住 base_url、api_key、model。",
     )
     parser.add_argument("--skip-split", action="store_true", help="跳过 split_novel 阶段。")
-    parser.add_argument("--skip-adaptation", action="store_true", help="跳过 novel_adaptation_cli 阶段。")
-    parser.add_argument("--skip-rewrite", action="store_true", help="跳过 novel_chapter_rewrite_cli 阶段。")
+    parser.add_argument("--skip-adaptation", action="store_true", help="跳过 novel_adaptation 阶段。")
+    parser.add_argument("--skip-rewrite", action="store_true", help="跳过 novel_chapter_rewrite 阶段。")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="对子 CLI 传递 dry-run；split 阶段仍会真实执行本地拆分。",
+        help="对子流程传递 dry-run；split 阶段仍会真实执行本地拆分。",
     )
     return parser.parse_args()
 
@@ -110,6 +111,8 @@ def resolve_startup_mode(args: argparse.Namespace) -> str:
         return STARTUP_MODE_CONFIG_AND_WORKFLOW
     if args.startup_mode:
         return args.startup_mode
+    if args.input_path:
+        return STARTUP_MODE_WORKFLOW
     if not sys.stdin or not sys.stdin.isatty():
         return STARTUP_MODE_WORKFLOW
     return prompt_choice(
@@ -142,7 +145,7 @@ def resolve_input_path(raw_path: str | None) -> Path:
     if raw_path:
         return normalize_path(raw_path)
 
-    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
+    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)
     default_path = (
         global_config.get("last_workflow_input")
         or global_config.get("last_project_root")
@@ -163,11 +166,11 @@ def detect_input_kind(input_path: Path) -> str:
     if input_path.is_file():
         return INPUT_RAW_TEXT
 
-    manifest = adaptation_cli.load_manifest(input_path)
+    manifest = adaptation_workflow.load_manifest(input_path)
     if manifest is not None:
         return INPUT_PROJECT_ROOT
 
-    if input_path.is_dir() and adaptation_cli.discover_volume_dirs(input_path):
+    if input_path.is_dir() and adaptation_workflow.discover_volume_dirs(input_path):
         return INPUT_SPLIT_ROOT
 
     fail(
@@ -181,10 +184,10 @@ def direct_input_kind(input_path: Path) -> str | None:
         return None
     if input_path.is_file():
         return INPUT_RAW_TEXT
-    manifest = adaptation_cli.load_manifest(input_path)
+    manifest = adaptation_workflow.load_manifest(input_path)
     if manifest is not None:
         return INPUT_PROJECT_ROOT
-    if input_path.is_dir() and adaptation_cli.discover_volume_dirs(input_path):
+    if input_path.is_dir() and adaptation_workflow.discover_volume_dirs(input_path):
         return INPUT_SPLIT_ROOT
     return None
 
@@ -246,30 +249,36 @@ def resolve_workflow_entry(input_path: Path) -> tuple[Path, str]:
 
 
 def resolve_adaptation_run_mode(args: argparse.Namespace) -> str:
-    if args.adaptation_run_mode:
-        return args.adaptation_run_mode
+    adaptation_run_mode = getattr(args, "adaptation_run_mode", None)
+    if adaptation_run_mode:
+        return adaptation_run_mode
+    if getattr(args, "input_path", None):
+        return adaptation_workflow.RUN_MODE_BOOK
     if not sys.stdin or not sys.stdin.isatty():
-        return adaptation_cli.RUN_MODE_BOOK
+        return adaptation_workflow.RUN_MODE_BOOK
     return prompt_choice(
-        "选择 novel_adaptation_cli 的运行方式",
+        "选择 novel_adaptation 的运行方式",
         [
-            (adaptation_cli.RUN_MODE_STAGE, "按阶段运行（每卷结束后确认）"),
-            (adaptation_cli.RUN_MODE_BOOK, "按全书运行（自动连续处理后续卷）"),
+            (adaptation_workflow.RUN_MODE_STAGE, "按阶段运行（每卷结束后确认）"),
+            (adaptation_workflow.RUN_MODE_BOOK, "按全书运行（自动连续处理后续卷）"),
         ],
     )
 
 
 def resolve_rewrite_run_mode(args: argparse.Namespace) -> str:
-    if args.rewrite_run_mode:
-        return args.rewrite_run_mode
+    rewrite_run_mode = getattr(args, "rewrite_run_mode", None)
+    if rewrite_run_mode:
+        return rewrite_run_mode
+    if getattr(args, "input_path", None):
+        return rewrite_workflow.RUN_MODE_VOLUME
     if not sys.stdin or not sys.stdin.isatty():
-        return rewrite_cli.RUN_MODE_VOLUME
+        return rewrite_workflow.RUN_MODE_VOLUME
     return prompt_choice(
-        "选择 novel_chapter_rewrite_cli 的运行方式",
+        "选择 novel_chapter_rewrite 的运行方式",
         [
-            (rewrite_cli.RUN_MODE_CHAPTER, "按章节运行"),
-            (rewrite_cli.RUN_MODE_GROUP, "按组运行"),
-            (rewrite_cli.RUN_MODE_VOLUME, "按卷运行"),
+            (rewrite_workflow.RUN_MODE_CHAPTER, "按章节运行"),
+            (rewrite_workflow.RUN_MODE_GROUP, "按组运行"),
+            (rewrite_workflow.RUN_MODE_VOLUME, "按卷运行"),
         ],
     )
 
@@ -290,7 +299,7 @@ def maybe_configure_openai(
         return
 
     print_progress("开始处理统一入口的 OpenAI 全局设置。")
-    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
+    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)
     if force_reconfigure:
         _, settings, _ = openai_config.force_reconfigure_openai(
             cli_provider=args.provider,
@@ -335,7 +344,7 @@ def maybe_configure_openai(
 
 
 def remember_workflow_input(input_path: Path) -> None:
-    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH)
+    global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)
     openai_config.update_global_config(
         GLOBAL_CONFIG_PATH,
         global_config,
@@ -365,18 +374,18 @@ def resolve_project_root_for_source(
 ) -> Path:
     if requested_project_root:
         candidate = normalize_path(requested_project_root)
-        manifest = adaptation_cli.load_manifest(candidate)
+        manifest = adaptation_workflow.load_manifest(candidate)
         if manifest is None:
             fail(f"指定工程目录中未找到项目清单：{candidate}")
         return candidate
 
-    project_root, manifest = adaptation_cli.find_existing_project_for_source(source_root)
+    project_root, manifest = adaptation_workflow.find_existing_project_for_source(source_root)
     if project_root is not None and manifest is not None:
         return project_root
 
     fail(
         f"未能从来源目录找到对应工程：{source_root}\n"
-        "请先运行 novel_adaptation_cli，或通过 --project-root 指定工程目录。"
+        "请先运行 novel_adaptation，或通过 --project-root 指定工程目录。"
     )
 
 
@@ -386,9 +395,9 @@ def try_resolve_existing_project_root(
 ) -> Path | None:
     if requested_project_root:
         candidate = normalize_path(requested_project_root)
-        return candidate if adaptation_cli.load_manifest(candidate) is not None else None
+        return candidate if adaptation_workflow.load_manifest(candidate) is not None else None
 
-    project_root, manifest = adaptation_cli.find_existing_project_for_source(source_root)
+    project_root, manifest = adaptation_workflow.find_existing_project_for_source(source_root)
     if project_root is not None and manifest is not None:
         return project_root
     return None
@@ -400,7 +409,7 @@ def try_resolve_existing_project_from_raw_text(
 ) -> tuple[Path | None, Path | None]:
     if requested_project_root:
         candidate = normalize_path(requested_project_root)
-        manifest = adaptation_cli.load_manifest(candidate)
+        manifest = adaptation_workflow.load_manifest(candidate)
         if manifest is None:
             return None, None
         try:
@@ -419,9 +428,9 @@ def try_resolve_existing_project_from_raw_text(
             continue
         if child.name != source_file.stem and not child.name.startswith(f"{source_file.stem}_"):
             continue
-        if not adaptation_cli.discover_volume_dirs(child):
+        if not adaptation_workflow.discover_volume_dirs(child):
             continue
-        project_root, manifest = adaptation_cli.find_existing_project_for_source(child)
+        project_root, manifest = adaptation_workflow.find_existing_project_for_source(child)
         if project_root is None or manifest is None:
             continue
         matches.append((str(manifest.get("updated_at", "")), child, project_root))
@@ -440,11 +449,11 @@ def sorted_volume_numbers(volume_numbers: list[str]) -> list[str]:
 
 
 def pending_rewrite_volumes(project_root: Path) -> list[str]:
-    adaptation_manifest = adaptation_cli.load_manifest(project_root)
+    adaptation_manifest = adaptation_workflow.load_manifest(project_root)
     if adaptation_manifest is None:
         return []
 
-    rewrite_manifest = rewrite_cli.load_rewrite_manifest(project_root)
+    rewrite_manifest = rewrite_workflow.load_rewrite_manifest(project_root)
     adapted_volumes = sorted_volume_numbers(list(adaptation_manifest.get("processed_volumes", [])))
     rewritten_volumes = set(
         sorted_volume_numbers(list((rewrite_manifest or {}).get("processed_volumes", [])))
@@ -452,7 +461,7 @@ def pending_rewrite_volumes(project_root: Path) -> list[str]:
     return [volume for volume in adapted_volumes if volume not in rewritten_volumes]
 
 
-def build_adaptation_cli_args(
+def build_adaptation_workflow_args(
     args: argparse.Namespace,
     *,
     input_root: Path,
@@ -460,32 +469,32 @@ def build_adaptation_cli_args(
     workflow_controlled: bool = False,
     volume_override: str | None = None,
 ) -> list[str]:
-    cli_args = [str(input_root), "--run-mode", run_mode]
+    workflow_args = [str(input_root), "--run-mode", run_mode]
     if args.new_title:
-        cli_args.extend(["--new-title", args.new_title])
+        workflow_args.extend(["--new-title", args.new_title])
     if args.target_worldview:
-        cli_args.extend(["--target-worldview", args.target_worldview])
+        workflow_args.extend(["--target-worldview", args.target_worldview])
     if args.style_mode:
-        cli_args.extend(["--style-mode", args.style_mode])
+        workflow_args.extend(["--style-mode", args.style_mode])
     if args.style_file:
-        cli_args.extend(["--style-file", args.style_file])
+        workflow_args.extend(["--style-file", args.style_file])
     if args.protagonist_mode:
-        cli_args.extend(["--protagonist-mode", args.protagonist_mode])
+        workflow_args.extend(["--protagonist-mode", args.protagonist_mode])
     if args.protagonist_text:
-        cli_args.extend(["--protagonist-text", args.protagonist_text])
+        workflow_args.extend(["--protagonist-text", args.protagonist_text])
     if args.project_root:
-        cli_args.extend(["--project-root", args.project_root])
+        workflow_args.extend(["--project-root", args.project_root])
     target_volume = volume_override or args.adaptation_volume
     if target_volume:
-        cli_args.extend(["--volume", target_volume])
+        workflow_args.extend(["--volume", target_volume])
     if args.dry_run:
-        cli_args.append("--dry-run")
+        workflow_args.append("--dry-run")
     if workflow_controlled:
-        cli_args.append("--workflow-controlled")
-    return cli_args
+        workflow_args.append("--workflow-controlled")
+    return workflow_args
 
 
-def build_rewrite_cli_args(
+def build_rewrite_workflow_args(
     args: argparse.Namespace,
     *,
     project_root: Path,
@@ -493,23 +502,23 @@ def build_rewrite_cli_args(
     workflow_controlled: bool = False,
     volume_override: str | None = None,
 ) -> list[str]:
-    cli_args = [str(project_root), "--run-mode", run_mode]
+    workflow_args = [str(project_root), "--run-mode", run_mode]
     target_volume = volume_override or args.rewrite_volume
     if target_volume:
-        cli_args.extend(["--volume", target_volume])
+        workflow_args.extend(["--volume", target_volume])
     if args.rewrite_chapter:
-        cli_args.extend(["--chapter", args.rewrite_chapter])
+        workflow_args.extend(["--chapter", args.rewrite_chapter])
     if args.dry_run:
-        cli_args.append("--dry-run")
+        workflow_args.append("--dry-run")
     if workflow_controlled:
-        cli_args.append("--workflow-controlled")
-    return cli_args
+        workflow_args.append("--workflow-controlled")
+    return workflow_args
 
 
-def run_python_cli(script_name: str, cli_args: list[str]) -> None:
-    module_name = f"novelist.cli.{script_name.removesuffix('.py')}"
-    command = [sys.executable, "-m", module_name, *cli_args]
-    print_progress(f"开始执行 {module_name}：{' '.join(cli_args)}")
+def run_python_workflow(script_name: str, workflow_args: list[str]) -> None:
+    module_name = f"novelist.workflows.{script_name.removesuffix('.py')}"
+    command = [sys.executable, "-m", module_name, *workflow_args]
+    print_progress(f"开始执行 {module_name}：{' '.join(workflow_args)}")
     result = subprocess.run(command, cwd=str(WORKDIR), check=False)
     if result.returncode != 0:
         raise RuntimeError(f"{module_name} 执行失败，退出码：{result.returncode}")
@@ -569,7 +578,7 @@ def main() -> int:
                 print_progress(f"已识别为 split_novel 书名目录：{source_root}")
             elif input_kind == INPUT_PROJECT_ROOT:
                 project_root = workflow_entry
-                manifest = adaptation_cli.load_manifest(project_root)
+                manifest = adaptation_workflow.load_manifest(project_root)
                 if manifest is None:
                     fail(f"工程目录缺少项目清单：{project_root}")
                 source_root = normalize_path(str(manifest["source_root"]))
@@ -602,7 +611,7 @@ def main() -> int:
             adaptation_workflow_controlled = (
                 adaptation_enabled
                 and not args.skip_rewrite
-                and adaptation_run_mode == adaptation_cli.RUN_MODE_STAGE
+                and adaptation_run_mode == adaptation_workflow.RUN_MODE_STAGE
             )
             rewrite_workflow_controlled = adaptation_workflow_controlled
             adapted_volume_number: str | None = None
@@ -610,9 +619,9 @@ def main() -> int:
             if adaptation_enabled:
                 adaptation_input = project_root or source_root
                 assert adaptation_input is not None
-                run_python_cli(
-                    "novel_adaptation_cli.py",
-                    build_adaptation_cli_args(
+                run_python_workflow(
+                    "novel_adaptation.py",
+                    build_adaptation_workflow_args(
                         args,
                         input_root=adaptation_input,
                         run_mode=adaptation_run_mode,
@@ -621,9 +630,9 @@ def main() -> int:
                 )
                 assert source_root is not None
                 project_root = resolve_project_root_for_source(source_root, args.project_root)
-                manifest = adaptation_cli.load_manifest(project_root)
+                manifest = adaptation_workflow.load_manifest(project_root)
                 adapted_volume_number = str((manifest or {}).get("last_processed_volume") or "").strip() or None
-                print_progress(f"novel_adaptation_cli 完成后工程目录：{project_root}")
+                print_progress(f"novel_adaptation 完成后工程目录：{project_root}")
                 if adapted_volume_number:
                     print_progress(f"本轮统一工作流已完成适配卷：{adapted_volume_number}")
 
@@ -634,9 +643,9 @@ def main() -> int:
                 rewrite_volume_override = args.rewrite_volume or adapted_volume_number
                 if rewrite_volume_override is None and rewrite_backlog_volumes:
                     rewrite_volume_override = rewrite_backlog_volumes[0]
-                run_python_cli(
-                    "novel_chapter_rewrite_cli.py",
-                    build_rewrite_cli_args(
+                run_python_workflow(
+                    "novel_chapter_rewrite.py",
+                    build_rewrite_workflow_args(
                         args,
                         project_root=project_root,
                         run_mode=rewrite_run_mode,
@@ -649,13 +658,15 @@ def main() -> int:
                 print_progress("未启用 adaptation / rewrite 阶段，本次没有更多可执行步骤。")
 
             print_progress("统一工作流执行完成。")
-            if not sys.stdin or not sys.stdin.isatty():
+            if args.input_path or not sys.stdin or not sys.stdin.isatty():
                 return 0
             next_startup_mode = prompt_next_startup_mode()
             if next_startup_mode is None:
                 return 0
         except KeyboardInterrupt:
             print_progress("已取消。", error=True)
+            if args.input_path:
+                return 1
             if not sys.stdin or not sys.stdin.isatty():
                 pause_before_exit()
                 return 1
@@ -664,6 +675,8 @@ def main() -> int:
                 return 1
         except Exception as error:
             print_progress(f"统一工作流处理失败：{error}", error=True)
+            if args.input_path:
+                return 1
             if not sys.stdin or not sys.stdin.isatty():
                 pause_before_exit()
                 return 1

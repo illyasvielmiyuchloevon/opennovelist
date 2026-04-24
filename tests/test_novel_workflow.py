@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from novelist.cli import novel_adaptation_cli as adaptation_cli
-from novelist.cli import novel_chapter_rewrite_cli as rewrite_cli
-from novelist.cli import novel_workflow_cli as workflow_cli
+from novelist.workflows import novel_adaptation as adaptation_workflow
+from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
+from novelist.workflows import novel_workflow as workflow_entry
 import novelist.core.openai_config as openai_config
 from novelist.core.files import write_markdown_data
 
@@ -17,7 +17,7 @@ class WorkflowCliDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_file = Path(temp_dir) / "book.txt"
             source_file.write_text("第1章\n内容\n", encoding="utf-8")
-            self.assertEqual(workflow_cli.detect_input_kind(source_file), workflow_cli.INPUT_RAW_TEXT)
+            self.assertEqual(workflow_entry.detect_input_kind(source_file), workflow_entry.INPUT_RAW_TEXT)
 
     def test_detect_input_kind_identifies_split_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -25,7 +25,7 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             volume_dir = split_root / "001"
             volume_dir.mkdir(parents=True)
             (volume_dir / "0001.txt").write_text("第1章\n内容\n", encoding="utf-8")
-            self.assertEqual(workflow_cli.detect_input_kind(split_root), workflow_cli.INPUT_SPLIT_ROOT)
+            self.assertEqual(workflow_entry.detect_input_kind(split_root), workflow_entry.INPUT_SPLIT_ROOT)
 
     def test_detect_input_kind_identifies_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -35,22 +35,22 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             (source_root / "001").mkdir()
             project_root.mkdir()
             write_markdown_data(
-                project_root / adaptation_cli.PROJECT_MANIFEST_NAME,
+                project_root / adaptation_workflow.PROJECT_MANIFEST_NAME,
                 title="Project Manifest",
                 payload={
                     "project_root": str(project_root),
                     "source_root": str(source_root),
                     "new_book_title": "测试书",
                     "target_worldview": "测试世界观",
-                    "style": {"mode": adaptation_cli.STYLE_MODE_SOURCE, "style_file": None},
-                    "protagonist": {"mode": adaptation_cli.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
                     "total_volumes": 1,
                     "processed_volumes": [],
                     "last_processed_volume": None,
                 },
                 summary_lines=["new_book_title: 测试书"],
             )
-            self.assertEqual(workflow_cli.detect_input_kind(project_root), workflow_cli.INPUT_PROJECT_ROOT)
+            self.assertEqual(workflow_entry.detect_input_kind(project_root), workflow_entry.INPUT_PROJECT_ROOT)
 
     def test_resolve_workflow_entry_auto_picks_nested_raw_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -58,9 +58,9 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             parent.mkdir()
             source_file = parent / "book.txt"
             source_file.write_text("第1章\n内容\n", encoding="utf-8")
-            resolved_path, kind = workflow_cli.resolve_workflow_entry(parent)
+            resolved_path, kind = workflow_entry.resolve_workflow_entry(parent)
             self.assertEqual(resolved_path, source_file)
-            self.assertEqual(kind, workflow_cli.INPUT_RAW_TEXT)
+            self.assertEqual(kind, workflow_entry.INPUT_RAW_TEXT)
 
     def test_resolve_workflow_entry_prefers_project_over_split_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -74,15 +74,15 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             project_root = parent / "project"
             project_root.mkdir()
             write_markdown_data(
-                project_root / adaptation_cli.PROJECT_MANIFEST_NAME,
+                project_root / adaptation_workflow.PROJECT_MANIFEST_NAME,
                 title="Project Manifest",
                 payload={
                     "project_root": str(project_root),
                     "source_root": str(split_root),
                     "new_book_title": "测试书",
                     "target_worldview": "测试世界观",
-                    "style": {"mode": adaptation_cli.STYLE_MODE_SOURCE, "style_file": None},
-                    "protagonist": {"mode": adaptation_cli.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
                     "total_volumes": 1,
                     "processed_volumes": [],
                     "last_processed_volume": None,
@@ -90,9 +90,9 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 summary_lines=["new_book_title: 测试书"],
             )
 
-            resolved_path, kind = workflow_cli.resolve_workflow_entry(parent)
+            resolved_path, kind = workflow_entry.resolve_workflow_entry(parent)
             self.assertEqual(resolved_path, project_root)
-            self.assertEqual(kind, workflow_cli.INPUT_PROJECT_ROOT)
+            self.assertEqual(kind, workflow_entry.INPUT_PROJECT_ROOT)
 
     def test_try_resolve_existing_project_from_raw_text_prefers_bound_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -107,15 +107,15 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             project_root = workspace / "project"
             project_root.mkdir()
             write_markdown_data(
-                project_root / adaptation_cli.PROJECT_MANIFEST_NAME,
+                project_root / adaptation_workflow.PROJECT_MANIFEST_NAME,
                 title="Project Manifest",
                 payload={
                     "project_root": str(project_root),
                     "source_root": str(split_root),
                     "new_book_title": "测试书",
                     "target_worldview": "测试世界观",
-                    "style": {"mode": adaptation_cli.STYLE_MODE_SOURCE, "style_file": None},
-                    "protagonist": {"mode": adaptation_cli.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
                     "total_volumes": 1,
                     "processed_volumes": ["001"],
                     "last_processed_volume": "001",
@@ -124,7 +124,7 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 summary_lines=["new_book_title: 测试书"],
             )
 
-            resolved_source_root, resolved_project_root = workflow_cli.try_resolve_existing_project_from_raw_text(
+            resolved_source_root, resolved_project_root = workflow_entry.try_resolve_existing_project_from_raw_text(
                 source_file,
                 None,
             )
@@ -139,15 +139,15 @@ class WorkflowCliDetectionTests(unittest.TestCase):
             source_root.mkdir()
             project_root.mkdir()
             write_markdown_data(
-                project_root / adaptation_cli.PROJECT_MANIFEST_NAME,
+                project_root / adaptation_workflow.PROJECT_MANIFEST_NAME,
                 title="Project Manifest",
                 payload={
                     "project_root": str(project_root),
                     "source_root": str(source_root),
                     "new_book_title": "测试书",
                     "target_worldview": "测试世界观",
-                    "style": {"mode": adaptation_cli.STYLE_MODE_SOURCE, "style_file": None},
-                    "protagonist": {"mode": adaptation_cli.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
                     "total_volumes": 3,
                     "processed_volumes": ["001", "002"],
                     "last_processed_volume": "002",
@@ -155,13 +155,13 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 summary_lines=["new_book_title: 测试书"],
             )
             write_markdown_data(
-                project_root / rewrite_cli.REWRITE_MANIFEST_NAME,
+                project_root / rewrite_workflow.REWRITE_MANIFEST_NAME,
                 title="Chapter Rewrite Manifest",
                 payload={
                     "project_root": str(project_root),
                     "source_root": str(source_root),
                     "new_book_title": "测试书",
-                    "rewrite_output_root": str(project_root / rewrite_cli.REWRITTEN_ROOT_DIRNAME),
+                    "rewrite_output_root": str(project_root / rewrite_workflow.REWRITTEN_ROOT_DIRNAME),
                     "processed_volumes": ["001"],
                     "last_processed_volume": "001",
                     "last_processed_chapter": "0005",
@@ -172,7 +172,7 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 summary_lines=["new_book_title: 测试书"],
             )
 
-            self.assertEqual(workflow_cli.pending_rewrite_volumes(project_root), ["002"])
+            self.assertEqual(workflow_entry.pending_rewrite_volumes(project_root), ["002"])
 
 
 class WorkflowCliArgumentTests(unittest.TestCase):
@@ -180,9 +180,9 @@ class WorkflowCliArgumentTests(unittest.TestCase):
         return argparse.Namespace(
             new_title="玄幻忍者",
             target_worldview="玄幻修仙",
-            style_mode=adaptation_cli.STYLE_MODE_SOURCE,
+            style_mode=adaptation_workflow.STYLE_MODE_SOURCE,
             style_file=None,
-            protagonist_mode=adaptation_cli.PROTAGONIST_MODE_ADAPTIVE,
+            protagonist_mode=adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE,
             protagonist_text=None,
             project_root="F:\\project",
             adaptation_volume="001",
@@ -193,84 +193,104 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             dry_run=True,
         )
 
-    def test_build_adaptation_cli_args(self) -> None:
+    def test_build_adaptation_workflow_args(self) -> None:
         args = self.build_args()
-        cli_args = workflow_cli.build_adaptation_cli_args(
+        workflow_args = workflow_entry.build_adaptation_workflow_args(
             args,
             input_root=Path("F:/source"),
-            run_mode=adaptation_cli.RUN_MODE_BOOK,
+            run_mode=adaptation_workflow.RUN_MODE_BOOK,
         )
-        self.assertEqual(cli_args[0], "F:\\source")
-        self.assertIn("--run-mode", cli_args)
-        self.assertIn(adaptation_cli.RUN_MODE_BOOK, cli_args)
-        self.assertIn("--new-title", cli_args)
-        self.assertIn("玄幻忍者", cli_args)
-        self.assertIn("--volume", cli_args)
-        self.assertIn("001", cli_args)
-        self.assertIn("--dry-run", cli_args)
+        self.assertEqual(workflow_args[0], "F:\\source")
+        self.assertIn("--run-mode", workflow_args)
+        self.assertIn(adaptation_workflow.RUN_MODE_BOOK, workflow_args)
+        self.assertIn("--new-title", workflow_args)
+        self.assertIn("玄幻忍者", workflow_args)
+        self.assertIn("--volume", workflow_args)
+        self.assertIn("001", workflow_args)
+        self.assertIn("--dry-run", workflow_args)
 
-    def test_build_adaptation_cli_args_supports_workflow_controlled_override(self) -> None:
+    def test_build_adaptation_workflow_args_supports_workflow_controlled_override(self) -> None:
         args = self.build_args()
-        cli_args = workflow_cli.build_adaptation_cli_args(
+        workflow_args = workflow_entry.build_adaptation_workflow_args(
             args,
             input_root=Path("F:/source"),
-            run_mode=adaptation_cli.RUN_MODE_STAGE,
+            run_mode=adaptation_workflow.RUN_MODE_STAGE,
             workflow_controlled=True,
             volume_override="003",
         )
-        self.assertIn("--workflow-controlled", cli_args)
-        volume_index = cli_args.index("--volume")
-        self.assertEqual(cli_args[volume_index + 1], "003")
+        self.assertIn("--workflow-controlled", workflow_args)
+        volume_index = workflow_args.index("--volume")
+        self.assertEqual(workflow_args[volume_index + 1], "003")
 
-    def test_build_rewrite_cli_args(self) -> None:
+    def test_build_rewrite_workflow_args(self) -> None:
         args = self.build_args()
-        cli_args = workflow_cli.build_rewrite_cli_args(
+        workflow_args = workflow_entry.build_rewrite_workflow_args(
             args,
             project_root=Path("F:/project"),
-            run_mode=rewrite_cli.RUN_MODE_GROUP,
+            run_mode=rewrite_workflow.RUN_MODE_GROUP,
         )
-        self.assertEqual(cli_args[0], "F:\\project")
-        self.assertIn("--run-mode", cli_args)
-        self.assertIn(rewrite_cli.RUN_MODE_GROUP, cli_args)
-        self.assertIn("--volume", cli_args)
-        self.assertIn("002", cli_args)
-        self.assertIn("--chapter", cli_args)
-        self.assertIn("0003", cli_args)
-        self.assertIn("--dry-run", cli_args)
+        self.assertEqual(workflow_args[0], "F:\\project")
+        self.assertIn("--run-mode", workflow_args)
+        self.assertIn(rewrite_workflow.RUN_MODE_GROUP, workflow_args)
+        self.assertIn("--volume", workflow_args)
+        self.assertIn("002", workflow_args)
+        self.assertIn("--chapter", workflow_args)
+        self.assertIn("0003", workflow_args)
+        self.assertIn("--dry-run", workflow_args)
 
-    def test_build_rewrite_cli_args_supports_workflow_controlled_override(self) -> None:
+    def test_build_rewrite_workflow_args_supports_workflow_controlled_override(self) -> None:
         args = self.build_args()
-        cli_args = workflow_cli.build_rewrite_cli_args(
+        workflow_args = workflow_entry.build_rewrite_workflow_args(
             args,
             project_root=Path("F:/project"),
-            run_mode=rewrite_cli.RUN_MODE_GROUP,
+            run_mode=rewrite_workflow.RUN_MODE_GROUP,
             workflow_controlled=True,
             volume_override="005",
         )
-        self.assertIn("--workflow-controlled", cli_args)
-        volume_index = cli_args.index("--volume")
-        self.assertEqual(cli_args[volume_index + 1], "005")
+        self.assertIn("--workflow-controlled", workflow_args)
+        volume_index = workflow_args.index("--volume")
+        self.assertEqual(workflow_args[volume_index + 1], "005")
 
     def test_resolve_startup_mode_uses_explicit_mode(self) -> None:
         args = self.build_args()
-        args.startup_mode = workflow_cli.STARTUP_MODE_CONFIG_ONLY
+        args.startup_mode = workflow_entry.STARTUP_MODE_CONFIG_ONLY
         self.assertEqual(
-            workflow_cli.resolve_startup_mode(args),
-            workflow_cli.STARTUP_MODE_CONFIG_ONLY,
+            workflow_entry.resolve_startup_mode(args),
+            workflow_entry.STARTUP_MODE_CONFIG_ONLY,
         )
 
     def test_resolve_startup_mode_uses_reconfigure_flag(self) -> None:
         args = self.build_args()
         args.reconfigure_openai = True
         self.assertEqual(
-            workflow_cli.resolve_startup_mode(args),
-            workflow_cli.STARTUP_MODE_CONFIG_AND_WORKFLOW,
+            workflow_entry.resolve_startup_mode(args),
+            workflow_entry.STARTUP_MODE_CONFIG_AND_WORKFLOW,
+        )
+
+    def test_resolve_startup_mode_with_input_path_skips_interactive_menu(self) -> None:
+        args = self.build_args()
+        args.input_path = "F:/books/source"
+        self.assertEqual(
+            workflow_entry.resolve_startup_mode(args),
+            workflow_entry.STARTUP_MODE_WORKFLOW,
+        )
+
+    def test_run_modes_with_input_path_skip_interactive_menus(self) -> None:
+        args = self.build_args()
+        args.input_path = "F:/books/source"
+        self.assertEqual(
+            workflow_entry.resolve_adaptation_run_mode(args),
+            adaptation_workflow.RUN_MODE_BOOK,
+        )
+        self.assertEqual(
+            workflow_entry.resolve_rewrite_run_mode(args),
+            rewrite_workflow.RUN_MODE_VOLUME,
         )
 
     def test_startup_mode_labels_cover_config_only(self) -> None:
         self.assertIn(
-            workflow_cli.STARTUP_MODE_CONFIG_ONLY,
-            workflow_cli.STARTUP_MODE_LABELS,
+            workflow_entry.STARTUP_MODE_CONFIG_ONLY,
+            workflow_entry.STARTUP_MODE_LABELS,
         )
 
     def test_openai_provider_labels_cover_compatible(self) -> None:
@@ -278,6 +298,19 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             openai_config.PROVIDER_OPENAI_COMPATIBLE,
             openai_config.PROVIDER_LABELS,
         )
+
+    def test_global_config_loads_and_migrates_legacy_config_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            legacy_path = root / ".novel_adaptation_workflow" / "config.json"
+            new_path = root / ".novel_adaptation" / "config.json"
+            legacy_path.parent.mkdir(parents=True)
+            legacy_path.write_text('{"last_model": "legacy-model"}\n', encoding="utf-8")
+
+            loaded = openai_config.load_global_config(new_path, legacy_path=legacy_path)
+
+            self.assertEqual(loaded["last_model"], "legacy-model")
+            self.assertTrue(new_path.exists())
 
     def test_provider_default_protocol_for_compatible(self) -> None:
         self.assertEqual(

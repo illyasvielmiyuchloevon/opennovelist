@@ -6,16 +6,16 @@
 
 这套工具把小说工作流拆成三层：
 
-1. `novelist.cli.split_novel`
+1. `novelist.workflows.split_novel`
    把一整本小说按章节拆开，并按每 50 章自动分卷。
-2. `novelist.cli.novel_adaptation_cli`
+2. `novelist.workflows.novel_adaptation`
    基于参考源逐卷生成改编规划文档。
-3. `novelist.cli.novel_chapter_rewrite_cli`
+3. `novelist.workflows.novel_chapter_rewrite`
    基于规划文档逐章生成仿写正文和配套审核文档。
 
 如果你不想手动串联，可以直接使用：
 
-4. `novel_workflow_cli.py`
+4. `novel_workflow.py`
    统一入口，自动调度以上三步。
 
 ## 2. 运行前准备
@@ -24,23 +24,23 @@
 
 如果你是直接使用工具，可以只关心根目录这两个入口：
 
-- `novel_workflow_cli.py`
+- `novel_workflow.py`
 - `start_workflow.bat`
 
 如果你要查看或修改源码，现在的代码结构是：
 
 ```text
 novelist/
-├─ cli/    # 三个业务 CLI + 统一工作流 CLI
+├─ workflows/    # 三个业务工作流 + 统一工作流
 └─ core/   # 可复用核心模块
 ```
 
 也就是说，源码路径应优先看：
 
-- `novelist/cli/...`
+- `novelist/workflows/...`
 - `novelist/core/...`
 
-而不是旧的根目录 `core/...` 或旧的根目录独立 CLI 文件路径。
+而不是旧的根目录 `core/...` 或旧的根目录独立入口文件路径。
 
 ### 2.1 Python 依赖
 
@@ -66,7 +66,7 @@ pip install openai pydantic
 直接运行：
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py
+python F:\novelist\novel_workflow.py
 ```
 
 或者直接双击仓库根目录下的 `start_workflow.bat`。
@@ -103,8 +103,10 @@ python F:\novelist\novel_workflow_cli.py
 这些设置会保存到：
 
 ```text
-%USERPROFILE%\.novel_adaptation_cli\config.json
+%USERPROFILE%\.novel_adaptation\config.json
 ```
+
+如果旧版本已经保存过 `%USERPROFILE%\.novel_adaptation_cli\config.json`，新入口会在首次读取配置时自动迁移到新目录。
 
 下次会自动复用。
 
@@ -140,14 +142,14 @@ F:\huoying
 ### 5.1 启动统一入口
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
+python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 ```
 
 ### 5.2 统一入口自动执行的三步
 
 #### 第一步：拆分小说
 
-统一入口会调用 `novelist.cli.split_novel`：
+统一入口会调用 `novelist.workflows.split_novel`：
 
 - 识别章节标题
 - 按章拆分为：
@@ -162,7 +164,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 #### 第二步：逐卷改编规划
 
-统一入口会调用 `novelist.cli.novel_adaptation_cli`，逐卷生成：
+统一入口会调用 `novelist.workflows.novel_adaptation`，逐卷生成：
 
 - 世界观设计
 - 世界模型
@@ -174,7 +176,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 
 #### 第三步：逐章重写
 
-统一入口会调用 `novelist.cli.novel_chapter_rewrite_cli`，生成：
+统一入口会调用 `novelist.workflows.novel_chapter_rewrite`，生成：
 
 - 章纲
 - 仿写正文
@@ -183,12 +185,12 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
 - 组审查
 - 卷级审核
 
-## 6. 也可以单独运行三个 CLI
+## 6. 也可以单独运行三个工作流入口
 
 ### 6.1 单独拆分小说
 
 ```powershell
-python -m novelist.cli.split_novel "F:\books\我的小说.txt"
+python -m novelist.workflows.split_novel "F:\books\我的小说.txt"
 ```
 
 ### 6.2 单独跑改编规划
@@ -196,13 +198,13 @@ python -m novelist.cli.split_novel "F:\books\我的小说.txt"
 输入必须是 `split_novel` 输出后的书名目录，或者已有工程目录：
 
 ```powershell
-python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说"
+python -m novelist.workflows.novel_adaptation "F:\books\我的小说"
 ```
 
 支持的核心参数：
 
 ```powershell
-python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说" `
+python -m novelist.workflows.novel_adaptation "F:\books\我的小说" `
   --new-title "玄幻忍者" `
   --target-worldview "玄幻修仙" `
   --run-mode stage
@@ -218,13 +220,13 @@ python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说" `
 输入必须是已有工程目录，或者可解析到已有工程的来源目录：
 
 ```powershell
-python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者"
+python -m novelist.workflows.novel_chapter_rewrite "F:\books\玄幻忍者"
 ```
 
 支持的核心参数：
 
 ```powershell
-python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
+python -m novelist.workflows.novel_chapter_rewrite "F:\books\玄幻忍者" `
   --run-mode group `
   --volume 001
 ```
@@ -239,14 +241,14 @@ python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
 
 统一入口会分别询问两件事：
 
-### 7.1 `novel_adaptation_cli` 的运行方式
+### 7.1 `novel_adaptation` 的运行方式
 
 - `按阶段运行`
   - 一次处理 1 卷
 - `按全书运行`
   - 自动连续处理后续卷
 
-### 7.2 `novel_chapter_rewrite_cli` 的运行方式
+### 7.2 `novel_chapter_rewrite` 的运行方式
 
 - `按章节运行`
 - `按组运行`
@@ -258,7 +260,7 @@ python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
 
 ### 8.1 改编规划的断点
 
-`novelist.cli.novel_adaptation_cli` 会在工程目录里维护：
+`novelist.workflows.novel_adaptation` 会在工程目录里维护：
 
 - `00_project_manifest.md`
 
@@ -272,7 +274,7 @@ python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\玄幻忍者" `
 
 ### 8.2 章节重写的断点
 
-`novelist.cli.novel_chapter_rewrite_cli` 会维护：
+`novelist.workflows.novel_chapter_rewrite` 会维护：
 
 - `00_chapter_rewrite_manifest.md`
 
@@ -408,40 +410,40 @@ rewritten_novel/
 其中：
 
 - `全局剧情进程`
-  现在由 `novelist.cli.novel_adaptation_cli` 按卷维护
+  现在由 `novelist.workflows.novel_adaptation` 按卷维护
 - `人物状态卡 / 人物关系链 / 世界状态`
-  仍由 `novelist.cli.novel_chapter_rewrite_cli` 在章节流程中按需维护
+  仍由 `novelist.workflows.novel_chapter_rewrite` 在章节流程中按需维护
 
 ## 11. 常见工作方式示例
 
 ### 11.1 从零开始跑完整流程
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
+python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 ```
 
 ### 11.2 已经拆分完成，从书名目录开始
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\我的小说"
+python F:\novelist\novel_workflow.py "F:\books\我的小说"
 ```
 
 ### 11.3 已经有工程，只继续跑章节重写
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\玄幻忍者" --skip-adaptation
+python F:\novelist\novel_workflow.py "F:\books\玄幻忍者" --skip-adaptation
 ```
 
 ### 11.4 只做配置，不进工作流
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py --startup-mode configure_only
+python F:\novelist\novel_workflow.py --startup-mode configure_only
 ```
 
 ### 11.5 统一入口 dry-run
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\玄幻忍者" --dry-run
+python F:\novelist\novel_workflow.py "F:\books\玄幻忍者" --dry-run
 ```
 
 ## 12. OpenAI 与 OpenAI Compatible
@@ -490,7 +492,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\玄幻忍者" --dry-run
 直接运行：
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py
+python F:\novelist\novel_workflow.py
 ```
 
 然后选择：
@@ -510,10 +512,10 @@ python F:\novelist\novel_workflow_cli.py
 
 ### 13.4 工程中断后如何继续
 
-直接重新运行统一入口或对应子 CLI：
+直接重新运行统一入口或对应子流程：
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py
+python F:\novelist\novel_workflow.py
 ```
 
 项目会自动读取：
@@ -529,7 +531,7 @@ python F:\novelist\novel_workflow_cli.py
 
 1. 平时只运行统一入口
 2. 让统一入口负责识别当前项目状态
-3. 只在需要单独调试某一步时再运行单独 CLI
+3. 只在需要单独调试某一步时再运行单独工作流入口
 4. 定期检查：
    - `global_injection`
    - `volume_injection`

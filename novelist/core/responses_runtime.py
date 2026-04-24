@@ -397,7 +397,7 @@ def collect_stream_response(
         # openai-python 1.109.x can emit Pydantic serializer warnings when
         # serializing newer Responses tool variants (for example image_generation
         # model values newer than the local SDK type hints). They are SDK type
-        # noise and otherwise break the CLI spinner line.
+        # noise and otherwise break the spinner line.
         warnings.filterwarnings(
             "ignore",
             message=r"Pydantic serializer warnings:.*",

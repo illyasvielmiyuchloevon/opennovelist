@@ -7,13 +7,13 @@
 - 基于规划文档逐章生成仿写正文、状态文档与审核文档
 - 统一入口调度完整工作流，并支持断点续跑
 
-项目主要面向 Windows + PowerShell 使用场景，所有 CLI 都支持交互式运行。
+项目主要面向 Windows + PowerShell 使用场景，所有工作流入口都支持交互式运行。
 
 ## 组件一览
 
-- [novelist/cli/split_novel.py](./novelist/cli/split_novel.py)
+- [novelist/workflows/split_novel.py](./novelist/workflows/split_novel.py)
   把原始小说 `.txt` 按章节拆分，并按每 50 章归档到卷目录。
-- [novelist/cli/novel_adaptation_cli.py](./novelist/cli/novel_adaptation_cli.py)
+- [novelist/workflows/novel_adaptation.py](./novelist/workflows/novel_adaptation.py)
   读取 `split_novel` 输出后的书名目录，逐卷生成：
   - 世界观设计
   - 世界模型
@@ -22,7 +22,7 @@
   - 伏笔文档
   - 全局剧情进程
   - 卷级大纲
-- [novelist/cli/novel_chapter_rewrite_cli.py](./novelist/cli/novel_chapter_rewrite_cli.py)
+- [novelist/workflows/novel_chapter_rewrite.py](./novelist/workflows/novel_chapter_rewrite.py)
   读取改编工程目录，逐章生成：
   - 章纲
   - 仿写正文
@@ -30,7 +30,7 @@
   - 卷级剧情进程
   - 世界状态
   - 章级审核 / 组审查 / 卷级审核
-- [novel_workflow_cli.py](./novel_workflow_cli.py)
+- [novel_workflow.py](./novel_workflow.py)
 - 一键启动脚本：[start_workflow.bat](./start_workflow.bat)
   统一入口，自动识别输入类型并串联以上三步。
 - [novelist/core](./novelist/core)
@@ -46,7 +46,7 @@
 推荐直接从统一入口开始：
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py
+python F:\novelist\novel_workflow.py
 ```
 
 也可以直接双击仓库根目录下的 `start_workflow.bat` 一键启动。
@@ -85,19 +85,19 @@ pip install openai pydantic
 ### 1. 从原始小说开始
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\我的小说.txt"
+python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 ```
 
 典型流程：
 
-1. `novelist.cli.split_novel` 先拆分小说
-2. `novelist.cli.novel_adaptation_cli` 生成逐卷改编规划
-3. `novelist.cli.novel_chapter_rewrite_cli` 生成逐章正文与审核文档
+1. `novelist.workflows.split_novel` 先拆分小说
+2. `novelist.workflows.novel_adaptation` 生成逐卷改编规划
+3. `novelist.workflows.novel_chapter_rewrite` 生成逐章正文与审核文档
 
 ### 2. 从已拆分好的目录开始
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\我的小说"
+python F:\novelist\novel_workflow.py "F:\books\我的小说"
 ```
 
 这里的 `F:\books\我的小说` 指的是 `split_novel` 输出的书名目录，里面通常直接包含：
@@ -109,7 +109,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\我的小说"
 ### 3. 从已有工程继续
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
+python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 ```
 
 统一入口会自动恢复：
@@ -125,20 +125,20 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 
 ```text
 仓库根目录/
-├─ novel_workflow_cli.py      # 根目录统一入口包装脚本
+├─ novel_workflow.py      # 根目录统一入口包装脚本
 ├─ start_workflow.bat         # Windows 一键启动脚本
 ├─ novelist/
-│  ├─ cli/                    # 业务 CLI
+│  ├─ workflows/              # 业务工作流
 │  │  ├─ split_novel.py
-│  │  ├─ novel_adaptation_cli.py
-│  │  ├─ novel_chapter_rewrite_cli.py
-│  │  └─ novel_workflow_cli.py
+│  │  ├─ novel_adaptation.py
+│  │  ├─ novel_chapter_rewrite.py
+│  │  └─ novel_workflow.py
 │  └─ core/                   # 可复用核心模块
 ├─ docs/
 └─ tests/
 ```
 
-如果你要查看或编辑源码，请优先打开 `novelist/cli/...` 和 `novelist/core/...`，而不是旧的根目录 `core/...` 路径。
+如果你要查看或编辑源码，请优先打开 `novelist/workflows/...` 和 `novelist/core/...`，而不是旧的根目录 `core/...` 路径。
 
 ### `split_novel` 输出
 
@@ -153,7 +153,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 └─ ...
 ```
 
-### `novel_adaptation_cli` 工程输出
+### `novel_adaptation` 工程输出
 
 ```text
 工程目录/
@@ -173,7 +173,7 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
    └─ 002_volume_injection/
 ```
 
-### `novel_chapter_rewrite_cli` 追加输出
+### `novel_chapter_rewrite` 追加输出
 
 ```text
 工程目录/
@@ -203,14 +203,14 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 
 ## 运行模式
 
-### `novel_adaptation_cli`
+### `novel_adaptation`
 
 - `stage`
   每次处理 1 卷
 - `book`
   自动连续处理后续卷
 
-### `novel_chapter_rewrite_cli`
+### `novel_chapter_rewrite`
 
 - `chapter`
   按章节推进
@@ -223,8 +223,8 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 
 统一入口会分别让你选择：
 
-- `novel_adaptation_cli` 的运行方式
-- `novel_chapter_rewrite_cli` 的运行方式
+- `novel_adaptation` 的运行方式
+- `novel_chapter_rewrite` 的运行方式
 
 并在流程完成后回到启动菜单，允许继续下一轮工作。
 
@@ -251,33 +251,35 @@ python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录"
 全局配置默认保存在：
 
 ```text
-%USERPROFILE%\.novel_adaptation_cli\config.json
+%USERPROFILE%\.novel_adaptation\config.json
 ```
+
+如果旧版本已经保存过 `%USERPROFILE%\.novel_adaptation_cli\config.json`，新入口会在首次读取配置时自动迁移到新目录。
 
 ## 常见命令
 
 ### 只拆分小说
 
 ```powershell
-python -m novelist.cli.split_novel "F:\books\我的小说.txt"
+python -m novelist.workflows.split_novel "F:\books\我的小说.txt"
 ```
 
 ### 只跑卷级改编
 
 ```powershell
-python -m novelist.cli.novel_adaptation_cli "F:\books\我的小说"
+python -m novelist.workflows.novel_adaptation "F:\books\我的小说"
 ```
 
 ### 只跑章节重写
 
 ```powershell
-python -m novelist.cli.novel_chapter_rewrite_cli "F:\books\新书工程目录"
+python -m novelist.workflows.novel_chapter_rewrite "F:\books\新书工程目录"
 ```
 
 ### 统一入口 dry-run
 
 ```powershell
-python F:\novelist\novel_workflow_cli.py "F:\books\新书工程目录" --dry-run
+python F:\novelist\novel_workflow.py "F:\books\新书工程目录" --dry-run
 ```
 
 ## 详细教程
