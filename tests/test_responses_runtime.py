@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 import openai
@@ -86,6 +87,34 @@ class _FakeClient:
 
 
 class ResponsesRuntimeCompatibleTests(unittest.TestCase):
+    def test_build_openai_client_sets_explicit_timeouts_and_disables_sdk_retries(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _SentinelClient:
+            pass
+
+        def fake_openai(**kwargs):
+            captured.update(kwargs)
+            return _SentinelClient()
+
+        with patch("novelist.core.responses_runtime.OpenAI", side_effect=fake_openai):
+            client = llm_runtime.build_openai_client(
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+            )
+
+        self.assertIsInstance(client, _SentinelClient)
+        self.assertEqual(captured["api_key"], "test-key")
+        self.assertEqual(captured["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(captured["max_retries"], 0)
+        self.assertIsInstance(captured["timeout"], httpx.Timeout)
+        timeout = captured["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        self.assertEqual(timeout.connect, llm_runtime.DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS)
+        self.assertEqual(timeout.read, llm_runtime.DEFAULT_OPENAI_READ_TIMEOUT_SECONDS)
+        self.assertEqual(timeout.write, llm_runtime.DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS)
+        self.assertEqual(timeout.pool, llm_runtime.DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS)
+
     def test_call_function_tool_uses_auto_tool_choice_for_compatible(self) -> None:
         stream_chunks = [
             {

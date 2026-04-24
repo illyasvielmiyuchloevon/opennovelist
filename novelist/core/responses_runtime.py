@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Generic, TypeVar
 
+import httpx
 import openai
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -21,6 +23,10 @@ DEFAULT_REASONING_EFFORT = "medium"
 PROTOCOL_RESPONSES = "responses"
 PROTOCOL_OPENAI_COMPATIBLE = "openai_compatible"
 COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD = 120000
+DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENAI_CONNECT_TIMEOUT_SECONDS", "30"))
+DEFAULT_OPENAI_READ_TIMEOUT_SECONDS = float(os.getenv("OPENAI_READ_TIMEOUT_SECONDS", "600"))
+DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS = float(os.getenv("OPENAI_WRITE_TIMEOUT_SECONDS", "30"))
+DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS = float(os.getenv("OPENAI_POOL_TIMEOUT_SECONDS", "30"))
 
 
 class ApiRequestError(RuntimeError):
@@ -179,7 +185,18 @@ class StatusSpinner:
 
 
 def build_openai_client(*, api_key: str, base_url: str) -> OpenAI:
-    return OpenAI(api_key=api_key, base_url=base_url)
+    timeout = httpx.Timeout(
+        connect=DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS,
+        read=DEFAULT_OPENAI_READ_TIMEOUT_SECONDS,
+        write=DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS,
+        pool=DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS,
+    )
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        max_retries=0,
+    )
 
 
 def runtime_protocol(client: OpenAI) -> str:
