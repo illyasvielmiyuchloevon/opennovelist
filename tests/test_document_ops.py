@@ -96,14 +96,14 @@ class FilesPatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             old_file = root / "08_global_plot_progress.md"
-            new_file = root / "06_global_plot_progress.md"
-            old_file.write_text("# 全局剧情进程\n\n- 旧内容。\n", encoding="utf-8")
-            new_file.write_text("# 全局剧情进程\n\n- 新内容。\n", encoding="utf-8")
+            new_file = root / "06_storyline_blueprint.md"
+            old_file.write_text("# 全书故事线蓝图\n\n- 旧内容。\n", encoding="utf-8")
+            new_file.write_text("# 全书故事线蓝图\n\n- 新内容。\n", encoding="utf-8")
 
             warnings = migrate_renamed_files(
                 root,
                 {
-                    "08_global_plot_progress.md": "06_global_plot_progress.md",
+                    "08_global_plot_progress.md": "06_storyline_blueprint.md",
                 },
             )
 
@@ -325,10 +325,10 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            global_plot = root / "06_global_plot_progress.md"
+            storyline_blueprint = root / "06_storyline_blueprint.md"
             world_state = root / "09_world_state.md"
-            global_plot.write_text(
-                "# 全局剧情进程\n\n## 主线进度\n- 主角刚刚进入宗门外门。\n",
+            storyline_blueprint.write_text(
+                "# 全书故事线蓝图\n\n## 故事线：主线\n- 主角刚刚进入宗门外门。\n",
                 encoding="utf-8",
             )
             world_state.write_text(
@@ -347,7 +347,7 @@ class DocumentOperationTests(unittest.TestCase):
                 patch_payload=document_ops.DocumentPatchPayload(
                     files=[
                         document_ops.DocumentPatchFile(
-                            file_key="global_plot_progress",
+                            file_key="storyline_blueprint",
                             edits=[
                                 document_ops.DocumentPatchEdit(
                                     action="replace",
@@ -378,15 +378,15 @@ class DocumentOperationTests(unittest.TestCase):
             applied = document_ops.apply_document_operation(
                 operation,
                 allowed_files={
-                    "global_plot_progress": global_plot,
+                    "storyline_blueprint": storyline_blueprint,
                     "world_state": world_state,
                 },
             )
 
             self.assertEqual(applied.mode, "patch")
-            self.assertCountEqual(applied.emitted_keys, ["global_plot_progress", "world_state"])
-            self.assertCountEqual(applied.changed_keys, ["global_plot_progress", "world_state"])
-            self.assertIn("异常玉符线索", read_text_if_exists(global_plot))
+            self.assertCountEqual(applied.emitted_keys, ["storyline_blueprint", "world_state"])
+            self.assertCountEqual(applied.changed_keys, ["storyline_blueprint", "world_state"])
+            self.assertIn("异常玉符线索", read_text_if_exists(storyline_blueprint))
             self.assertIn("试炼结束后开始戒严", read_text_if_exists(world_state))
             self.assertIn("## 事件状态", read_text_if_exists(world_state))
 

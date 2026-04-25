@@ -28,6 +28,9 @@ DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENAI_CONNECT_TIMEOUT
 DEFAULT_OPENAI_READ_TIMEOUT_SECONDS = float(os.getenv("OPENAI_READ_TIMEOUT_SECONDS", "600"))
 DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS = float(os.getenv("OPENAI_WRITE_TIMEOUT_SECONDS", "30"))
 DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS = float(os.getenv("OPENAI_POOL_TIMEOUT_SECONDS", "30"))
+DEFAULT_RESPONSE_POLL_TIMEOUT_SECONDS = float(os.getenv("OPENAI_RESPONSE_POLL_TIMEOUT_SECONDS", "600"))
+DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS = float(os.getenv("OPENAI_RESPONSE_POLL_INTERVAL_SECONDS", "2"))
+IN_PROGRESS_RESPONSE_STATUSES = {"queued", "in_progress"}
 
 
 class ApiRequestError(RuntimeError):
@@ -313,6 +316,44 @@ def _merge_response_outputs(final_output: Any, reconstructed_output: list[dict[s
     return merged_output or reconstructed_output
 
 
+def response_payload_status(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("status") or "").strip()
+
+
+def response_payload_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("id") or "").strip()
+
+
+def retrieve_response_until_terminal(
+    client: OpenAI,
+    response_payload: dict[str, Any],
+    *,
+    timeout_seconds: float = DEFAULT_RESPONSE_POLL_TIMEOUT_SECONDS,
+    interval_seconds: float = DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS,
+) -> dict[str, Any]:
+    response_id = response_payload_id(response_payload)
+    if not response_id or response_payload_status(response_payload) not in IN_PROGRESS_RESPONSE_STATUSES:
+        return response_payload
+
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    latest_payload = dict(response_payload)
+    while True:
+        retrieved = client.responses.retrieve(response_id)
+        retrieved_payload = to_plain_data(retrieved)
+        if isinstance(retrieved_payload, dict):
+            latest_payload = retrieved_payload
+            if response_payload_status(latest_payload) not in IN_PROGRESS_RESPONSE_STATUSES:
+                return latest_payload
+
+        if time.monotonic() >= deadline:
+            return latest_payload
+        time.sleep(max(interval_seconds, 0))
+
+
 def normalize_content_text(value: Any) -> list[str]:
     plain = to_plain_data(value)
     if isinstance(plain, str):
@@ -480,8 +521,9 @@ def collect_stream_response(
             except RuntimeError:
                 final_response_payload = None
 
-    reconstructed_output = [output_items_by_index[index] for index in sorted(output_items_by_index)]
     response_payload = dict(final_response_payload or response_payload)
+    response_payload = retrieve_response_until_terminal(client, response_payload)
+    reconstructed_output = [output_items_by_index[index] for index in sorted(output_items_by_index)]
     output_items = _merge_response_outputs(response_payload.get("output"), reconstructed_output)
     response_payload["output"] = output_items
     output_text = synthesize_output_text_from_output_items(output_items)

@@ -107,20 +107,38 @@ class _FakeResponsesStream:
 
 
 class _FakeResponses:
-    def __init__(self, events: list[SimpleNamespace], final_response: dict | Exception | None = None) -> None:
+    def __init__(
+        self,
+        events: list[SimpleNamespace],
+        final_response: dict | Exception | None = None,
+        retrieve_responses: list[dict] | None = None,
+    ) -> None:
         self._events = events
         self._final_response = final_response
+        self._retrieve_responses = list(retrieve_responses or [])
         self.last_request: dict | None = None
+        self.retrieve_calls: list[str] = []
 
     def stream(self, **kwargs):
         self.last_request = kwargs
         return _FakeResponsesStream(self._events, self._final_response)
 
+    def retrieve(self, response_id: str):
+        self.retrieve_calls.append(response_id)
+        if self._retrieve_responses:
+            return self._retrieve_responses.pop(0)
+        return self._final_response
+
 
 class _FakeResponsesClient:
-    def __init__(self, events: list[SimpleNamespace], final_response: dict | Exception | None = None) -> None:
+    def __init__(
+        self,
+        events: list[SimpleNamespace],
+        final_response: dict | Exception | None = None,
+        retrieve_responses: list[dict] | None = None,
+    ) -> None:
         self._codex_protocol = llm_runtime.PROTOCOL_RESPONSES
-        self.responses = _FakeResponses(events, final_response)
+        self.responses = _FakeResponses(events, final_response, retrieve_responses)
 
 
 class ResponsesRuntimeCompatibleTests(unittest.TestCase):
@@ -208,6 +226,75 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.raw_json["output"][0]["name"], "submit_tool")
         self.assertEqual(json.loads(result.raw_json["output"][0]["arguments"]), {"value": "ok"})
+
+    def test_responses_stream_polls_in_progress_response_before_parsing_tool_call(self) -> None:
+        events = [
+            SimpleNamespace(
+                type="response.created",
+                response={"id": "resp_pending", "status": "in_progress", "output": []},
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item={
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                },
+            ),
+        ]
+        final_pending = {
+            "id": "resp_pending",
+            "status": "in_progress",
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                }
+            ],
+        }
+        retrieved_completed = {
+            "id": "resp_pending",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"ok\"}",
+                    "status": "completed",
+                }
+            ],
+        }
+        client = _FakeResponsesClient(
+            events,
+            final_response=final_pending,
+            retrieve_responses=[retrieved_completed],
+        )
+
+        with patch.object(llm_runtime, "DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS", 0):
+            result = llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="test-model",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                tool_choice={"type": "function", "name": "submit_tool"},
+                retries=1,
+            )
+
+        self.assertEqual(client.responses.retrieve_calls, ["resp_pending"])
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(result.status, "completed")
 
     def test_call_function_tool_uses_auto_tool_choice_for_compatible(self) -> None:
         stream_chunks = [

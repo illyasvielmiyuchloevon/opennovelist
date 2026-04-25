@@ -171,7 +171,7 @@ python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 - 文笔写作风格
 - 全书大纲
 - 伏笔文档
-- 全局剧情进程
+- 全书故事线蓝图
 - 卷级大纲
 
 #### 第三步：逐章重写
@@ -350,7 +350,7 @@ python -m novelist.workflows.novel_chapter_rewrite "F:\books\玄幻忍者" `
 - `03_style_guide.md`
 - `04_book_outline.md`
 - `05_foreshadowing.md`
-- `06_global_plot_progress.md`
+- `06_storyline_blueprint.md`
 - `07_character_status_cards.md`
 - `08_character_relationship_graph.md`
 - `09_world_state.md`
@@ -411,7 +411,7 @@ rewritten_novel/
 
 - 人物状态卡
 - 人物关系链
-- 全局剧情进程
+- 全书故事线蓝图
 - 卷级剧情进程
 - 世界模型
 - 世界状态
@@ -420,8 +420,8 @@ rewritten_novel/
 
 其中：
 
-- `全局剧情进程`
-  现在由 `novelist.workflows.novel_adaptation` 按卷维护
+- `全书故事线蓝图`
+  现在由 `novelist.workflows.novel_adaptation` 按故事线与分卷蓝图区块增量维护，已处理卷区块不会被后续卷摘要化替换
 - `人物状态卡 / 人物关系链 / 世界状态`
   仍由 `novelist.workflows.novel_chapter_rewrite` 在章节流程中按需维护
 

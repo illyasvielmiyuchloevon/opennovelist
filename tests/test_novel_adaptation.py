@@ -58,7 +58,7 @@ class AdaptationDocumentPlanTests(unittest.TestCase):
                 "style_guide",
                 "book_outline",
                 "foreshadowing",
-                "global_plot_progress",
+                "storyline_blueprint",
                 "volume_outline",
             ],
         )
@@ -73,7 +73,7 @@ class AdaptationDocumentPlanTests(unittest.TestCase):
                 "world_model",
                 "book_outline",
                 "foreshadowing",
-                "global_plot_progress",
+                "storyline_blueprint",
                 "volume_outline",
             ],
         )
@@ -91,21 +91,26 @@ class WorldModelDefinitionTests(unittest.TestCase):
         self.assertIn("多个三级标题", scope)
 
 
-class GlobalPlotProgressDefinitionTests(unittest.TestCase):
-    def test_global_plot_progress_scope_mentions_storyline_structure(self) -> None:
-        scope = adaptation_workflow.global_plot_progress_scope_text()
-        self.assertIn("全书级故事线规划文档", scope)
+class StorylineBlueprintDefinitionTests(unittest.TestCase):
+    def test_storyline_blueprint_scope_mentions_storyline_owned_structure(self) -> None:
+        scope = adaptation_workflow.storyline_blueprint_scope_text()
+        self.assertIn("全书故事线蓝图", scope)
+        self.assertIn("故事线为 owner", scope)
         self.assertIn("二级标题", scope)
         self.assertIn("三级标题", scope)
-        self.assertIn("待推进", scope)
+        self.assertIn("分卷蓝图", scope)
+        self.assertIn("待后续补全", scope)
+        self.assertNotIn("待推进", scope)
+        self.assertNotIn("当前状态", scope)
 
-    def test_global_plot_progress_file_number_is_six(self) -> None:
-        self.assertEqual(adaptation_workflow.GLOBAL_FILE_NAMES["global_plot_progress"], "06_global_plot_progress.md")
+    def test_storyline_blueprint_file_number_is_six(self) -> None:
+        self.assertEqual(adaptation_workflow.GLOBAL_FILE_NAMES["storyline_blueprint"], "06_storyline_blueprint.md")
 
-    def test_global_plot_progress_request_definition_is_storyline_planning(self) -> None:
-        request = adaptation_workflow.build_document_request("global_plot_progress")
-        self.assertIn("全书故事线规划文档", request["task"])
+    def test_storyline_blueprint_request_definition_is_blueprint_planning(self) -> None:
+        request = adaptation_workflow.build_document_request("storyline_blueprint")
+        self.assertIn("全书故事线蓝图文档", request["task"])
         self.assertIn("三级标题", request["scope"])
+        self.assertNotIn("全书故事线规划", request["task"])
 
 
 class AdaptationInjectionOrderTests(unittest.TestCase):
@@ -116,7 +121,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
                 "world_design": "世界观设计",
                 "style_guide": "文笔写作风格",
                 "world_model": "世界模型",
-                "global_plot_progress": "全局剧情进程",
+                "storyline_blueprint": "全书故事线蓝图",
                 "foreshadowing": "伏笔管理",
             }
         )
@@ -128,7 +133,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
                 "style_guide",
                 "book_outline",
                 "foreshadowing",
-                "global_plot_progress",
+                "storyline_blueprint",
             ],
         )
 
@@ -139,7 +144,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
                 "world_design": "世界观设计",
                 "style_guide": "文笔写作风格",
                 "world_model": "世界模型",
-                "global_plot_progress": "全局剧情进程",
+                "storyline_blueprint": "全书故事线蓝图",
                 "foreshadowing": "伏笔管理",
             },
             exclude_keys={"style_guide"},
@@ -172,7 +177,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
                     "book_outline": "全书大纲",
                     "world_design": "世界观设计",
                     "world_model": "世界模型",
-                    "global_plot_progress": "全局剧情进程",
+                    "storyline_blueprint": "全书故事线蓝图",
                     "foreshadowing": "伏笔管理",
                 },
                 doc_key="style_guide",
@@ -188,6 +193,49 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         self.assertIn("target_file", payload)
         self.assertNotIn("existing_style_guide", payload)
         self.assertNotIn("style_guide", payload["injected_global_docs"])
+
+    def test_storyline_blueprint_generation_preserves_prior_volume_blocks(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_call(*args, **kwargs):
+            captured["user_input"] = args[3]
+            return (object(), None)
+
+        with patch.object(adaptation_workflow, "call_document_operation_response", side_effect=fake_call):
+            adaptation_workflow.generate_document_operation(
+                client=None,  # type: ignore[arg-type]
+                model="gpt-test",
+                manifest={
+                    "new_book_title": "测试书",
+                    "target_worldview": "测试世界",
+                    "total_volumes": 2,
+                    "processed_volumes": ["001"],
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                },
+                volume_material={"volume_number": "002", "chapters": [], "extras": []},
+                current_docs={
+                    "storyline_blueprint": "# 全书故事线蓝图\n\n## 故事线：主线\n### 分卷蓝图\n#### 第001卷\n- 既有蓝图。",
+                    "book_outline": "全书大纲",
+                    "world_design": "世界观设计",
+                    "world_model": "世界模型",
+                    "foreshadowing": "伏笔管理",
+                },
+                doc_key="storyline_blueprint",
+                output_path=Path("F:/novelist/.tmp_storyline_blueprint_test.md"),
+                stage_shared_prompt="",
+                previous_response_id=None,
+                prompt_cache_key="test-cache-key",
+            )
+
+        payload = adaptation_workflow.json.loads(str(captured["user_input"]))
+        requirements = "\n".join(payload["requirements"])
+        self.assertEqual(payload["required_file"], "06_storyline_blueprint.md")
+        self.assertIn("已处理卷区块默认受保护", requirements)
+        self.assertIn("不得把上一卷或旧卷内容摘要化、替换、合并、压缩成简化版本", requirements)
+        self.assertIn("只追加或修正该故事线的当前卷区块和跨卷递进", requirements)
+        self.assertNotIn("当前状态", requirements)
+        self.assertNotIn("待推进", requirements)
 
 
 class AdaptationVolumeReviewTests(unittest.TestCase):
@@ -295,11 +343,11 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
 
             self.assertEqual(
                 resume_state["completed_keys"],
-                ["world_design", "world_model", "book_outline", "foreshadowing", "global_plot_progress"],
+                ["world_design", "world_model", "book_outline", "foreshadowing", "storyline_blueprint"],
             )
             self.assertEqual(
                 [item["key"] for item in resume_state["generated_documents"]],
-                ["world_design", "world_model", "book_outline", "foreshadowing", "global_plot_progress"],
+                ["world_design", "world_model", "book_outline", "foreshadowing", "storyline_blueprint"],
             )
 
     def test_generation_resume_state_recovers_corrupted_stage_from_file_prefix(self) -> None:
@@ -480,7 +528,7 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                     "style_guide",
                     "book_outline",
                     "foreshadowing",
-                    "global_plot_progress",
+                    "storyline_blueprint",
                     "volume_outline",
                 ],
             )

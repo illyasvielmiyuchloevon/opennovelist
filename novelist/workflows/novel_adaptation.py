@@ -43,7 +43,7 @@ GLOBAL_FILE_NAMES = {
     "style_guide": "03_style_guide.md",
     "book_outline": "04_book_outline.md",
     "foreshadowing": "05_foreshadowing.md",
-    "global_plot_progress": "06_global_plot_progress.md",
+    "storyline_blueprint": "06_storyline_blueprint.md",
 }
 GLOBAL_INJECTION_DOC_ORDER = [
     "world_design",
@@ -51,19 +51,20 @@ GLOBAL_INJECTION_DOC_ORDER = [
     "style_guide",
     "book_outline",
     "foreshadowing",
-    "global_plot_progress",
+    "storyline_blueprint",
 ]
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": GLOBAL_FILE_NAMES["world_design"],
     "04_world_model.md": GLOBAL_FILE_NAMES["world_model"],
-    "05_global_plot_progress.md": GLOBAL_FILE_NAMES["global_plot_progress"],
+    "05_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
+    "06_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
     "06_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "04_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "05_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "08_world_model.md": GLOBAL_FILE_NAMES["world_model"],
-    "07_global_plot_progress.md": GLOBAL_FILE_NAMES["global_plot_progress"],
-    "08_global_plot_progress.md": GLOBAL_FILE_NAMES["global_plot_progress"],
+    "07_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
+    "08_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
     "05_character_status_cards.md": "07_character_status_cards.md",
     "06_character_status_cards.md": "07_character_status_cards.md",
     "06_character_relationship_graph.md": "08_character_relationship_graph.md",
@@ -87,12 +88,12 @@ WORLD_MODEL_DEFAULT_SECTIONS = [
     "本卷新增或修正世界知识",
     "可扩展世界专题",
 ]
-GLOBAL_PLOT_PROGRESS_DEFAULT_SUBSECTIONS = [
-    "起始",
-    "已发生发展",
-    "关键转折",
-    "当前状态",
-    "待推进",
+STORYLINE_BLUEPRINT_DEFAULT_SECTIONS = [
+    "蓝图定位",
+    "参考源功能映射",
+    "分卷蓝图",
+    "跨卷递进",
+    "待后续补全",
 ]
 STYLE_MODE_CUSTOM = "custom_style_file"
 STYLE_MODE_SOURCE = "reference_source_style"
@@ -181,14 +182,14 @@ def world_model_scope_text() -> str:
     )
 
 
-def global_plot_progress_scope_text() -> str:
-    subsection_text = "、".join(GLOBAL_PLOT_PROGRESS_DEFAULT_SUBSECTIONS)
+def storyline_blueprint_scope_text() -> str:
+    section_text = "、".join(STORYLINE_BLUEPRINT_DEFAULT_SECTIONS)
     return (
-        "文档是全书级故事线规划文档，需仿写参考源并规划出新的主线、关键支线、反派线、终局线、跨卷线与新增故事线。"
-        "每条故事线优先使用二级标题单独维护，并在其下使用三级标题组织进度。"
-        f"默认三级标题为：{subsection_text}。"
-        "如某条故事线有额外维度，可按需要增加更多三级标题。"
-        "文档必须覆盖到当前卷为止的全部重要故事线，并写出与原书的功能映射。"
+        "文档是全书故事线蓝图，用于把参考源的主线、关键支线、反派线、终局线、跨卷线与新增故事线转化为新书可长期复用的蓝图。"
+        "文档采用“故事线为 owner”的结构：每条故事线使用独立二级标题维护，不按卷汇总成实时进展。"
+        f"每条故事线下默认使用三级标题：{section_text}。"
+        "分卷蓝图必须保留已处理卷的完整设计与成稿事实，并在后续卷追加或修正对应卷区块。"
+        "不得把旧卷故事线压缩成简化摘要，不得写成运行时状态表、最新推进清单或单卷总结。"
     )
 
 
@@ -762,7 +763,7 @@ def print_request_context_summary(
         ("style_guide", "文笔写作风格"),
         ("book_outline", "全书大纲"),
         ("foreshadowing", "伏笔文档"),
-        ("global_plot_progress", "全局剧情进程"),
+        ("storyline_blueprint", "全书故事线蓝图"),
     ):
         content = (current_docs.get(doc_key) or "").strip()
         file_name = GLOBAL_FILE_NAMES[doc_key]
@@ -919,10 +920,10 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
                 "未读取的卷只能写成占位，或暂时不写，等后续阶段再补充，不得提前展开细纲。"
             ),
         },
-        "global_plot_progress": {
-            "role": "资深网络小说全书故事线规划编辑",
-            "task": "当前任务只产出 1 份全书故事线规划文档正文。",
-            "scope": global_plot_progress_scope_text(),
+        "storyline_blueprint": {
+            "role": "资深网络小说全书故事线蓝图编辑",
+            "task": "当前任务只产出 1 份全书故事线蓝图文档正文。",
+            "scope": storyline_blueprint_scope_text(),
         },
         "foreshadowing": {
             "role": "资深网络小说伏笔统筹编辑",
@@ -953,7 +954,7 @@ def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
             {"key": "style_guide", "label": "文笔写作风格文档", "scope": "global"},
             {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
             {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
-            {"key": "global_plot_progress", "label": "全局剧情进程文档", "scope": "global"},
+            {"key": "storyline_blueprint", "label": "全书故事线蓝图文档", "scope": "global"},
             {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
         ]
     return [
@@ -961,7 +962,7 @@ def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
         {"key": "world_model", "label": "世界模型文档", "scope": "global"},
         {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
         {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
-        {"key": "global_plot_progress", "label": "全局剧情进程文档", "scope": "global"},
+        {"key": "storyline_blueprint", "label": "全书故事线蓝图文档", "scope": "global"},
         {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
     ]
 
@@ -1015,7 +1016,7 @@ def build_stage_shared_prompt(
         "project": build_stage_project_context(manifest, volume_material),
         "stage_rules": [
             "这一卷的全部生成都属于同一个阶段会话，请沿用同一会话的上下文连续工作。",
-            "全书大纲、世界观文档、全局剧情进程文档、伏笔文档、世界模型文档是每阶段都要注入的全局资料。",
+            "全书大纲、世界观文档、全书故事线蓝图文档、伏笔文档、世界模型文档是每阶段都要注入的全局资料。",
             "卷级大纲不作为全局注入资料，不要把卷级大纲当成下一份文档的依赖前提。",
             "所有映射关系都写成功能映射，不要照抄参考源原文句子。",
             "本阶段的每一次请求都会重新附带当前卷全部文件原文与文件清单。",
@@ -1357,19 +1358,22 @@ def generate_document_operation(
             prompt_cache_key=prompt_cache_key,
         )
 
-    if doc_key == "global_plot_progress":
+    if doc_key == "storyline_blueprint":
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
-                "required_file": GLOBAL_FILE_NAMES["global_plot_progress"],
+                "required_file": GLOBAL_FILE_NAMES["storyline_blueprint"],
                 "requirements": [
-                    "这是全书级故事线规划文档，但采用按卷增量维护方式：每卷只补充、修正到当前卷为止的故事线规划。",
+                    "这是全书故事线蓝图文档，用于沉淀参考源故事线的功能映射和新书跨卷设计，不是实时进度账本。",
                     "文档必须覆盖到当前卷为止仍然有效的重要故事线，包括主线、关键支线、反派线、终局线、跨卷线，以及当前卷新出现的故事线。",
-                    "如果当前文件已存在，必须优先使用 edit / patch 工具做增量更新，不得整篇覆盖式重写全局剧情进程。",
-                    "每条故事线优先使用独立二级标题管理；不要把多条故事线混写在同一个总段落里。",
-                    "每条故事线下默认使用三级标题：起始、已发生发展、关键转折、当前状态、待推进；必要时可增加更多三级标题。",
-                    "如果当前卷引入了新的故事线，必须新增对应二级标题，并补齐该线当前可确定的三级标题内容。",
-                    "未变化的故事线规划必须保留，不要把整份文档改写成只剩最近一卷或只剩最新推进。",
+                    "如果当前文件已存在，必须优先使用 edit / patch 工具做增量更新，不得整篇覆盖式重写全书故事线蓝图。",
+                    "每条故事线必须使用独立二级标题管理，标题建议写成“## 故事线：<名称>”；不要把多条故事线混写在同一个总段落里。",
+                    "每条故事线下默认使用三级标题：蓝图定位、参考源功能映射、分卷蓝图、跨卷递进、待后续补全；必要时可增加更多三级标题。",
+                    "分卷蓝图下按“#### 第001卷”“#### 第002卷”等区块维护；当前卷继续某条故事线时，只追加或修正该故事线的当前卷区块和跨卷递进。",
+                    "已处理卷区块默认受保护；除非明确纠错，不得把上一卷或旧卷内容摘要化、替换、合并、压缩成简化版本。",
+                    "如果当前卷引入了新的故事线，必须新增对应二级标题，并补齐该线当前可确定的蓝图内容。",
+                    "未读取参考源的后续卷只允许写入“待后续补全”占位，不得提前展开细纲。",
+                    "不要把整份文档改写成只剩最近一卷或只剩最新推进。",
                 ],
             },
             trailing_doc_fields={
@@ -1479,7 +1483,7 @@ def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
         "book_outline": global_dir / GLOBAL_FILE_NAMES["book_outline"],
         "world_design": global_dir / GLOBAL_FILE_NAMES["world_design"],
         "style_guide": global_dir / GLOBAL_FILE_NAMES["style_guide"],
-        "global_plot_progress": global_dir / GLOBAL_FILE_NAMES["global_plot_progress"],
+        "storyline_blueprint": global_dir / GLOBAL_FILE_NAMES["storyline_blueprint"],
         "foreshadowing": global_dir / GLOBAL_FILE_NAMES["foreshadowing"],
         "world_model": global_dir / GLOBAL_FILE_NAMES["world_model"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
@@ -1615,7 +1619,7 @@ def adaptation_doc_label(doc_key: str) -> str:
         "style_guide": "文笔写作风格",
         "book_outline": "全书大纲",
         "foreshadowing": "伏笔管理",
-        "global_plot_progress": "全局剧情进程",
+        "storyline_blueprint": "全书故事线蓝图",
         "volume_outline": "卷级大纲",
     }
     return labels.get(doc_key, doc_key)
@@ -1821,7 +1825,7 @@ def build_adaptation_review_request(
             "检查世界模型中的地点、势力、能力、资源、规则和术语是否有清晰的新书映射。",
             "检查全书大纲是否是仿写书籍的大纲，不得把参考源原大纲照抄为新书大纲。",
             "检查当前卷卷级大纲的角色推进、冲突、高潮、结尾钩子是否正确映射。",
-            "检查全局剧情进程是否把时间线、故事线、支线、反派线和跨卷线整理清楚。",
+            "检查全书故事线蓝图是否按故事线独立保留蓝图、参考源功能映射、分卷设计与跨卷递进，并且没有把旧卷压缩替换成简化摘要。",
             "检查伏笔文档是否保留功能映射，同时改成新书自己的伏笔、回收点与命名。",
             "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容。",
             "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_design、world_model、book_outline、volume_outline。",
@@ -2115,7 +2119,7 @@ def write_stage_outputs(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "world_design", "style_guide", "world_model", "global_plot_progress", "foreshadowing")
+            for key in ("book_outline", "world_design", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
             if paths[key].exists()
         },
         "volume_files": {
@@ -2182,7 +2186,7 @@ def mark_volume_processed_after_review(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "world_design", "style_guide", "world_model", "global_plot_progress", "foreshadowing")
+            for key in ("book_outline", "world_design", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
             if paths[key].exists()
         },
         "volume_files": {
@@ -2530,7 +2534,7 @@ def main() -> int:
             print_progress(f"全书大纲：{paths['book_outline']}")
             print_progress(f"世界观设计：{paths['world_design']}")
             print_progress(f"世界模型：{paths['world_model']}")
-            print_progress(f"全局剧情进程：{paths['global_plot_progress']}")
+            print_progress(f"全书故事线蓝图：{paths['storyline_blueprint']}")
             if any(item.get("key") == "style_guide" for item in generated_documents):
                 print_progress(f"文笔风格：{paths['style_guide']}")
             elif paths["style_guide"].exists():

@@ -562,13 +562,13 @@ class SupportUpdateScopeTests(unittest.TestCase):
             paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
             target_paths = rewrite_workflow.support_update_target_paths(paths)
         self.assertNotIn("world_model", target_paths)
-        self.assertNotIn("global_plot_progress", target_paths)
+        self.assertNotIn("storyline_blueprint", target_paths)
 
-    def test_rewrite_paths_reads_global_plot_progress_from_new_global_number(self) -> None:
+    def test_rewrite_paths_reads_storyline_blueprint_from_new_global_number(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
             paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
-        self.assertEqual(paths["global_plot_progress"].name, "06_global_plot_progress.md")
+        self.assertEqual(paths["storyline_blueprint"].name, "06_storyline_blueprint.md")
 
     def test_support_updates_and_review_do_not_duplicate_current_chapter_text(self) -> None:
         volume_material = {
@@ -625,7 +625,7 @@ class SupportUpdateScopeTests(unittest.TestCase):
 
 
 class StableGlobalInjectionOrderingTests(unittest.TestCase):
-    def test_world_model_and_global_plot_progress_are_promoted_to_stable_global_docs(self) -> None:
+    def test_world_model_and_storyline_blueprint_are_promoted_to_stable_global_docs(self) -> None:
         volume_material = {
             "volume_number": "001",
             "chapters": [
@@ -647,7 +647,7 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
                 paths["world_design"],
                 paths["style_guide"],
                 paths["world_model"],
-                paths["global_plot_progress"],
+                paths["storyline_blueprint"],
                 paths["foreshadowing"],
                 paths["world_state"],
             ):
@@ -656,7 +656,7 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
             paths["world_design"].write_text("# 世界观设计\n", encoding="utf-8")
             paths["style_guide"].write_text("# 文笔写作风格\n", encoding="utf-8")
             paths["world_model"].write_text("# 世界模型\n", encoding="utf-8")
-            paths["global_plot_progress"].write_text("# 全局剧情进程\n", encoding="utf-8")
+            paths["storyline_blueprint"].write_text("# 全书故事线蓝图\n", encoding="utf-8")
             paths["foreshadowing"].write_text("# 伏笔管理\n", encoding="utf-8")
             paths["world_state"].write_text("# 世界状态\n", encoding="utf-8")
 
@@ -680,11 +680,11 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
                 "world_model",
                 "style_guide",
                 "book_outline",
-                "global_plot_progress",
+                "storyline_blueprint",
             ],
         )
         self.assertNotIn("world_model", rolling_keys)
-        self.assertNotIn("global_plot_progress", rolling_keys)
+        self.assertNotIn("storyline_blueprint", rolling_keys)
         self.assertEqual(rolling_keys, ["foreshadowing", "world_state"])
 
 

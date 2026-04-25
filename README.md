@@ -20,7 +20,7 @@
   - 文笔写作风格
   - 全书大纲
   - 伏笔文档
-  - 全局剧情进程
+  - 全书故事线蓝图
   - 卷级大纲
 - [novelist/workflows/novel_chapter_rewrite.py](./novelist/workflows/novel_chapter_rewrite.py)
   读取改编工程目录，逐章生成：
@@ -164,7 +164,7 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 │  ├─ 03_style_guide.md
 │  ├─ 04_book_outline.md
 │  ├─ 05_foreshadowing.md
-│  └─ 06_global_plot_progress.md
+│  └─ 06_storyline_blueprint.md
 └─ volume_injection/
    ├─ 001_volume_injection/
    │  ├─ 001_volume_outline.md
