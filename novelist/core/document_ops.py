@@ -74,7 +74,7 @@ class DocumentEditEdit(BaseModel):
     replace_all: bool = Field(
         False,
         validation_alias=AliasChoices("replace_all", "replaceAll"),
-        description="是否替换该文件内所有匹配。默认 false。",
+        description="是否替换该文件内所有匹配。默认 false；为 true 且未匹配时视为无变化。",
     )
     description: str = Field("", description="当前编辑块的目的说明。")
 
@@ -124,7 +124,7 @@ class DocumentPatchEdit(BaseModel):
     replace_all: bool = Field(
         False,
         validation_alias=AliasChoices("replace_all", "replaceAll"),
-        description="仅 replace 动作可用；为 true 时替换所有匹配。",
+        description="仅 replace 动作可用；为 true 时替换所有匹配，未匹配时视为无变化。",
     )
     description: str = Field("", description="当前编辑块的目的说明。")
 

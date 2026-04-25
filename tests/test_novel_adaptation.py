@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -190,6 +191,234 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
 
 
 class AdaptationVolumeReviewTests(unittest.TestCase):
+    def test_apply_document_operation_with_repair_retries_bad_generation_old_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+            paths["world_design"].write_text("第一段。\n\n第二段原文。\n", encoding="utf-8")
+            failed_operation = adaptation_workflow.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_bad",
+                status="completed",
+                output_types=["function_call"],
+                preview="bad edit",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=adaptation_workflow.document_ops.DocumentEditPayload(
+                    files=[
+                        adaptation_workflow.document_ops.DocumentEditFile(
+                            file_key="world_design",
+                            edits=[
+                                adaptation_workflow.document_ops.DocumentEditEdit(
+                                    old_text="第二段模型误写。",
+                                    new_text="第二段修订后。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+            repaired_operation = adaptation_workflow.document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_repair",
+                status="completed",
+                output_types=["function_call"],
+                preview="fixed edit",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=adaptation_workflow.document_ops.DocumentEditPayload(
+                    files=[
+                        adaptation_workflow.document_ops.DocumentEditFile(
+                            file_key="world_design",
+                            edits=[
+                                adaptation_workflow.document_ops.DocumentEditEdit(
+                                    old_text="第二段原文。",
+                                    new_text="第二段修订后。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with patch.object(
+                adaptation_workflow.document_ops,
+                "call_document_operation_tools",
+                return_value=repaired_operation,
+            ) as call_tools:
+                applied, response_id, repair_response_ids = adaptation_workflow.apply_document_operation_with_repair(
+                    client=Mock(),
+                    model="test-model",
+                    instructions=adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+                    shared_prompt="shared prompt\n",
+                    operation=failed_operation,
+                    allowed_files={"world_design": paths["world_design"]},
+                    previous_response_id="resp_bad",
+                    prompt_cache_key="cache-key",
+                    manifest=manifest,  # type: ignore[arg-type]
+                    volume_material=volume_material,  # type: ignore[arg-type]
+                    repair_phase_key="adaptation_stage_document_locator_repair",
+                    repair_role="资深网络小说改编规划编辑",
+                    repair_task="修正定位文本。",
+                )
+
+            self.assertEqual(response_id, "resp_repair")
+            self.assertEqual(repair_response_ids, ["resp_repair"])
+            self.assertEqual(applied.changed_keys, ["world_design"])
+            self.assertIn("第二段修订后。", paths["world_design"].read_text(encoding="utf-8"))
+            call_tools.assert_called_once()
+            repair_input = call_tools.call_args.kwargs["user_input"]
+            self.assertIn("第二段模型误写。", repair_input)
+            self.assertIn("第二段原文。", repair_input)
+            self.assertIn("逐字复制", repair_input)
+
+    def test_generation_resume_state_uses_current_batch_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = _seed_adaptation_docs(project_root, "002")
+            plan = adaptation_workflow.build_document_plan("002")
+            adaptation_workflow.write_markdown_data(
+                paths["stage_manifest"],
+                title="Stage Status 002",
+                payload={
+                    "status": "generating_document",
+                    "processed_volume": "002",
+                    "current_batch": 6,
+                    "current_batch_range": "volume_outline",
+                },
+                summary_lines=["status: generating_document"],
+            )
+
+            resume_state = adaptation_workflow.load_document_generation_resume_state(paths, plan)
+
+            self.assertEqual(
+                resume_state["completed_keys"],
+                ["world_design", "world_model", "book_outline", "foreshadowing", "global_plot_progress"],
+            )
+            self.assertEqual(
+                [item["key"] for item in resume_state["generated_documents"]],
+                ["world_design", "world_model", "book_outline", "foreshadowing", "global_plot_progress"],
+            )
+
+    def test_generation_resume_state_recovers_corrupted_stage_from_file_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            manifest["processed_volumes"] = ["001"]
+            manifest["last_processed_volume"] = "001"
+            paths_001 = adaptation_workflow.stage_paths(project_root, "001")
+            paths_002 = adaptation_workflow.stage_paths(project_root, "002")
+            plan = adaptation_workflow.build_document_plan("002")
+
+            _write_text(paths_001["stage_manifest"], "previous volume completed\n")
+            previous_done = 1_700_000_000
+            os.utime(paths_001["stage_manifest"], (previous_done, previous_done))
+
+            _write_text(paths_002["world_design"], "第二卷世界观已生成。\n")
+            _write_text(paths_002["world_model"], "第二卷世界模型已生成。\n")
+            _write_text(paths_002["book_outline"], "第二卷全书大纲已生成。\n")
+            _write_text(paths_002["foreshadowing"], "旧伏笔文档，还不能算本轮完成。\n")
+            os.utime(paths_002["world_design"], (previous_done + 1000, previous_done + 1000))
+            os.utime(paths_002["world_model"], (previous_done + 1010, previous_done + 1010))
+            os.utime(paths_002["book_outline"], (previous_done + 1020, previous_done + 1020))
+            os.utime(paths_002["foreshadowing"], (previous_done + 100, previous_done + 100))
+
+            adaptation_workflow.write_markdown_data(
+                paths_002["stage_manifest"],
+                title="Stage Status 002",
+                payload={
+                    "status": "generating_document",
+                    "processed_volume": "002",
+                    "current_batch": 1,
+                    "current_batch_range": "world_design",
+                    "api_calls": [],
+                    "generated_document_keys": [],
+                },
+                summary_lines=["status: generating_document"],
+            )
+
+            resume_state = adaptation_workflow.load_document_generation_resume_state(
+                paths_002,
+                plan,
+                manifest=manifest,  # type: ignore[arg-type]
+                volume_number="002",
+            )
+
+            self.assertEqual(resume_state["resume_source"], "file_mtime_prefix")
+            self.assertEqual(resume_state["completed_keys"], ["world_design", "world_model", "book_outline"])
+            self.assertEqual(
+                [item["key"] for item in resume_state["generated_documents"]],
+                ["world_design", "world_model", "book_outline"],
+            )
+            self.assertTrue(all(item["resumed"] for item in resume_state["generated_documents"]))
+
+    def test_stage_status_snapshot_persists_generated_document_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+
+            adaptation_workflow.write_stage_status_snapshot(
+                manifest,  # type: ignore[arg-type]
+                volume_material,  # type: ignore[arg-type]
+                status="document_generated",
+                note="世界观设计文档已生成，断点已保存。",
+                total_batches=7,
+                current_batch=1,
+                current_batch_range="world_design",
+                generated_documents=[
+                    {
+                        "index": 1,
+                        "key": "world_design",
+                        "label": "世界观设计文档",
+                        "response_id": "resp_world",
+                        "output_path": str(paths["world_design"]),
+                    }
+                ],
+                previous_response_id="resp_world",
+            )
+
+            payload = adaptation_workflow.load_stage_manifest_payload(paths["stage_manifest"])
+            self.assertEqual(payload["generated_document_keys"], ["world_design"])
+            self.assertEqual(payload["last_response_id"], "resp_world")
+
+    def test_failed_stage_snapshot_can_preserve_document_resume_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+            generated_documents = [
+                {
+                    "index": 1,
+                    "key": "world_design",
+                    "label": "世界观设计文档",
+                    "response_id": "resp_world",
+                    "output_path": str(paths["world_design"]),
+                }
+            ]
+
+            adaptation_workflow.write_stage_status_snapshot(
+                manifest,  # type: ignore[arg-type]
+                volume_material,  # type: ignore[arg-type]
+                status="failed",
+                note="阶段执行失败，等待人工排查。",
+                total_batches=7,
+                error_message="接口请求失败",
+                generated_documents=generated_documents,
+                previous_response_id="resp_world",
+            )
+
+            resume_state = adaptation_workflow.load_document_generation_resume_state(
+                paths,
+                adaptation_workflow.build_document_plan("001"),
+            )
+            self.assertEqual(resume_state["completed_keys"], ["world_design"])
+            self.assertEqual(resume_state["last_response_id"], "resp_world")
+
     def test_stage_outputs_wait_for_review_before_processed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)

@@ -46,6 +46,13 @@ class FilesPatchTests(unittest.TestCase):
         self.assertIn("第二句已经修订。", updated)
         self.assertNotIn("第二句。\n第三句。", updated)
 
+    def test_replace_text_with_fallbacks_ignores_missing_replace_all(self) -> None:
+        content = "林玄已经离开天海道院。"
+
+        updated = replace_text_with_fallbacks(content, "林奇", "林玄", replace_all=True)
+
+        self.assertEqual(updated, content)
+
     def test_migrate_numbered_injection_dirs_moves_legacy_dirs_into_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -247,6 +254,51 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertEqual(applied.changed_keys, ["rewritten_chapter"])
             self.assertIn("第二段已经修订。", chapter_path.read_text(encoding="utf-8"))
 
+    def test_apply_document_operation_edit_replace_all_skips_missing_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            world_design = root / "01_world_design.md"
+            world_design.write_text("林奇进入天海道院。\n", encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_replace_all",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=document_ops.DocumentEditPayload(
+                    files=[
+                        document_ops.DocumentEditFile(
+                            file_key="world_design",
+                            edits=[
+                                document_ops.DocumentEditEdit(
+                                    old_text="林奇",
+                                    new_text="林玄",
+                                    replace_all=True,
+                                ),
+                                document_ops.DocumentEditEdit(
+                                    old_text="不存在的人名",
+                                    new_text="新名字",
+                                    replace_all=True,
+                                ),
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={"world_design": world_design},
+            )
+
+            self.assertEqual(applied.changed_keys, ["world_design"])
+            updated = world_design.read_text(encoding="utf-8")
+            self.assertIn("林玄进入天海道院。", updated)
+            self.assertNotIn("不存在的人名", updated)
+
     def test_document_edit_payload_accepts_external_field_names(self) -> None:
         payload = document_ops.DocumentEditPayload.model_validate(
             {
@@ -411,6 +463,51 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertEqual(applied.emitted_keys, ["world_state"])
             self.assertEqual(applied.changed_keys, [])
             self.assertEqual(read_text_if_exists(world_state), original)
+
+    def test_apply_document_operation_patch_replace_all_skips_missing_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            world_state = root / "09_world_state.md"
+            world_state.write_text("赤穹修行馆。\n", encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="patch",
+                response_id="resp_patch_replace_all",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                patch_payload=document_ops.DocumentPatchPayload(
+                    files=[
+                        document_ops.DocumentPatchFile(
+                            file_key="world_state",
+                            edits=[
+                                document_ops.DocumentPatchEdit(
+                                    action="replace",
+                                    match_text="赤穹",
+                                    new_text="玄穹",
+                                    replace_all=True,
+                                ),
+                                document_ops.DocumentPatchEdit(
+                                    action="replace",
+                                    match_text="不存在术语",
+                                    new_text="新术语",
+                                    replace_all=True,
+                                ),
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={"world_state": world_state},
+            )
+
+            self.assertEqual(applied.changed_keys, ["world_state"])
+            self.assertEqual(read_text_if_exists(world_state), "玄穹修行馆。\n")
 
     def test_apply_document_operation_write_rejects_existing_file_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

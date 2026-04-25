@@ -1049,6 +1049,196 @@ def document_output_path(paths: dict[str, Path], doc_key: str) -> Path:
     fail(f"未找到文档输出路径：{doc_key}")
 
 
+def load_stage_manifest_payload(stage_manifest_path: Path) -> dict[str, Any]:
+    if not stage_manifest_path.exists():
+        return {}
+    try:
+        return extract_json_payload(read_text(stage_manifest_path))
+    except Exception:
+        return {}
+
+
+def completed_document_keys_from_stage_payload(
+    payload: dict[str, Any],
+    document_plan: list[dict[str, Any]],
+) -> list[str]:
+    plan_keys = [str(item["key"]) for item in document_plan]
+    generated_keys = payload.get("generated_document_keys")
+    if isinstance(generated_keys, list) and generated_keys:
+        generated_set = {str(item) for item in generated_keys if str(item).strip()}
+        return [key for key in plan_keys if key in generated_set]
+
+    api_calls = payload.get("api_calls")
+    if isinstance(api_calls, list) and api_calls:
+        generated_set = {
+            str(item.get("key"))
+            for item in api_calls
+            if isinstance(item, dict) and str(item.get("key") or "").strip()
+        }
+        return [key for key in plan_keys if key in generated_set]
+
+    if payload.get("status") == "generating_document":
+        current_key = str(payload.get("current_batch_range") or "").strip()
+        if current_key in plan_keys:
+            return plan_keys[: plan_keys.index(current_key)]
+        try:
+            current_batch = int(payload.get("current_batch") or 0)
+        except (TypeError, ValueError):
+            current_batch = 0
+        if current_batch > 1:
+            return plan_keys[: max(current_batch - 1, 0)]
+
+    return []
+
+
+def previous_processed_volume_number(
+    manifest: dict[str, Any],
+    current_volume_number: str,
+) -> str | None:
+    try:
+        current_number = int(str(current_volume_number))
+    except ValueError:
+        current_number = -1
+
+    previous_numbers: list[str] = []
+    for item in manifest.get("processed_volumes", []):
+        volume_number = str(item).zfill(3)
+        try:
+            if int(volume_number) < current_number:
+                previous_numbers.append(volume_number)
+        except ValueError:
+            continue
+    if not previous_numbers:
+        return None
+    return sorted(previous_numbers, key=lambda item: int(item))[-1]
+
+
+def previous_processed_stage_mtime(
+    manifest: dict[str, Any],
+    current_volume_number: str,
+) -> float | None:
+    previous_volume = previous_processed_volume_number(manifest, current_volume_number)
+    if previous_volume is None:
+        return None
+
+    project_root = Path(manifest["project_root"])
+    previous_stage_manifest = stage_paths(project_root, previous_volume)["stage_manifest"]
+    if not previous_stage_manifest.exists():
+        return None
+    return previous_stage_manifest.stat().st_mtime
+
+
+def infer_completed_document_keys_from_file_prefix(
+    paths: dict[str, Path],
+    document_plan: list[dict[str, Any]],
+    *,
+    manifest: dict[str, Any] | None,
+    volume_number: str | None,
+) -> list[str]:
+    if manifest is None:
+        project_root = paths["global_dir"].parent
+        manifest = load_manifest(project_root)
+    if manifest is None:
+        return []
+
+    raw_volume_number = str(volume_number or "").strip()
+    if not raw_volume_number:
+        return []
+    current_volume_number = raw_volume_number.zfill(3)
+    processed_volumes = {str(item).zfill(3) for item in manifest.get("processed_volumes", [])}
+    if current_volume_number in processed_volumes:
+        return []
+
+    cutoff_mtime = previous_processed_stage_mtime(manifest, current_volume_number) or 0.0
+    completed_keys: list[str] = []
+    last_mtime: float | None = None
+    for doc_spec in document_plan:
+        doc_key = str(doc_spec["key"])
+        output_path = document_output_path(paths, doc_key)
+        if not read_text_if_exists(output_path).strip():
+            break
+        doc_mtime = output_path.stat().st_mtime
+        if doc_mtime <= cutoff_mtime:
+            break
+        if last_mtime is not None and doc_mtime + 2.0 < last_mtime:
+            break
+        completed_keys.append(doc_key)
+        last_mtime = max(last_mtime or doc_mtime, doc_mtime)
+
+    return completed_keys
+
+
+def load_document_generation_resume_state(
+    paths: dict[str, Path],
+    document_plan: list[dict[str, Any]],
+    *,
+    manifest: dict[str, Any] | None = None,
+    volume_number: str | None = None,
+) -> dict[str, Any]:
+    payload = load_stage_manifest_payload(paths["stage_manifest"])
+    completed_keys = completed_document_keys_from_stage_payload(payload, document_plan)
+    resume_source = "stage_manifest"
+    if not completed_keys:
+        payload_volume = str(payload.get("processed_volume") or "").strip()
+        inferred_volume_number = volume_number or payload_volume
+        completed_keys = infer_completed_document_keys_from_file_prefix(
+            paths,
+            document_plan,
+            manifest=manifest,
+            volume_number=inferred_volume_number,
+        )
+        if completed_keys:
+            resume_source = "file_mtime_prefix"
+
+    verified_completed_keys: list[str] = []
+    generated_by_key: dict[str, dict[str, Any]] = {}
+    api_calls = payload.get("api_calls")
+    if isinstance(api_calls, list):
+        generated_by_key = {
+            str(item.get("key")): item
+            for item in api_calls
+            if isinstance(item, dict) and str(item.get("key") or "").strip()
+        }
+
+    generated_documents: list[dict[str, Any]] = []
+    for index, doc_spec in enumerate(document_plan, start=1):
+        doc_key = str(doc_spec["key"])
+        if doc_key not in completed_keys:
+            continue
+        output_path = document_output_path(paths, doc_key)
+        if not read_text_if_exists(output_path).strip():
+            continue
+        verified_completed_keys.append(doc_key)
+        stored = dict(generated_by_key.get(doc_key, {}))
+        stored.update(
+            {
+                "index": stored.get("index", index),
+                "key": doc_key,
+                "label": stored.get("label", doc_spec["label"]),
+                "output_path": stored.get("output_path", str(output_path)),
+                "resumed": True,
+                "resume_source": stored.get("resume_source", resume_source),
+            }
+        )
+        generated_documents.append(stored)
+
+    last_response_id = str(payload.get("last_response_id") or "").strip() or None
+    if last_response_id is None:
+        for item in reversed(generated_documents):
+            response_id = str(item.get("response_id") or "").strip()
+            if response_id:
+                last_response_id = response_id
+                break
+
+    return {
+        "payload": payload,
+        "completed_keys": verified_completed_keys,
+        "generated_documents": generated_documents,
+        "last_response_id": last_response_id,
+        "resume_source": resume_source if verified_completed_keys else None,
+    }
+
+
 def build_target_file_context(
     *,
     doc_key: str,
@@ -1310,6 +1500,8 @@ def write_stage_status_snapshot(
     current_batch: int | None = None,
     current_batch_range: str | None = None,
     error_message: str | None = None,
+    generated_documents: list[dict[str, Any]] | None = None,
+    previous_response_id: str | None = None,
 ) -> None:
     project_root = Path(manifest["project_root"])
     paths = stage_paths(project_root, volume_material["volume_number"])
@@ -1327,6 +1519,9 @@ def write_stage_status_snapshot(
         "current_batch": current_batch,
         "current_batch_range": current_batch_range,
         "error_message": error_message,
+        "api_calls": generated_documents or [],
+        "generated_document_keys": [item.get("key") for item in generated_documents or []],
+        "last_response_id": previous_response_id,
         "loaded_files": loaded_files,
     }
     write_markdown_data(
@@ -1478,15 +1673,18 @@ def document_operation_payload(operation: document_ops.DocumentOperationCallResu
 
 def build_document_operation_repair_payload(
     *,
+    phase_key: str = "adaptation_review_fix_locator_repair",
+    role: str = "卷资料审核原地返修定位修正",
+    task: str = "修正上一次工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
     apply_error: Exception,
     failed_operation: document_ops.DocumentOperationCallResult,
     allowed_files: dict[str, Path | document_ops.DocumentTarget],
 ) -> dict[str, Any]:
     return {
         "document_request": {
-            "phase": "adaptation_review_fix_locator_repair",
-            "role": "卷资料审核原地返修定位修正",
-            "task": "修正上一次工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
+            "phase": phase_key,
+            "role": role,
+            "task": task,
         },
         "previous_tool_call_failed": {
             "error": str(apply_error),
@@ -1539,6 +1737,9 @@ def apply_document_operation_with_repair(
     prompt_cache_key: str | None,
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
+    repair_phase_key: str = "adaptation_review_fix_locator_repair",
+    repair_role: str = "卷资料审核原地返修定位修正",
+    repair_task: str = "修正上一次工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
 ) -> tuple[document_ops.AppliedDocumentOperation, str | None, list[str]]:
     current_operation = operation
     current_response_id = previous_response_id
@@ -1563,11 +1764,14 @@ def apply_document_operation_with_repair(
                 raise
 
             print_progress(
-                "模型返回的资料修复定位未能应用："
+                "模型返回的资料文档编辑定位未能应用："
                 f"{error} 正在请求修正定位块（{repair_attempt + 1}/{MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS}）。",
                 error=True,
             )
             repair_payload = build_document_operation_repair_payload(
+                phase_key=repair_phase_key,
+                role=repair_role,
+                task=repair_task,
                 apply_error=error,
                 failed_operation=current_operation,
                 allowed_files=allowed_files,
@@ -2055,6 +2259,8 @@ def main() -> int:
     client: OpenAI | None = None
     openai_settings: dict[str, str] | None = None
     run_mode = RUN_MODE_STAGE
+    generated_documents: list[dict[str, Any]] = []
+    previous_response_id: str | None = None
 
     try:
         print_progress("开始解析参考源目录。")
@@ -2140,6 +2346,15 @@ def main() -> int:
             document_plan = build_document_plan(volume_material["volume_number"])
             planned_calls = len(document_plan)
             paths = stage_paths(Path(manifest["project_root"]), volume_material["volume_number"])
+            resume_state = load_document_generation_resume_state(
+                paths,
+                document_plan,
+                manifest=manifest,
+                volume_number=volume_material["volume_number"],
+            )
+            resumed_completed_keys = set(resume_state["completed_keys"])
+            generated_documents = list(resume_state["generated_documents"])
+            previous_response_id = resume_state["last_response_id"]
             write_source_inventory_snapshot(
                 manifest,
                 volume_material,
@@ -2154,7 +2369,22 @@ def main() -> int:
                 total_batches=planned_calls,
                 current_batch=1,
                 current_batch_range=document_plan[0]["key"],
+                generated_documents=generated_documents,
+                previous_response_id=previous_response_id,
             )
+            if resumed_completed_keys:
+                resumed_labels = [
+                    str(item["label"])
+                    for item in document_plan
+                    if str(item["key"]) in resumed_completed_keys
+                ]
+                resume_source = str(resume_state.get("resume_source") or "stage_manifest")
+                if resume_source == "file_mtime_prefix":
+                    print_progress("未在阶段清单中找到完整断点，已根据当前卷文件更新时间恢复连续完成前缀。")
+                print_progress(
+                    "检测到当前卷已有已完成资料文档，将跳过重新生成："
+                    + "、".join(resumed_labels)
+                )
             print_progress(
                 f"已加载 {volume_material['volume_number']} 卷全部文件："
                 f"{len(volume_material['chapters'])} 个章节文件，"
@@ -2168,7 +2398,6 @@ def main() -> int:
             print_progress("本阶段已启用稳定共享前缀，提示词缓存将复用：项目上下文、阶段规则、文件清单与整卷原文。")
             existing_docs = read_existing_global_docs(Path(manifest["project_root"]))
             current_docs = dict(existing_docs)
-            previous_response_id: str | None = None
             prompt_cache_key = build_phase_session_key(manifest, volume_material["volume_number"])
             stage_shared_prompt = build_stage_shared_prompt(
                 manifest=manifest,
@@ -2177,11 +2406,19 @@ def main() -> int:
                 source_bundle=source_bundle,
                 source_char_count=source_char_count,
             )
-            generated_documents: list[dict[str, Any]] = []
 
             for index, doc_spec in enumerate(document_plan, start=1):
                 doc_key = str(doc_spec["key"])
                 doc_label = str(doc_spec["label"])
+                output_path = document_output_path(paths, doc_key)
+                if doc_key in resumed_completed_keys:
+                    current_docs[doc_key] = (
+                        read_text(output_path)
+                        if output_path.exists()
+                        else current_docs.get(doc_key, "")
+                    )
+                    print_progress(f"第 {index}/{planned_calls} 次调用：跳过已完成的{doc_label}。")
+                    continue
                 write_stage_status_snapshot(
                     manifest,
                     volume_material,
@@ -2190,6 +2427,8 @@ def main() -> int:
                     total_batches=planned_calls,
                     current_batch=index,
                     current_batch_range=doc_key,
+                    generated_documents=generated_documents,
+                    previous_response_id=previous_response_id,
                 )
                 print_progress(f"第 {index}/{planned_calls} 次调用：生成{doc_label}。")
                 print_request_context_summary(
@@ -2201,7 +2440,6 @@ def main() -> int:
                     source_char_count=source_char_count,
                     previous_response_id=previous_response_id,
                 )
-                output_path = document_output_path(paths, doc_key)
                 operation_result, previous_response_id = generate_document_operation(
                     client,
                     openai_settings["model"],
@@ -2215,9 +2453,20 @@ def main() -> int:
                     prompt_cache_key=prompt_cache_key,
                 )
                 print_progress(f"{doc_label} 已返回，开始写入文件。")
-                applied = document_ops.apply_document_operation(
-                    operation_result,
+                applied, previous_response_id, repair_response_ids = apply_document_operation_with_repair(
+                    client=client,
+                    model=openai_settings["model"],
+                    instructions=COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+                    shared_prompt=stage_shared_prompt,
+                    operation=operation_result,
                     allowed_files={doc_key: output_path},
+                    previous_response_id=previous_response_id,
+                    prompt_cache_key=prompt_cache_key,
+                    manifest=manifest,
+                    volume_material=volume_material,
+                    repair_phase_key="adaptation_stage_document_locator_repair",
+                    repair_role="资深网络小说改编规划编辑",
+                    repair_task=f"修正上一次{doc_label}工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
                 )
                 current_docs[doc_key] = read_text(output_path) if output_path.exists() else ""
                 generated_documents.append(
@@ -2226,6 +2475,7 @@ def main() -> int:
                         "key": doc_key,
                         "label": doc_label,
                         "response_id": previous_response_id,
+                        "repair_response_ids": repair_response_ids,
                         "output_path": str(output_path),
                         "operation_mode": applied.mode,
                         "changed": bool(applied.changed_keys),
@@ -2234,6 +2484,17 @@ def main() -> int:
                 print_progress(
                     f"{doc_label} 已处理：{output_path}，模式={applied.mode}，"
                     f"{'已更新' if applied.changed_keys else '内容无变化'}。"
+                )
+                write_stage_status_snapshot(
+                    manifest,
+                    volume_material,
+                    status="document_generated",
+                    note=f"{doc_label} 已生成，断点已保存。",
+                    total_batches=planned_calls,
+                    current_batch=index,
+                    current_batch_range=doc_key,
+                    generated_documents=generated_documents,
+                    previous_response_id=previous_response_id,
                 )
 
             print_progress("本阶段文档生成完成，开始更新阶段索引文件并进入卷资料审核。")
@@ -2322,6 +2583,8 @@ def main() -> int:
                     note="阶段执行失败，等待人工排查。",
                     total_batches=planned_calls or None,
                     error_message=str(error),
+                    generated_documents=generated_documents,
+                    previous_response_id=previous_response_id,
                 )
             except Exception:
                 pass

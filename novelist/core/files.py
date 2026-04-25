@@ -465,7 +465,7 @@ def find_unique_text_match(content: str, target: str) -> str:
 
 def replace_text_with_fallbacks(content: str, old_text: str, new_text: str, *, replace_all: bool = False) -> str:
     if old_text == new_text:
-        raise ValueError("old_text 与 new_text 相同，无法执行替换。")
+        return content
     if not old_text:
         raise ValueError("replace 操作要求 old_text 非空。")
 
@@ -490,6 +490,8 @@ def replace_text_with_fallbacks(content: str, old_text: str, new_text: str, *, r
                 original_ending,
             )
 
+    if not_found and replace_all:
+        return content
     if not_found:
         raise ValueError("未找到 old_text，请提供更稳定的上下文块。")
     raise ValueError("old_text 在文件中匹配到多个位置，请补充更多上下文以确保唯一。")
