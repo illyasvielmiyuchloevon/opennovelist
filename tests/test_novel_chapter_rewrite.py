@@ -197,6 +197,9 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertEqual(payload["document_request"]["role"], "章节仿写修订作者")
         self.assertIn("update_target_files", payload)
         self.assertIn("current_generated_chapter", payload)
+        self.assertEqual(payload["update_target_files"][0]["preferred_mode"], "edit_or_patch")
+        self.assertEqual(payload["update_target_files"][0]["write_policy"], "no_write_if_exists")
+        self.assertIn("按修改意图选择工具", payload["update_target_files"][0]["tool_selection_policy"])
         self.assertEqual(payload["current_generated_chapter"]["content"], "这是现有章节正文。")
 
 
@@ -591,6 +594,7 @@ class SupportUpdateScopeTests(unittest.TestCase):
                 (paths["book_outline"], "# 全书大纲\n"),
                 (paths["world_design"], "# 世界观设计\n"),
                 (paths["style_guide"], "# 文笔写作风格\n"),
+                (paths["volume_plot_progress"], "# 卷级剧情进程\n"),
                 (paths["chapter_outline"], "# 章纲\n"),
                 (paths["chapter_review"], "# 章级审核\n"),
                 (paths["rewritten_chapter"], "这是当前已生成正文。"),
@@ -622,6 +626,12 @@ class SupportUpdateScopeTests(unittest.TestCase):
         self.assertNotIn("rewritten_chapter", review_payload["rolling_injected_chapter_docs"])
         self.assertIn("current_generated_chapter", support_payload)
         self.assertIn("current_generated_chapter", review_payload)
+        existing_target = next(
+            item for item in support_payload["update_target_files"] if item["current_content"].strip()
+        )
+        self.assertEqual(existing_target["preferred_mode"], "edit_or_patch")
+        self.assertEqual(existing_target["write_policy"], "no_write_if_exists")
+        self.assertIn("改已有条目", existing_target["tool_selection_policy"])
 
 
 class StableGlobalInjectionOrderingTests(unittest.TestCase):

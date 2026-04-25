@@ -191,6 +191,8 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         self.assertIsInstance(user_input, str)
         payload = adaptation_workflow.json.loads(str(user_input))
         self.assertIn("target_file", payload)
+        self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
+        self.assertIn("按修改意图选择工具", payload["target_file"]["tool_selection_policy"])
         self.assertNotIn("existing_style_guide", payload)
         self.assertNotIn("style_guide", payload["injected_global_docs"])
 
@@ -231,6 +233,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         payload = adaptation_workflow.json.loads(str(captured["user_input"]))
         requirements = "\n".join(payload["requirements"])
         self.assertEqual(payload["required_file"], "06_storyline_blueprint.md")
+        self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
         self.assertIn("已处理卷区块默认受保护", requirements)
         self.assertIn("不得把上一卷或旧卷内容摘要化、替换、合并、压缩成简化版本", requirements)
         self.assertIn("只追加或修正该故事线的当前卷区块和跨卷递进", requirements)
@@ -239,6 +242,19 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
 
 
 class AdaptationVolumeReviewTests(unittest.TestCase):
+    def test_adaptation_review_targets_recommend_tools_by_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = _seed_adaptation_docs(project_root, "001")
+
+            snapshot = adaptation_workflow.adaptation_review_target_snapshot(
+                {"world_design": paths["world_design"]}
+            )
+
+        self.assertEqual(snapshot[0]["preferred_mode"], "edit_or_patch")
+        self.assertIn("替换已有内容", snapshot[0]["tool_selection_policy"])
+        self.assertIn("按 Markdown 标题", snapshot[0]["tool_selection_policy"])
+
     def test_apply_document_operation_with_repair_retries_bad_generation_old_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)

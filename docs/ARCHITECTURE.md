@@ -13,9 +13,14 @@
 ├─ novelist/
 │  ├─ workflows/              # 业务工作流
 │  │  ├─ split_novel.py
-│  │  ├─ novel_adaptation.py
-│  │  ├─ novel_chapter_rewrite.py
-│  │  └─ novel_workflow.py
+│  │  ├─ novel_adaptation.py       # 兼容入口 facade
+│  │  ├─ novel_chapter_rewrite.py  # 兼容入口 facade
+│  │  ├─ novel_workflow.py         # 兼容入口 facade
+│  │  ├─ adaptation/               # 资料适配内部实现
+│  │  ├─ chapter_rewrite/          # 章节重写内部实现
+│  │  ├─ unified/                  # 统一入口内部实现
+│  │  ├─ document_repair.py        # 跨工作流 document_ops 修复辅助
+│  │  └─ prompt_summary.py         # 跨工作流请求摘要辅助
 │  └─ core/                   # 可复用核心模块
 │     ├─ files.py
 │     ├─ document_ops.py
@@ -30,7 +35,7 @@
 职责划分：
 
 - `novelist/workflows/`
-  负责具体业务流程编排。
+  负责具体业务流程编排。`novel_*.py` 文件是旧命令与旧导入的兼容 facade，主要实现位于对应子包。
 - `novelist/core/`
   负责可复用能力，不直接承载业务流程。
 - 根目录 `novel_workflow.py`
@@ -62,6 +67,8 @@
 
 它面向“卷级规划层”。
 
+内部实现位于 `novelist.workflows.adaptation`，按项目/素材/prompt/资料生成/审核/runner 拆分；外部仍可使用旧模块名运行或导入。
+
 ### 2.3 `novelist.workflows.novel_chapter_rewrite`
 
 负责逐章重写与审核，包括：
@@ -75,6 +82,8 @@
 
 它面向“章节生产层”。
 
+内部实现位于 `novelist.workflows.chapter_rewrite`，按项目状态、文档目录、prompt、Responses 调用、document repair、审核、章节/卷 runner 拆分；外部旧模块名保持兼容。
+
 ### 2.4 `novelist.workflows.novel_workflow`
 
 负责统一调度：
@@ -83,6 +92,8 @@
 - 串联 `split_novel -> adaptation -> chapter_rewrite`
 - 断点续跑
 - OpenAI / OpenAI Compatible 配置
+
+内部实现位于 `novelist.workflows.unified`；旧 `novelist.workflows.novel_workflow` 仍是兼容入口。
 
 ## 3. `core` 的职责
 
@@ -130,6 +141,7 @@ LLM 运行时：
 - OpenAI Compatible Chat Completions
 - 流式收事件
 - tool call 参数提取
+- token usage 标准化统计：发送、接收、推理、缓存命中、缓存写入
 - 错误重试与终止策略
 
 ### 3.6 `novelist.core.ui`

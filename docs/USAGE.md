@@ -31,16 +31,24 @@
 
 ```text
 novelist/
-├─ workflows/    # 三个业务工作流 + 统一工作流
+├─ workflows/
+│  ├─ novel_adaptation.py       # 兼容入口 facade
+│  ├─ novel_chapter_rewrite.py  # 兼容入口 facade
+│  ├─ novel_workflow.py         # 兼容入口 facade
+│  ├─ adaptation/               # 资料适配内部实现
+│  ├─ chapter_rewrite/          # 章节重写内部实现
+│  └─ unified/                  # 统一入口内部实现
 └─ core/   # 可复用核心模块
 ```
 
 也就是说，源码路径应优先看：
 
-- `novelist/workflows/...`
+- `novelist/workflows/adaptation/...`
+- `novelist/workflows/chapter_rewrite/...`
+- `novelist/workflows/unified/...`
 - `novelist/core/...`
 
-而不是旧的根目录 `core/...` 或旧的根目录独立入口文件路径。
+`novelist/workflows/novel_*.py` 仍然可以运行，也仍然兼容旧导入；它们现在只是薄入口层。
 
 ### 2.1 Python 依赖
 
@@ -479,6 +487,7 @@ python F:\novelist\novel_workflow.py "F:\books\玄幻忍者" --dry-run
 - `tool_calls`
 - 旧版 `function_call`
 - 不同 `tool_choice` 形状回退
+- token usage 输出；服务端返回 usage 时会显示发送、接收、缓存命中、缓存写入和推理 token
 
 如果兼容服务本身不稳定，仍然可能出现：
 

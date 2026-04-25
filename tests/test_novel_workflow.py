@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import tempfile
 import unittest
 from unittest import mock
@@ -11,6 +12,33 @@ from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
 from novelist.workflows import novel_workflow as workflow_entry
 import novelist.core.openai_config as openai_config
 from novelist.core.files import write_markdown_data
+
+
+class WorkflowFacadeCompatibilityTests(unittest.TestCase):
+    def test_legacy_workflow_modules_delegate_to_split_packages(self) -> None:
+        adaptation_package = importlib.import_module("novelist.workflows.adaptation")
+        rewrite_package = importlib.import_module("novelist.workflows.chapter_rewrite")
+        unified_package = importlib.import_module("novelist.workflows.unified")
+
+        self.assertTrue(getattr(adaptation_workflow.build_document_plan, "__workflow_facade_wrapper__", False))
+        self.assertTrue(getattr(rewrite_workflow.rewrite_paths, "__workflow_facade_wrapper__", False))
+        self.assertTrue(getattr(workflow_entry.detect_input_kind, "__workflow_facade_wrapper__", False))
+        self.assertIs(adaptation_workflow.AdaptationReviewPayload, adaptation_package.AdaptationReviewPayload)
+        self.assertIs(rewrite_workflow.WorkflowSubmissionPayload, rewrite_package.WorkflowSubmissionPayload)
+        self.assertEqual(workflow_entry.INPUT_RAW_TEXT, unified_package.INPUT_RAW_TEXT)
+
+    def test_legacy_facade_patch_syncs_into_split_implementation(self) -> None:
+        args = argparse.Namespace(
+            input_path=None,
+            skip_adaptation=False,
+            skip_rewrite=False,
+        )
+        with mock.patch.object(workflow_entry, "prompt_choice", return_value=workflow_entry.WORKFLOW_SCOPE_REWRITE_ONLY):
+            with mock.patch.object(workflow_entry.sys, "stdin", WorkflowCliArgumentTests.TtyInput()):
+                self.assertEqual(
+                    workflow_entry.resolve_workflow_scope(args, [], ["001"]),
+                    workflow_entry.WORKFLOW_SCOPE_REWRITE_ONLY,
+                )
 
 
 class WorkflowCliDetectionTests(unittest.TestCase):

@@ -6,13 +6,14 @@ import sys
 import threading
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Generic, TypeVar
 
 import httpx
 import openai
 from openai import OpenAI
+from openai.lib._pydantic import to_strict_json_schema
 from pydantic import BaseModel, Field
 
 from .ui import print_progress
@@ -46,6 +47,25 @@ class ModelOutputError(RuntimeError):
 
 class MarkdownDocumentPayload(BaseModel):
     content_md: str = Field(..., description="Markdown document body to be written to the target file.")
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    total: int
+    input: int
+    input_total: int
+    output: int
+    reasoning: int
+    cache_read: int
+    cache_write: int
+
+    @property
+    def cache_hit(self) -> int:
+        return self.cache_read
+
+
+def empty_token_usage() -> TokenUsage:
+    return TokenUsage(total=0, input=0, input_total=0, output=0, reasoning=0, cache_read=0, cache_write=0)
 
 
 def _print_retry_notice(
@@ -248,6 +268,140 @@ def safe_json_loads(text: str) -> dict[str, Any] | list[Any] | None:
     return None
 
 
+def safe_token_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(number, 0)
+
+
+def nested_get(mapping: Any, *keys: str) -> Any:
+    current = mapping
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def first_token_value(mapping: Any, paths: list[tuple[str, ...]]) -> int:
+    for path in paths:
+        value = nested_get(mapping, *path)
+        if value is not None:
+            return safe_token_int(value)
+    return 0
+
+
+def extract_token_usage(raw_json: Any) -> TokenUsage:
+    plain = to_plain_data(raw_json)
+    if not isinstance(plain, dict):
+        return TokenUsage(total=0, input=0, input_total=0, output=0, reasoning=0, cache_read=0, cache_write=0)
+
+    usage = plain.get("usage")
+    if not isinstance(usage, dict):
+        return TokenUsage(total=0, input=0, input_total=0, output=0, reasoning=0, cache_read=0, cache_write=0)
+
+    input_total = first_token_value(
+        usage,
+        [
+            ("input_tokens",),
+            ("inputTokens",),
+            ("prompt_tokens",),
+            ("promptTokens",),
+        ],
+    )
+    output_total = first_token_value(
+        usage,
+        [
+            ("output_tokens",),
+            ("outputTokens",),
+            ("completion_tokens",),
+            ("completionTokens",),
+        ],
+    )
+    reasoning = first_token_value(
+        usage,
+        [
+            ("output_tokens_details", "reasoning_tokens"),
+            ("outputTokenDetails", "reasoningTokens"),
+            ("completion_tokens_details", "reasoning_tokens"),
+            ("completionTokenDetails", "reasoningTokens"),
+            ("reasoning_tokens",),
+            ("reasoningTokens",),
+        ],
+    )
+    cache_read = first_token_value(
+        usage,
+        [
+            ("input_tokens_details", "cached_tokens"),
+            ("input_tokens_details", "cache_read_tokens"),
+            ("inputTokenDetails", "cacheReadTokens"),
+            ("prompt_tokens_details", "cached_tokens"),
+            ("promptTokenDetails", "cachedTokens"),
+            ("cached_input_tokens",),
+            ("cachedInputTokens",),
+            ("cache_read_input_tokens",),
+            ("cacheReadInputTokens",),
+        ],
+    )
+    cache_write = first_token_value(
+        usage,
+        [
+            ("input_tokens_details", "cache_write_tokens"),
+            ("input_tokens_details", "cache_creation_tokens"),
+            ("inputTokenDetails", "cacheWriteTokens"),
+            ("prompt_tokens_details", "cache_write_tokens"),
+            ("promptTokenDetails", "cacheWriteTokens"),
+            ("cache_write_input_tokens",),
+            ("cacheWriteInputTokens",),
+            ("cache_creation_input_tokens",),
+            ("cacheCreationInputTokens",),
+        ],
+    )
+    total = first_token_value(
+        usage,
+        [
+            ("total_tokens",),
+            ("totalTokens",),
+        ],
+    )
+    adjusted_input = max(input_total - cache_read - cache_write, 0)
+    output = max(output_total - reasoning, 0)
+    if total <= 0:
+        total = adjusted_input + output + reasoning + cache_read + cache_write
+    return TokenUsage(
+        total=total,
+        input=adjusted_input,
+        input_total=input_total,
+        output=output,
+        reasoning=reasoning,
+        cache_read=cache_read,
+        cache_write=cache_write,
+    )
+
+
+def token_usage_summary(usage: TokenUsage) -> str:
+    if usage.total <= 0 and usage.input_total <= 0 and usage.output <= 0 and usage.reasoning <= 0:
+        return "token=unavailable"
+    parts = [
+        f"发送={usage.input_total}",
+        f"接收={usage.output}",
+        f"缓存命中={usage.cache_hit}",
+    ]
+    if usage.cache_write:
+        parts.append(f"缓存写入={usage.cache_write}")
+    if usage.reasoning:
+        parts.append(f"推理={usage.reasoning}")
+    if usage.input_total != usage.input:
+        parts.append(f"非缓存输入={usage.input}")
+    if usage.total:
+        parts.append(f"总计={usage.total}")
+    return "token " + "，".join(parts)
+
+
 def _has_response_value(value: Any) -> bool:
     return value is not None and value != "" and value != [] and value != {}
 
@@ -328,6 +482,62 @@ def response_payload_id(payload: Any) -> str:
     return str(payload.get("id") or "").strip()
 
 
+def clip_error_detail(value: Any, *, limit: int = 240) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def response_followup_error_details(raw_json: Any) -> str:
+    plain = to_plain_data(raw_json)
+    if not isinstance(plain, dict):
+        return ""
+    details: list[str] = []
+    followup_errors = (
+        ("response_id 续接失败", plain.get("_response_id_stream_unavailable_error")),
+        ("retrieve 补取失败", plain.get("_retrieve_unavailable_error")),
+    )
+    for label, error in followup_errors:
+        if error:
+            details.append(f"{label}={clip_error_detail(error)}")
+    return "；".join(details)
+
+
+def build_extraction_error_message(
+    *,
+    target_label: str,
+    response_id: str,
+    status: str,
+    output_items: int,
+    output_types: list[str],
+    raw_json: Any,
+) -> str:
+    normalized_status = str(status or "unknown")
+    if normalized_status in IN_PROGRESS_RESPONSE_STATUSES:
+        message = f"模型响应仍为 {normalized_status}，未取得完整{target_label}，不能按已完成回复解析。"
+        followup_details = response_followup_error_details(raw_json)
+        if followup_details:
+            message += f" 后续补取情况：{followup_details}。"
+    elif normalized_status == "unknown":
+        message = f"模型响应状态未知，未能从{target_label}中提取所需字段。"
+    else:
+        message = f"模型响应状态为 {normalized_status}，但未能从{target_label}中提取所需字段。"
+    return (
+        message
+        + f" response_id={response_id},"
+        + f" status={normalized_status},"
+        + f" output_items={output_items},"
+        + f" output_types={output_types or ['none']}"
+    )
+
+
+def extraction_retry_stage(*, status: str, default_stage: str) -> str:
+    if str(status or "") in IN_PROGRESS_RESPONSE_STATUSES:
+        return "接口响应未完成"
+    return default_stage
+
+
 def retrieve_response_until_terminal(
     client: OpenAI,
     response_payload: dict[str, Any],
@@ -342,7 +552,11 @@ def retrieve_response_until_terminal(
     deadline = time.monotonic() + max(timeout_seconds, 0)
     latest_payload = dict(response_payload)
     while True:
-        retrieved = client.responses.retrieve(response_id)
+        try:
+            retrieved = client.responses.retrieve(response_id)
+        except openai.OpenAIError as error:
+            latest_payload["_retrieve_unavailable_error"] = str(error)
+            return latest_payload
         retrieved_payload = to_plain_data(retrieved)
         if isinstance(retrieved_payload, dict):
             latest_payload = retrieved_payload
@@ -425,6 +639,129 @@ def synthesize_output_text_from_output_items(output_items: list[dict[str, Any]])
     return "\n\n".join(texts).strip()
 
 
+def consume_response_stream_events(stream: Any) -> tuple[dict[str, Any], dict[int, dict[str, Any]], dict[str, Any] | None]:
+    response_payload: dict[str, Any] = {}
+    output_items_by_index: dict[int, dict[str, Any]] = {}
+    final_response_payload: dict[str, Any] | None = None
+
+    for event in stream:
+        event_type = getattr(event, "type", "")
+
+        if event_type in {"response.created", "response.in_progress", "response.completed"}:
+            payload = to_plain_data(getattr(event, "response", None))
+            if isinstance(payload, dict):
+                response_payload = payload
+            continue
+
+        if event_type == "response.output_item.added":
+            item = to_plain_data(getattr(event, "item", None))
+            output_index = getattr(event, "output_index", None)
+            if isinstance(item, dict) and isinstance(output_index, int):
+                output_items_by_index[output_index] = item
+            continue
+
+        if event_type == "response.output_item.done":
+            item = to_plain_data(getattr(event, "item", None))
+            output_index = getattr(event, "output_index", None)
+            if isinstance(item, dict) and isinstance(output_index, int):
+                output_items_by_index[output_index] = item
+            continue
+
+        if event_type == "response.function_call_arguments.delta":
+            output_index = getattr(event, "output_index", None)
+            if not isinstance(output_index, int):
+                continue
+            item = output_items_by_index.setdefault(
+                output_index,
+                {"type": "function_call", "arguments": "", "name": ""},
+            )
+            arguments = item.get("arguments")
+            if not isinstance(arguments, str):
+                arguments = ""
+            delta = getattr(event, "delta", "")
+            if isinstance(delta, str):
+                item["arguments"] = arguments + delta
+            continue
+
+        if event_type == "response.function_call_arguments.done":
+            output_index = getattr(event, "output_index", None)
+            if not isinstance(output_index, int):
+                continue
+            item = output_items_by_index.setdefault(
+                output_index,
+                {"type": "function_call", "arguments": "", "name": ""},
+            )
+            arguments = getattr(event, "arguments", "")
+            if isinstance(arguments, str):
+                item["arguments"] = arguments
+            continue
+
+        if event_type == "response.output_text.done":
+            output_index = getattr(event, "output_index", None)
+            content_index = getattr(event, "content_index", None)
+            if not isinstance(output_index, int) or not isinstance(content_index, int):
+                continue
+            item = output_items_by_index.setdefault(output_index, {"type": "message", "content": []})
+            content = item.setdefault("content", [])
+            if not isinstance(content, list):
+                item["content"] = []
+                content = item["content"]
+            while len(content) <= content_index:
+                content.append({"type": "output_text", "text": ""})
+            text = getattr(event, "text", "")
+            if isinstance(text, str):
+                content[content_index] = {"type": "output_text", "text": text}
+
+    try:
+        final_response = stream.get_final_response()
+        final_payload = to_plain_data(final_response)
+        if isinstance(final_payload, dict):
+            final_response_payload = final_payload
+    except RuntimeError:
+        final_response_payload = None
+
+    return response_payload, output_items_by_index, final_response_payload
+
+
+def continue_response_stream_until_terminal(
+    client: OpenAI,
+    response_payload: dict[str, Any],
+    *,
+    timeout_seconds: float = DEFAULT_RESPONSE_POLL_TIMEOUT_SECONDS,
+    interval_seconds: float = DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    response_id = response_payload_id(response_payload)
+    if not response_id or response_payload_status(response_payload) not in IN_PROGRESS_RESPONSE_STATUSES:
+        return response_payload, []
+
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    latest_payload = dict(response_payload)
+    latest_items: list[dict[str, Any]] = []
+    while True:
+        try:
+            with client.responses.stream(response_id=response_id) as stream:
+                stream_payload, stream_items_by_index, final_payload = consume_response_stream_events(stream)
+        except openai.OpenAIError as error:
+            latest_payload["_response_id_stream_unavailable_error"] = str(error)
+            return latest_payload, latest_items
+
+        if not stream_payload and final_payload is None and not stream_items_by_index:
+            latest_payload["_response_id_stream_unavailable_error"] = "empty response_id stream"
+            return latest_payload, latest_items
+
+        candidate_payload = dict(final_payload or stream_payload or latest_payload)
+        candidate_items = [stream_items_by_index[index] for index in sorted(stream_items_by_index)]
+        if candidate_items:
+            latest_items = candidate_items
+        latest_payload = candidate_payload
+        if response_payload_status(latest_payload) not in IN_PROGRESS_RESPONSE_STATUSES:
+            return latest_payload, latest_items
+
+        if time.monotonic() >= deadline:
+            return latest_payload, latest_items
+        time.sleep(max(interval_seconds, 0))
+
+
 def collect_stream_response(
     client: OpenAI,
     *,
@@ -446,82 +783,14 @@ def collect_stream_response(
             module=r"pydantic\.main",
         )
         with client.responses.stream(**request_params) as stream:
-            for event in stream:
-                event_type = getattr(event, "type", "")
-
-                if event_type in {"response.created", "response.in_progress", "response.completed"}:
-                    payload = to_plain_data(getattr(event, "response", None))
-                    if isinstance(payload, dict):
-                        response_payload = payload
-                    continue
-
-                if event_type == "response.output_item.added":
-                    item = to_plain_data(getattr(event, "item", None))
-                    output_index = getattr(event, "output_index", None)
-                    if isinstance(item, dict) and isinstance(output_index, int):
-                        output_items_by_index[output_index] = item
-                    continue
-
-                if event_type == "response.output_item.done":
-                    item = to_plain_data(getattr(event, "item", None))
-                    output_index = getattr(event, "output_index", None)
-                    if isinstance(item, dict) and isinstance(output_index, int):
-                        output_items_by_index[output_index] = item
-                    continue
-
-                if event_type == "response.function_call_arguments.delta":
-                    output_index = getattr(event, "output_index", None)
-                    if not isinstance(output_index, int):
-                        continue
-                    item = output_items_by_index.setdefault(
-                        output_index,
-                        {"type": "function_call", "arguments": "", "name": ""},
-                    )
-                    arguments = item.get("arguments")
-                    if not isinstance(arguments, str):
-                        arguments = ""
-                    delta = getattr(event, "delta", "")
-                    if isinstance(delta, str):
-                        item["arguments"] = arguments + delta
-                    continue
-
-                if event_type == "response.function_call_arguments.done":
-                    output_index = getattr(event, "output_index", None)
-                    if not isinstance(output_index, int):
-                        continue
-                    item = output_items_by_index.setdefault(
-                        output_index,
-                        {"type": "function_call", "arguments": "", "name": ""},
-                    )
-                    arguments = getattr(event, "arguments", "")
-                    if isinstance(arguments, str):
-                        item["arguments"] = arguments
-                    continue
-
-                if event_type == "response.output_text.done":
-                    output_index = getattr(event, "output_index", None)
-                    content_index = getattr(event, "content_index", None)
-                    if not isinstance(output_index, int) or not isinstance(content_index, int):
-                        continue
-                    item = output_items_by_index.setdefault(output_index, {"type": "message", "content": []})
-                    content = item.setdefault("content", [])
-                    if not isinstance(content, list):
-                        item["content"] = []
-                        content = item["content"]
-                    while len(content) <= content_index:
-                        content.append({"type": "output_text", "text": ""})
-                    text = getattr(event, "text", "")
-                    if isinstance(text, str):
-                        content[content_index] = {"type": "output_text", "text": text}
-            try:
-                final_response = stream.get_final_response()
-                final_payload = to_plain_data(final_response)
-                if isinstance(final_payload, dict):
-                    final_response_payload = final_payload
-            except RuntimeError:
-                final_response_payload = None
+            response_payload, output_items_by_index, final_response_payload = consume_response_stream_events(stream)
 
     response_payload = dict(final_response_payload or response_payload)
+    continued_payload, continued_items = continue_response_stream_until_terminal(client, response_payload)
+    if continued_items:
+        for index, item in enumerate(continued_items):
+            output_items_by_index[index] = item
+    response_payload = continued_payload
     response_payload = retrieve_response_until_terminal(client, response_payload)
     reconstructed_output = [output_items_by_index[index] for index in sorted(output_items_by_index)]
     output_items = _merge_response_outputs(response_payload.get("output"), reconstructed_output)
@@ -548,6 +817,21 @@ def build_chat_completion_tools(tool_specs: list["FunctionToolSpec[Any]"]) -> li
                     "description": spec.description,
                     "parameters": spec.model.model_json_schema(),
                 },
+            }
+        )
+    return tools
+
+
+def build_responses_function_tools(tool_specs: list["FunctionToolSpec[Any]"]) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    for spec in tool_specs:
+        tools.append(
+            {
+                "type": "function",
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": to_strict_json_schema(spec.model),
+                "strict": True,
             }
         )
     return tools
@@ -589,6 +873,13 @@ def should_retry_legacy_chat_tool_choice(error: Exception) -> bool:
     return "tool_choice.function" in text or "Unknown parameter: 'tool_choice.function'" in text
 
 
+def should_retry_without_chat_stream_options(error: Exception) -> bool:
+    if not isinstance(error, openai.BadRequestError):
+        return False
+    text = str(error)
+    return "stream_options" in text or "include_usage" in text
+
+
 def collect_chat_completion_stream_response(
     client: OpenAI,
     *,
@@ -611,6 +902,8 @@ def collect_chat_completion_stream_response(
             for key in ("id", "object", "created", "model", "system_fingerprint"):
                 if key in plain and key not in response_payload:
                     response_payload[key] = plain[key]
+            if isinstance(plain.get("usage"), dict):
+                response_payload["usage"] = plain["usage"]
 
             choices = plain.get("choices")
             if not isinstance(choices, list):
@@ -915,6 +1208,7 @@ class StructuredResponseResult(Generic[T]):
     preview: str
     raw_body_text: str
     raw_json: Any
+    token_usage: TokenUsage = field(default_factory=empty_token_usage)
 
 
 @dataclass
@@ -926,6 +1220,7 @@ class FunctionToolResult(Generic[T]):
     preview: str
     raw_body_text: str
     raw_json: Any
+    token_usage: TokenUsage = field(default_factory=empty_token_usage)
 
 
 @dataclass(frozen=True)
@@ -945,6 +1240,7 @@ class MultiFunctionToolResult:
     preview: str
     raw_body_text: str
     raw_json: Any
+    token_usage: TokenUsage = field(default_factory=empty_token_usage)
 
 
 def _coerce_function_tool_arguments(
@@ -1240,6 +1536,7 @@ def call_structured_output(
 
         response_id, status, output_items = response_identity(response, raw_json)
         output_types = response_output_types(response, raw_json)
+        token_usage = extract_token_usage(raw_json)
         preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
         parsed_payload, extraction_source = _coerce_parsed_payload(
             response,
@@ -1250,7 +1547,8 @@ def call_structured_output(
 
         activity.stop(
             f"已接收回复，来源：{extraction_source or 'unknown'}，response_id={response_id}，"
-            f"output={','.join(output_types) or 'none'}。"
+            f"status={status}，output={','.join(output_types) or 'none'}，"
+            f"{token_usage_summary(token_usage)}。"
         )
 
         if parsed_payload is not None:
@@ -1259,17 +1557,21 @@ def call_structured_output(
                 response_id=response_id,
                 status=status,
                 output_types=output_types,
+                token_usage=token_usage,
                 preview=preview,
                 raw_body_text=raw_body_text,
                 raw_json=raw_json,
             )
 
         last_error = ModelOutputError(
-            "模型回复已完成，但未能从结构化响应中提取所需字段。"
-            f" response_id={response_id},"
-            f" status={status},"
-            f" output_items={output_items},"
-            f" output_types={output_types or ['none']}",
+            build_extraction_error_message(
+                target_label="结构化响应",
+                response_id=response_id,
+                status=status,
+                output_items=output_items,
+                output_types=output_types,
+                raw_json=raw_json,
+            ),
             preview=preview,
         )
         if attempt < retries:
@@ -1277,7 +1579,7 @@ def call_structured_output(
                 attempt=attempt,
                 retries=retries,
                 retry_delay_seconds=retry_delay_seconds,
-                stage="结构化结果提取",
+                stage=extraction_retry_stage(status=status, default_stage="结构化结果提取"),
                 error=last_error,
             )
             time.sleep(retry_delay_seconds)
@@ -1326,6 +1628,7 @@ def call_function_tool(
         response_id=result.response_id,
         status=result.status,
         output_types=result.output_types,
+        token_usage=result.token_usage,
         preview=result.preview,
         raw_body_text=result.raw_body_text,
         raw_json=result.raw_json,
@@ -1372,20 +1675,29 @@ def call_function_tools(
                 }
                 last_compatible_error: Exception | None = None
                 for chat_tool_choice in build_chat_tool_choice_candidates(tool_choice):
-                    request_params = dict(base_request_params)
-                    request_params["tool_choice"] = chat_tool_choice
-                    try:
-                        response, raw_body_text, raw_json = collect_chat_completion_stream_response(
-                            client,
-                            request_params=request_params,
-                        )
-                        last_compatible_error = None
+                    for include_usage in (True, False):
+                        request_params = dict(base_request_params)
+                        request_params["tool_choice"] = chat_tool_choice
+                        if include_usage:
+                            request_params["stream_options"] = {"include_usage": True}
+                        try:
+                            response, raw_body_text, raw_json = collect_chat_completion_stream_response(
+                                client,
+                                request_params=request_params,
+                            )
+                            last_compatible_error = None
+                            break
+                        except Exception as compatible_error:
+                            last_compatible_error = compatible_error
+                            if include_usage and should_retry_without_chat_stream_options(compatible_error):
+                                continue
+                            if should_retry_legacy_chat_tool_choice(compatible_error):
+                                break
+                            raise
+                    if last_compatible_error is None:
                         break
-                    except Exception as compatible_error:
-                        last_compatible_error = compatible_error
-                        if should_retry_legacy_chat_tool_choice(compatible_error):
-                            continue
-                        raise
+                    if should_retry_legacy_chat_tool_choice(last_compatible_error):
+                        continue
                 if last_compatible_error is not None:
                     raise last_compatible_error
             else:
@@ -1394,14 +1706,7 @@ def call_function_tools(
                     "instructions": instructions,
                     "input": user_input,
                     "reasoning": {"effort": DEFAULT_REASONING_EFFORT},
-                    "tools": [
-                        openai.pydantic_function_tool(
-                            spec.model,
-                            name=spec.name,
-                            description=spec.description,
-                        )
-                        for spec in tool_specs
-                    ],
+                    "tools": build_responses_function_tools(tool_specs),
                     "tool_choice": tool_choice,
                     "parallel_tool_calls": False,
                     "store": True,
@@ -1469,6 +1774,7 @@ def call_function_tools(
         else:
             output_types = response_output_types(response, raw_json)
             preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
+        token_usage = extract_token_usage(raw_json)
         parsed_payload, parsed_tool_name, extraction_source = _coerce_any_function_tool_arguments(
             response,
             tool_specs_by_name,
@@ -1478,7 +1784,8 @@ def call_function_tools(
 
         activity.stop(
             f"已接收回复，来源：{extraction_source or 'unknown'}，response_id={response_id}，"
-            f"output={','.join(output_types) or 'none'}。"
+            f"status={status}，output={','.join(output_types) or 'none'}，"
+            f"{token_usage_summary(token_usage)}。"
         )
 
         if parsed_payload is not None and parsed_tool_name:
@@ -1488,17 +1795,21 @@ def call_function_tools(
                 response_id=response_id,
                 status=status,
                 output_types=output_types,
+                token_usage=token_usage,
                 preview=preview,
                 raw_body_text=raw_body_text,
                 raw_json=raw_json,
             )
 
         last_error = ModelOutputError(
-            "模型回复已完成，但未能从函数工具调用中提取所需字段。"
-            f" response_id={response_id},"
-            f" status={status},"
-            f" output_items={output_items},"
-            f" output_types={output_types or ['none']}",
+            build_extraction_error_message(
+                target_label="函数工具调用",
+                response_id=response_id,
+                status=status,
+                output_items=output_items,
+                output_types=output_types,
+                raw_json=raw_json,
+            ),
             preview=preview,
             raw_body_text=raw_body_text,
         )
@@ -1507,7 +1818,7 @@ def call_function_tools(
                 attempt=attempt,
                 retries=retries,
                 retry_delay_seconds=retry_delay_seconds,
-                stage="函数工具参数提取",
+                stage=extraction_retry_stage(status=status, default_stage="函数工具参数提取"),
                 error=last_error,
             )
             time.sleep(retry_delay_seconds)

@@ -14,7 +14,7 @@
 - [novelist/workflows/split_novel.py](./novelist/workflows/split_novel.py)
   把原始小说 `.txt` 按章节拆分，并按每 50 章归档到卷目录。
 - [novelist/workflows/novel_adaptation.py](./novelist/workflows/novel_adaptation.py)
-  读取 `split_novel` 输出后的书名目录，逐卷生成：
+  兼容入口；内部实现位于 `novelist/workflows/adaptation/`。读取 `split_novel` 输出后的书名目录，逐卷生成：
   - 世界观设计
   - 世界模型
   - 文笔写作风格
@@ -23,7 +23,7 @@
   - 全书故事线蓝图
   - 卷级大纲
 - [novelist/workflows/novel_chapter_rewrite.py](./novelist/workflows/novel_chapter_rewrite.py)
-  读取改编工程目录，逐章生成：
+  兼容入口；内部实现位于 `novelist/workflows/chapter_rewrite/`。读取改编工程目录，逐章生成：
   - 章纲
   - 仿写正文
   - 人物状态卡 / 人物关系链
@@ -37,6 +37,7 @@
   可复用核心模块，包括：
   - OpenAI / OpenAI Compatible 配置
   - Responses / Chat Completions 运行时
+  - 每次模型调用的发送、接收、缓存命中 token 统计
   - 文档写入与 patch 工具
   - 文件与路径工具
   - UI 输出
@@ -130,15 +131,18 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 ├─ novelist/
 │  ├─ workflows/              # 业务工作流
 │  │  ├─ split_novel.py
-│  │  ├─ novel_adaptation.py
-│  │  ├─ novel_chapter_rewrite.py
-│  │  └─ novel_workflow.py
+│  │  ├─ novel_adaptation.py       # 兼容入口 facade
+│  │  ├─ novel_chapter_rewrite.py  # 兼容入口 facade
+│  │  ├─ novel_workflow.py         # 兼容入口 facade
+│  │  ├─ adaptation/               # 资料适配内部实现
+│  │  ├─ chapter_rewrite/          # 章节重写内部实现
+│  │  └─ unified/                  # 统一入口内部实现
 │  └─ core/                   # 可复用核心模块
 ├─ docs/
 └─ tests/
 ```
 
-如果你要查看或编辑源码，请优先打开 `novelist/workflows/...` 和 `novelist/core/...`，而不是旧的根目录 `core/...` 路径。
+如果你要查看或编辑源码，请优先打开 `novelist/workflows/adaptation/...`、`novelist/workflows/chapter_rewrite/...`、`novelist/workflows/unified/...` 和 `novelist/core/...`。`novelist/workflows/novel_*.py` 仍保留旧入口与旧导入兼容，不承载主要实现。
 
 ### `split_novel` 输出
 

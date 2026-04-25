@@ -112,19 +112,35 @@ class _FakeResponses:
         events: list[SimpleNamespace],
         final_response: dict | Exception | None = None,
         retrieve_responses: list[dict] | None = None,
+        retrieve_error: Exception | None = None,
+        continue_events: list[SimpleNamespace] | None = None,
+        continue_final_response: dict | Exception | None = None,
     ) -> None:
         self._events = events
         self._final_response = final_response
         self._retrieve_responses = list(retrieve_responses or [])
+        self._retrieve_error = retrieve_error
+        self._continue_events = continue_events
+        self._continue_final_response = continue_final_response
         self.last_request: dict | None = None
         self.retrieve_calls: list[str] = []
+        self.continue_stream_calls: list[str] = []
 
     def stream(self, **kwargs):
         self.last_request = kwargs
+        response_id = kwargs.get("response_id")
+        if isinstance(response_id, str):
+            self.continue_stream_calls.append(response_id)
+            return _FakeResponsesStream(
+                self._continue_events or [],
+                self._continue_final_response,
+            )
         return _FakeResponsesStream(self._events, self._final_response)
 
     def retrieve(self, response_id: str):
         self.retrieve_calls.append(response_id)
+        if self._retrieve_error is not None:
+            raise self._retrieve_error
         if self._retrieve_responses:
             return self._retrieve_responses.pop(0)
         return self._final_response
@@ -136,9 +152,19 @@ class _FakeResponsesClient:
         events: list[SimpleNamespace],
         final_response: dict | Exception | None = None,
         retrieve_responses: list[dict] | None = None,
+        retrieve_error: Exception | None = None,
+        continue_events: list[SimpleNamespace] | None = None,
+        continue_final_response: dict | Exception | None = None,
     ) -> None:
         self._codex_protocol = llm_runtime.PROTOCOL_RESPONSES
-        self.responses = _FakeResponses(events, final_response, retrieve_responses)
+        self.responses = _FakeResponses(
+            events,
+            final_response,
+            retrieve_responses,
+            retrieve_error,
+            continue_events,
+            continue_final_response,
+        )
 
 
 class ResponsesRuntimeCompatibleTests(unittest.TestCase):
@@ -227,6 +253,107 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(result.raw_json["output"][0]["name"], "submit_tool")
         self.assertEqual(json.loads(result.raw_json["output"][0]["arguments"]), {"value": "ok"})
 
+    def test_extract_token_usage_matches_opencode_cache_split(self) -> None:
+        usage = llm_runtime.extract_token_usage(
+            {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 30,
+                    "output_tokens_details": {"reasoning_tokens": 7},
+                    "input_tokens_details": {"cached_tokens": 40, "cache_write_tokens": 5},
+                    "total_tokens": 130,
+                }
+            }
+        )
+
+        self.assertEqual(usage.input_total, 100)
+        self.assertEqual(usage.input, 55)
+        self.assertEqual(usage.output, 23)
+        self.assertEqual(usage.reasoning, 7)
+        self.assertEqual(usage.cache_read, 40)
+        self.assertEqual(usage.cache_write, 5)
+        self.assertEqual(usage.cache_hit, 40)
+        self.assertIn("发送=100", llm_runtime.token_usage_summary(usage))
+        self.assertIn("缓存命中=40", llm_runtime.token_usage_summary(usage))
+
+    def test_responses_function_tools_use_flat_responses_schema(self) -> None:
+        tools = llm_runtime.build_responses_function_tools(
+            [
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ]
+        )
+
+        self.assertEqual(tools[0]["type"], "function")
+        self.assertEqual(tools[0]["name"], "submit_tool")
+        self.assertEqual(tools[0]["description"], "test tool")
+        self.assertTrue(tools[0]["strict"])
+        self.assertIn("parameters", tools[0])
+        self.assertNotIn("function", tools[0])
+
+    def test_function_tool_result_carries_response_token_usage(self) -> None:
+        events = [
+            SimpleNamespace(
+                type="response.created",
+                response={"id": "resp_usage", "status": "in_progress", "output": []},
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.done",
+                output_index=0,
+                arguments="{\"value\": \"ok\"}",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response={
+                    "id": "resp_usage",
+                    "status": "completed",
+                    "output": [{"type": "function_call", "name": "submit_tool", "arguments": ""}],
+                    "usage": {
+                        "input_tokens": 50,
+                        "output_tokens": 12,
+                        "input_tokens_details": {"cached_tokens": 20},
+                    },
+                },
+            ),
+        ]
+        client = _FakeResponsesClient(
+            events,
+            final_response={
+                "id": "resp_usage",
+                "status": "completed",
+                "output": [{"type": "function_call", "name": "submit_tool", "arguments": ""}],
+                "usage": {
+                    "input_tokens": 50,
+                    "output_tokens": 12,
+                    "input_tokens_details": {"cached_tokens": 20},
+                },
+            },
+        )
+
+        result = llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="test-model",
+            instructions="system instruction",
+            user_input="user input",
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            tool_choice={"type": "function", "name": "submit_tool"},
+            retries=1,
+        )
+
+        self.assertEqual(result.token_usage.input_total, 50)
+        self.assertEqual(result.token_usage.input, 30)
+        self.assertEqual(result.token_usage.output, 12)
+        self.assertEqual(result.token_usage.cache_hit, 20)
+
     def test_responses_stream_polls_in_progress_response_before_parsing_tool_call(self) -> None:
         events = [
             SimpleNamespace(
@@ -295,6 +422,231 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(result.tool_name, "submit_tool")
         self.assertEqual(result.parsed.value, "ok")
         self.assertEqual(result.status, "completed")
+
+    def test_responses_stream_continues_in_progress_response_by_id_before_retrieve(self) -> None:
+        events = [
+            SimpleNamespace(
+                type="response.created",
+                response={"id": "resp_continue", "status": "in_progress", "output": []},
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item={
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                },
+            ),
+        ]
+        final_pending = {
+            "id": "resp_continue",
+            "status": "in_progress",
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                }
+            ],
+        }
+        continue_events = [
+            SimpleNamespace(
+                type="response.output_item.done",
+                output_index=0,
+                item={
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"ok\"}",
+                    "status": "completed",
+                },
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response={
+                    "id": "resp_continue",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "submit_tool",
+                            "arguments": "{\"value\": \"ok\"}",
+                            "status": "completed",
+                        }
+                    ],
+                },
+            ),
+        ]
+        client = _FakeResponsesClient(
+            events,
+            final_response=final_pending,
+            continue_events=continue_events,
+            continue_final_response={
+                "id": "resp_continue",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "submit_tool",
+                        "arguments": "{\"value\": \"ok\"}",
+                        "status": "completed",
+                    }
+                ],
+            },
+        )
+
+        with patch.object(llm_runtime, "DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS", 0):
+            result = llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="test-model",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                tool_choice={"type": "function", "name": "submit_tool"},
+                retries=1,
+            )
+
+        self.assertEqual(client.responses.continue_stream_calls, ["resp_continue"])
+        self.assertEqual(client.responses.retrieve_calls, [])
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+
+    def test_responses_stream_does_not_start_non_streaming_duplicate_request_when_retrieve_is_unavailable(self) -> None:
+        events = [
+            SimpleNamespace(
+                type="response.created",
+                response={"id": "resp_pending", "status": "in_progress", "output": []},
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item={
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                },
+            ),
+        ]
+        final_pending = {
+            "id": "resp_pending",
+            "status": "in_progress",
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                }
+            ],
+        }
+        request = httpx.Request("GET", "https://example.com/v1/responses/resp_pending")
+        response = httpx.Response(404, request=request)
+        retrieve_error = openai.NotFoundError("404 page not found", response=response, body=None)
+        client = _FakeResponsesClient(
+            events,
+            final_response=final_pending,
+            retrieve_error=retrieve_error,
+        )
+
+        with (
+            patch.object(llm_runtime, "DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS", 0),
+            self.assertRaises(llm_runtime.ModelOutputError) as context,
+        ):
+            llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="test-model",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                tool_choice={"type": "function", "name": "submit_tool"},
+                retries=1,
+            )
+
+        self.assertEqual(client.responses.retrieve_calls, ["resp_pending"])
+        self.assertIn("模型响应仍为 in_progress", str(context.exception))
+        self.assertIn("retrieve 补取失败", str(context.exception))
+        self.assertNotIn("非流式兜底", str(context.exception))
+
+    def test_in_progress_function_call_error_does_not_claim_model_completed(self) -> None:
+        events = [
+            SimpleNamespace(
+                type="response.created",
+                response={"id": "resp_pending", "status": "in_progress", "output": []},
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item={
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                },
+            ),
+        ]
+        final_pending = {
+            "id": "resp_pending",
+            "status": "in_progress",
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "submit_tool",
+                    "arguments": "{\"value\": \"half",
+                    "status": "incomplete",
+                }
+            ],
+        }
+        retrieve_request = httpx.Request("GET", "https://example.com/v1/responses/resp_pending")
+        retrieve_response = httpx.Response(404, request=retrieve_request)
+        retrieve_error = openai.NotFoundError("404 page not found", response=retrieve_response, body=None)
+        client = _FakeResponsesClient(
+            events,
+            final_response=final_pending,
+            retrieve_error=retrieve_error,
+        )
+
+        with self.assertRaises(llm_runtime.ModelOutputError) as context:
+            llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="test-model",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                tool_choice={"type": "function", "name": "submit_tool"},
+                retries=1,
+            )
+
+        message = str(context.exception)
+        self.assertNotIn("模型回复已完成", message)
+        self.assertIn("模型响应仍为 in_progress", message)
+        self.assertIn("不能按已完成回复解析", message)
+        self.assertIn("retrieve 补取失败", message)
+        self.assertNotIn("非流式兜底", message)
+        self.assertEqual(
+            llm_runtime.extraction_retry_stage(status="in_progress", default_stage="函数工具参数提取"),
+            "接口响应未完成",
+        )
 
     def test_call_function_tool_uses_auto_tool_choice_for_compatible(self) -> None:
         stream_chunks = [
@@ -400,6 +752,11 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
                         "finish_reason": "tool_calls",
                     }
                 ],
+                "usage": {
+                    "prompt_tokens": 90,
+                    "completion_tokens": 18,
+                    "prompt_tokens_details": {"cached_tokens": 30},
+                },
             },
         ]
         client = _FakeClient(stream_chunks)
@@ -425,8 +782,13 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(result.response_id, "chatcmpl_test")
         self.assertEqual(result.status, "completed")
         self.assertIn("chat.completion", result.output_types)
+        self.assertEqual(result.token_usage.input_total, 90)
+        self.assertEqual(result.token_usage.input, 60)
+        self.assertEqual(result.token_usage.output, 18)
+        self.assertEqual(result.token_usage.cache_hit, 30)
         self.assertEqual(client.chat.completions.last_request["messages"][0]["role"], "system")
         self.assertTrue(client.chat.completions.last_request["stream"])
+        self.assertEqual(client.chat.completions.last_request["stream_options"], {"include_usage": True})
         self.assertEqual(
             client.chat.completions.last_request["tool_choice"],
             {"type": "function", "function": {"name": "submit_tool"}},
@@ -600,7 +962,11 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
             chat=SimpleNamespace(completions=failing),
         )
 
-        with self.assertRaises(llm_runtime.ApiRequestError) as context:
+        with (
+            patch("novelist.core.responses_runtime.print_progress"),
+            patch("novelist.core.responses_runtime.time.sleep"),
+            self.assertRaises(llm_runtime.ApiRequestError) as context,
+        ):
             llm_runtime.call_function_tools(
                 client,  # type: ignore[arg-type]
                 model="test-model",

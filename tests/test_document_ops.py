@@ -166,6 +166,11 @@ class FilesPatchTests(unittest.TestCase):
 
 
 class DocumentOperationTests(unittest.TestCase):
+    def test_document_operation_rule_selects_tools_by_intent(self) -> None:
+        self.assertIn("按本次修改意图选择工具", document_ops.DOCUMENT_OPERATION_RULE)
+        self.assertIn("优先使用 edit 工具", document_ops.DOCUMENT_OPERATION_RULE)
+        self.assertNotIn("目标文件已经存在，请优先使用 patch", document_ops.DOCUMENT_OPERATION_RULE)
+
     def test_apply_document_operation_edits_existing_file_precisely(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
