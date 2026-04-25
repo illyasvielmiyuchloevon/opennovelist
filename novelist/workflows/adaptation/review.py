@@ -46,7 +46,7 @@ def adaptation_review_allowed_files(paths: dict[str, Path]) -> dict[str, Path]:
 def adaptation_review_target_snapshot(
     allowed_files: dict[str, Path | document_ops.DocumentTarget],
     *,
-    content_limit: int = 30000,
+    content_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     snapshots: list[dict[str, Any]] = []
     for file_key, target in allowed_files.items():
@@ -61,7 +61,10 @@ def adaptation_review_target_snapshot(
                 scope=adaptation_doc_scope(file_key),
                 exists=path.exists(),
                 current_char_count=len(current_content),
-                current_content=clip_for_context(current_content, limit=content_limit),
+                current_content=clip_for_context(
+                    current_content,
+                    limit=content_limit or adaptation_doc_context_limit(file_key),
+                ),
                 preferred_mode="edit_or_patch" if current_content else "write",
             ).model_dump(mode="json")
         )
@@ -101,8 +104,10 @@ def build_adaptation_review_request(
             "检查世界模型中的地点、势力、能力、资源、规则和术语是否有清晰的新书映射。",
             "检查全书大纲是否是仿写书籍的大纲，不得把参考源原大纲照抄为新书大纲。",
             "检查当前卷卷级大纲的角色推进、冲突、高潮、结尾钩子是否正确映射。",
-            "检查全书故事线蓝图是否按故事线独立保留蓝图、参考源功能映射、分卷设计与跨卷递进，并且没有把旧卷压缩替换成简化摘要。",
-            "检查伏笔文档是否保留功能映射，同时改成新书自己的伏笔、回收点与命名。",
+            "检查全书故事线蓝图是否按故事线独立保留蓝图、参考源功能映射、跨卷锚点与后续约束，同时避免逐章复述、卷级剧情进程重复和过度细纲化。",
+            "检查伏笔文档是否只保留后续仿写必须长期记住的高价值伏笔、回收点与命名映射，避免把普通剧情细节和已闭合小事件堆进全局文档。",
+            "检查全局资料之间是否重复承载同一信息；世界规则应在世界模型，卷内推进应在卷级剧情进程，章节细节应在章纲或审核文档。",
+            "检查全局文档体量是否适合作为后续章节仿写的长期注入资料；过细、重复、接近流水账的资料应判为需要压缩返修。",
             "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容。",
             "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_design、world_model、book_outline、volume_outline。",
         ],

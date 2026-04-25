@@ -635,6 +635,23 @@ class SupportUpdateScopeTests(unittest.TestCase):
 
 
 class StableGlobalInjectionOrderingTests(unittest.TestCase):
+    def test_serialized_global_docs_use_context_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "05_foreshadowing.md"
+            path.write_text("伏" * 20000, encoding="utf-8")
+            serialized = rewrite_workflow.serialize_doc_for_prompt(
+                {
+                    "key": "foreshadowing",
+                    "category": "global",
+                    "label": "伏笔管理",
+                    "path": path,
+                    "content": path.read_text(encoding="utf-8"),
+                }
+            )
+
+        self.assertEqual(serialized["content_limit"], rewrite_workflow.PROMPT_DOC_CONTENT_LIMITS["foreshadowing"])
+        self.assertLessEqual(len(serialized["content"]), rewrite_workflow.PROMPT_DOC_CONTENT_LIMITS["foreshadowing"] + 80)
+
     def test_world_model_and_storyline_blueprint_are_promoted_to_stable_global_docs(self) -> None:
         volume_material = {
             "volume_number": "001",

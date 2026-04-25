@@ -53,6 +53,19 @@ GLOBAL_INJECTION_DOC_ORDER = [
     "foreshadowing",
     "storyline_blueprint",
 ]
+ADAPTATION_DOC_CONTEXT_LIMITS = {
+    "world_design": 16000,
+    "world_model": 18000,
+    "style_guide": 12000,
+    "book_outline": 14000,
+    "foreshadowing": 10000,
+    "storyline_blueprint": 12000,
+    "volume_outline": 12000,
+}
+
+
+def adaptation_doc_context_limit(doc_key: str) -> int:
+    return ADAPTATION_DOC_CONTEXT_LIMITS.get(doc_key, 12000)
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": GLOBAL_FILE_NAMES["world_design"],

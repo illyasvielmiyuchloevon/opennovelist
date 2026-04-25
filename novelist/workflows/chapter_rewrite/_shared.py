@@ -88,6 +88,28 @@ REWRITE_GLOBAL_FILE_NAMES = {
     "character_relationship_graph": "08_character_relationship_graph.md",
     "world_state": "09_world_state.md",
 }
+PROMPT_DOC_CONTENT_LIMITS = {
+    "world_design": 16000,
+    "world_model": 18000,
+    "style_guide": 12000,
+    "book_outline": 14000,
+    "foreshadowing": 10000,
+    "storyline_blueprint": 12000,
+    "character_status_cards": 12000,
+    "character_relationship_graph": 10000,
+    "world_state": 10000,
+    "volume_outline": 12000,
+    "volume_plot_progress": 14000,
+    "volume_review": 10000,
+    "chapter_outline": 10000,
+    "chapter_review": 8000,
+    "rewritten_chapter": 30000,
+}
+
+
+def prompt_doc_content_limit(doc_key: str) -> int:
+    return PROMPT_DOC_CONTENT_LIMITS.get(doc_key, 12000)
+
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": ADAPTATION_GLOBAL_FILE_NAMES["world_design"],

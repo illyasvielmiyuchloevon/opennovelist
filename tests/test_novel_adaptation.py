@@ -151,6 +151,17 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         )
         self.assertNotIn("style_guide", injected)
 
+    def test_build_injected_global_docs_uses_per_document_context_budget(self) -> None:
+        injected = adaptation_workflow.build_injected_global_docs(
+            {
+                "foreshadowing": "伏" * 20000,
+                "storyline_blueprint": "线" * 20000,
+            }
+        )
+
+        self.assertLessEqual(len(injected["foreshadowing"]), adaptation_workflow.ADAPTATION_DOC_CONTEXT_LIMITS["foreshadowing"] + 80)
+        self.assertLessEqual(len(injected["storyline_blueprint"]), adaptation_workflow.ADAPTATION_DOC_CONTEXT_LIMITS["storyline_blueprint"] + 80)
+
     def test_style_guide_generation_does_not_duplicate_existing_content(self) -> None:
         captured: dict[str, object] = {}
 
@@ -196,7 +207,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         self.assertNotIn("existing_style_guide", payload)
         self.assertNotIn("style_guide", payload["injected_global_docs"])
 
-    def test_storyline_blueprint_generation_preserves_prior_volume_blocks(self) -> None:
+    def test_storyline_blueprint_generation_keeps_global_blueprint_compact(self) -> None:
         captured: dict[str, object] = {}
 
         def fake_call(*args, **kwargs):
@@ -234,9 +245,12 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         requirements = "\n".join(payload["requirements"])
         self.assertEqual(payload["required_file"], "06_storyline_blueprint.md")
         self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
-        self.assertIn("已处理卷区块默认受保护", requirements)
-        self.assertIn("不得把上一卷或旧卷内容摘要化、替换、合并、压缩成简化版本", requirements)
-        self.assertIn("只追加或修正该故事线的当前卷区块和跨卷递进", requirements)
+        self.assertIn("该卷在全书故事线中的功能", requirements)
+        self.assertIn("已有卷级设计压缩到信息缺失", requirements)
+        self.assertIn("严禁在全书故事线蓝图中记录章内事件", requirements)
+        self.assertIn("重复", requirements)
+        self.assertNotIn("卷级锚点摘要", requirements)
+        self.assertNotIn("6000-12000", requirements)
         self.assertNotIn("当前状态", requirements)
         self.assertNotIn("待推进", requirements)
 
