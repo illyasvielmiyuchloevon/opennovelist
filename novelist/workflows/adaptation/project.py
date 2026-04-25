@@ -492,7 +492,7 @@ def write_stage_outputs(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "world_design", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
+            for key in ("book_outline", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
             if paths[key].exists()
         },
         "volume_files": {
@@ -558,7 +558,7 @@ def mark_volume_processed_after_review(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "world_design", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
+            for key in ("book_outline", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
             if paths[key].exists()
         },
         "volume_files": {

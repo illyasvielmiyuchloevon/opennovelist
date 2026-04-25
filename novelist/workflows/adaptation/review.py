@@ -38,9 +38,15 @@ def call_adaptation_review_response(
         )
     return payload, result.response_id, result
 
-def adaptation_review_allowed_files(paths: dict[str, Path]) -> dict[str, Path]:
+def adaptation_review_document_files(paths: dict[str, Path]) -> dict[str, Path]:
     targets = {doc_key: paths[doc_key] for doc_key in GLOBAL_INJECTION_DOC_ORDER}
     targets["volume_outline"] = paths["volume_outline"]
+    return targets
+
+def adaptation_review_allowed_files(paths: dict[str, Path], *, volume_number: str | None = None) -> dict[str, Path]:
+    targets = adaptation_review_document_files(paths)
+    if volume_number is not None and volume_number != "001":
+        targets.pop("style_guide", None)
     return targets
 
 def adaptation_review_target_snapshot(
@@ -93,23 +99,23 @@ def build_adaptation_review_request(
             "target_worldview": manifest["target_worldview"],
             "current_volume": volume_number,
             "document_set_policy": (
-                "审核下游仿写实际会用到的完整当前资料集。第 001 卷应包含 7 个核心资料文档；"
+                "审核下游仿写实际会用到的完整当前资料集。第 001 卷应包含 6 个核心资料文档；"
                 "后续卷审核本卷更新文档，并带上已存在的文笔写作风格文档。"
             ),
         },
         "requirements": [
             "判断资料是否足够支撑后续章节仿写，而不是只检查格式是否完整。",
-            "检查参考源人物名、地名、姓氏、事件名称、专用术语是否已经替换或映射，不得直接照搬。",
-            "检查世界观设定是否已经改成目标世界观，并与参考源明显区分。",
-            "检查世界模型中的地点、势力、能力、资源、规则和术语是否有清晰的新书映射。",
+            "检查参考源人物名、地名、姓氏、势力名、事件名称、专用术语、等级体系、称谓口吻、标志性台词和话语体系是否已经替换或映射，不得直接照搬。",
+            "检查世界模型是否已经合并承载目标世界观、背景故事、故事类型、角色功能位和世界知识，并与参考源明显区分。",
+            "检查世界模型中的地点、势力、能力、资源、规则、术语、道具设计与原书功能映射是否清晰。",
             "检查全书大纲是否是仿写书籍的大纲，不得把参考源原大纲照抄为新书大纲。",
             "检查当前卷卷级大纲的角色推进、冲突、高潮、结尾钩子是否正确映射。",
             "检查全书故事线蓝图是否按故事线独立保留蓝图、参考源功能映射、跨卷锚点与后续约束，同时避免逐章复述、卷级剧情进程重复和过度细纲化。",
-            "检查伏笔文档是否只保留后续仿写必须长期记住的高价值伏笔、回收点与命名映射，避免把普通剧情细节和已闭合小事件堆进全局文档。",
+            "检查伏笔文档中由资料适配新增或修改的部分是否是全书级/卷级伏笔设计索引，是否保留参考源功能映射、新书伏笔设计、埋设意图、后续呼应方向与命名映射；如果文件中已有章节工作流写入的运行时记录，应视为受保护内容，不得要求删除、压缩或改写，也不得仅因其存在判定资料适配不通过。",
             "检查全局资料之间是否重复承载同一信息；世界规则应在世界模型，卷内推进应在卷级剧情进程，章节细节应在章纲或审核文档。",
             "检查全局文档体量是否适合作为后续章节仿写的长期注入资料；过细、重复、接近流水账的资料应判为需要压缩返修。",
-            "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容。",
-            "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_design、world_model、book_outline、volume_outline。",
+            "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容；文风文档只在第 001 卷生成和定稿，后续卷只能读取与审核，不得把 style_guide 写入 rewrite_targets。",
+            "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_model、book_outline、volume_outline。",
         ],
         "adaptation_documents": adaptation_review_target_snapshot(allowed_files),
         "output_contract": {
@@ -173,10 +179,12 @@ def build_adaptation_review_fix_request(
             "替换已有正文、清理参考源残留人物名/地名/术语/事件名时，优先使用 edit，可按需要使用 replace_all。",
             "插入新条目、追加新段落、按标题补充或替换小节正文时，使用 patch。",
             "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
+            "如果修复目标包含伏笔文档，只能修复资料适配设计索引相关内容；已有章节工作流写入的运行时记录是受保护内容，禁止删除、压缩、归并或改写。",
             "所有 file_key 或 file_path 必须来自 update_target_files，禁止修改未授权文件。",
             "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
             "不得把审核失败降级为重新跑整卷资料生成阶段。",
             "修复后仍必须符合目标世界观、实体改名、事件改名、术语映射、时间线和故事线整理要求。",
+            "修复后不得残留参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系。",
         ],
     }
 
@@ -203,6 +211,25 @@ def apply_adaptation_review_fix_with_repair(
                 {
                     "failed_review_result": review.model_dump(mode="json"),
                     "target_files": adaptation_review_target_snapshot(allowed_files),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
+    unauthorized_targets = [target for target in review.rewrite_targets if target not in allowed_files]
+    if unauthorized_targets:
+        error_message = "卷资料审核返回了当前卷不允许原地修复的目标：" + ", ".join(unauthorized_targets)
+        write_response_debug_snapshot(
+            manifest,
+            volume_material,
+            error_message=error_message,
+            preview=review.review_md,
+            raw_body_text=json.dumps(
+                {
+                    "failed_review_result": review.model_dump(mode="json"),
+                    "allowed_fix_targets": sorted(allowed_files.keys()),
+                    "unauthorized_targets": unauthorized_targets,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -262,7 +289,8 @@ def run_adaptation_review_until_passed(
 ) -> tuple[AdaptationReviewResult, str | None]:
     project_root = Path(manifest["project_root"])
     paths = stage_paths(project_root, volume_material["volume_number"])
-    allowed_files = adaptation_review_allowed_files(paths)
+    review_files = adaptation_review_document_files(paths)
+    allowed_files = adaptation_review_allowed_files(paths, volume_number=volume_material["volume_number"])
     response_ids: list[str] = []
     current_response_id = previous_response_id
     last_review: AdaptationReviewPayload | None = None
@@ -278,7 +306,7 @@ def run_adaptation_review_until_passed(
         review_payload = build_adaptation_review_request(
             manifest=manifest,
             volume_material=volume_material,
-            allowed_files=allowed_files,
+            allowed_files=review_files,
         )
         review, current_response_id, _ = call_adaptation_review_response(
             client,
@@ -321,7 +349,8 @@ def run_adaptation_review_until_passed(
                 raw_body_text=json.dumps(
                     {
                         "failed_review_result": review.model_dump(mode="json"),
-                        "target_files": adaptation_review_target_snapshot(allowed_files),
+                        "target_files": adaptation_review_target_snapshot(review_files),
+                        "allowed_fix_targets": sorted(allowed_files.keys()),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -355,6 +384,7 @@ def run_adaptation_review_until_passed(
 
 __all__ = [
     'call_adaptation_review_response',
+    'adaptation_review_document_files',
     'adaptation_review_allowed_files',
     'adaptation_review_target_snapshot',
     'build_adaptation_review_request',

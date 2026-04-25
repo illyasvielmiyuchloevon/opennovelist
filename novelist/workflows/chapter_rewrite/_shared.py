@@ -89,7 +89,6 @@ REWRITE_GLOBAL_FILE_NAMES = {
     "world_state": "09_world_state.md",
 }
 PROMPT_DOC_CONTENT_LIMITS = {
-    "world_design": 16000,
     "world_model": 18000,
     "style_guide": 12000,
     "book_outline": 14000,
@@ -165,7 +164,6 @@ WORKFLOW_SUBMISSION_TOOL_DESCRIPTION = (
 FIVE_CHAPTER_REVIEW_NAME = "组审查"
 
 GLOBAL_DOC_LABELS = {
-    "world_design": "世界观设计",
     "world_model": "世界模型",
     "style_guide": "文笔写作风格",
     "book_outline": "全书大纲",
@@ -298,7 +296,7 @@ HEADING_MANAGED_DOC_SPECS = {
 }
 
 STABLE_INJECTION_KEYS = {
-    "global": ["world_design", "world_model", "style_guide", "book_outline", "storyline_blueprint"],
+    "global": ["world_model", "style_guide", "book_outline", "storyline_blueprint"],
     "volume": ["volume_outline"],
     "chapter": ["chapter_outline"],
 }
@@ -306,7 +304,6 @@ STABLE_INJECTION_KEYS = {
 PHASE_DOC_SELECTIONS = {
     PHASE1_OUTLINE: {
         "global": [
-            "world_design",
             "world_model",
             "style_guide",
             "book_outline",
@@ -321,7 +318,6 @@ PHASE_DOC_SELECTIONS = {
     },
     PHASE2_CHAPTER_TEXT: {
         "global": [
-            "world_design",
             "world_model",
             "style_guide",
             "book_outline",
@@ -336,7 +332,6 @@ PHASE_DOC_SELECTIONS = {
     },
     PHASE2_SUPPORT_UPDATES: {
         "global": [
-            "world_design",
             "world_model",
             "style_guide",
             "book_outline",
@@ -351,7 +346,6 @@ PHASE_DOC_SELECTIONS = {
     },
     PHASE3_REVIEW: {
         "global": [
-            "world_design",
             "world_model",
             "style_guide",
             "book_outline",

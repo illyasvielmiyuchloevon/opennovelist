@@ -164,7 +164,8 @@ def protagonist_context(manifest: dict[str, Any]) -> str:
 def read_existing_global_docs(project_root: Path) -> dict[str, str]:
     global_dir = project_root / GLOBAL_DIRNAME
     docs: dict[str, str] = {}
-    for key, file_name in GLOBAL_FILE_NAMES.items():
+    for key in GLOBAL_INJECTION_DOC_ORDER:
+        file_name = GLOBAL_FILE_NAMES[key]
         path = global_dir / file_name
         docs[key] = path.read_text(encoding="utf-8") if path.exists() else ""
     return docs

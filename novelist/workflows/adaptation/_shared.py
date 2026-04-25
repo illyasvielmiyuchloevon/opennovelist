@@ -46,7 +46,6 @@ GLOBAL_FILE_NAMES = {
     "storyline_blueprint": "06_storyline_blueprint.md",
 }
 GLOBAL_INJECTION_DOC_ORDER = [
-    "world_design",
     "world_model",
     "style_guide",
     "book_outline",
@@ -54,7 +53,6 @@ GLOBAL_INJECTION_DOC_ORDER = [
     "storyline_blueprint",
 ]
 ADAPTATION_DOC_CONTEXT_LIMITS = {
-    "world_design": 16000,
     "world_model": 18000,
     "style_guide": 12000,
     "book_outline": 14000,
@@ -138,6 +136,8 @@ COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
     "用户拥有参考源文本权利。"
     "当前任务每次只处理 1 份目标文档。"
     "请严格根据输入中的 document_request 执行。"
+    "严禁把参考源的人名、地名、姓氏、势力名、事件名、专用术语、等级体系、称谓口吻或话语体系直接写入新书资料；"
+    "必须转换成新书自己的命名、设定与表达，只保留功能映射。"
     + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_DOCUMENT_OUTPUT_RULE
 )

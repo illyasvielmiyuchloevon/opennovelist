@@ -592,7 +592,7 @@ class SupportUpdateScopeTests(unittest.TestCase):
             paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
             for file_path, content in (
                 (paths["book_outline"], "# 全书大纲\n"),
-                (paths["world_design"], "# 世界观设计\n"),
+                (paths["world_model"], "# 世界模型\n"),
                 (paths["style_guide"], "# 文笔写作风格\n"),
                 (paths["volume_plot_progress"], "# 卷级剧情进程\n"),
                 (paths["chapter_outline"], "# 章纲\n"),
@@ -671,7 +671,6 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
             paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
             for file_path in (
                 paths["book_outline"],
-                paths["world_design"],
                 paths["style_guide"],
                 paths["world_model"],
                 paths["storyline_blueprint"],
@@ -680,7 +679,6 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
             ):
                 file_path.parent.mkdir(parents=True, exist_ok=True)
             paths["book_outline"].write_text("# 全书大纲\n", encoding="utf-8")
-            paths["world_design"].write_text("# 世界观设计\n", encoding="utf-8")
             paths["style_guide"].write_text("# 文笔写作风格\n", encoding="utf-8")
             paths["world_model"].write_text("# 世界模型\n", encoding="utf-8")
             paths["storyline_blueprint"].write_text("# 全书故事线蓝图\n", encoding="utf-8")
@@ -703,7 +701,6 @@ class StableGlobalInjectionOrderingTests(unittest.TestCase):
         self.assertEqual(
             stable_keys,
             [
-                "world_design",
                 "world_model",
                 "style_guide",
                 "book_outline",

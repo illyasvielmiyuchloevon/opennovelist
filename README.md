@@ -15,8 +15,7 @@
   把原始小说 `.txt` 按章节拆分，并按每 50 章归档到卷目录。
 - [novelist/workflows/novel_adaptation.py](./novelist/workflows/novel_adaptation.py)
   兼容入口；内部实现位于 `novelist/workflows/adaptation/`。读取 `split_novel` 输出后的书名目录，逐卷生成：
-  - 世界观设计
-  - 世界模型
+  - 世界模型（合并承载世界观设计）
   - 文笔写作风格
   - 全书大纲
   - 伏笔文档
@@ -42,7 +41,10 @@
   - 文件与路径工具
   - UI 输出
 
-资料适配生成的全局文档会按“长期索引 / 规则 / 蓝图 / 映射”定位控制粒度；伏笔和故事线不会继续按逐章流水账膨胀，章节工作流注入这些文档时也会按文档类型做上下文裁剪。
+资料适配生成的全局文档会按“长期索引 / 规则 / 蓝图 / 映射”定位控制粒度；`05_foreshadowing.md` 是唯一的全局伏笔文档，资料适配阶段只更新设计索引，章节工作流写入的运行时记录必须保留；故事线不会继续按逐章流水账膨胀，章节工作流注入这些文档时也会按文档类型做上下文裁剪。
+世界观设定不再单独生成 `01_world_design.md`，由 `02_world_model.md` 统一承载，避免世界观与世界模型重复注入。
+`03_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；后续卷只读取与审核这份文风文档，不再更新它。
+资料适配阶段会硬性阻断参考源污染：生成任何规划文档时都禁止把参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系直接写入新书资料，只允许保留功能映射。
 
 ## 推荐用法
 
@@ -165,8 +167,7 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 工程目录/
 ├─ 00_project_manifest.md
 ├─ global_injection/
-│  ├─ 01_world_design.md
-│  ├─ 02_world_model.md
+│  ├─ 02_world_model.md        # 合并世界观设计与世界模型
 │  ├─ 03_style_guide.md
 │  ├─ 04_book_outline.md
 │  ├─ 05_foreshadowing.md

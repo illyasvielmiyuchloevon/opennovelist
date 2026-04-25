@@ -6,9 +6,10 @@ from ._shared import *  # noqa: F401,F403
 def world_model_scope_text() -> str:
     section_text = "、".join(WORLD_MODEL_DEFAULT_SECTIONS)
     return (
-        "文档要沉淀到当前卷为止已知的世界知识，默认按 16 个二级标题组织："
+        "文档合并承载原“世界观设计”和“世界模型”的职责：既要确立目标世界观、背景故事、故事类型、角色功能位与参考源功能映射，"
+        "也要沉淀到当前卷为止已知的地点、势力、能力、资源、规则、术语和世界知识。默认按 16 个二级标题组织："
         f"{section_text}。每个二级标题下可以根据实际需要继续展开多个三级标题，用于管理该栏目的不同知识子类。"
-        "并写出与原书的功能映射。"
+        "必须写出与原书的功能映射，但不要另建或依赖独立世界观设计文档。"
     )
 
 def storyline_blueprint_scope_text() -> str:
@@ -25,12 +26,42 @@ def storyline_blueprint_scope_text() -> str:
 def global_document_compaction_policy() -> list[str]:
     return [
         "全局资料是长期复用的索引、规则、蓝图和映射，不是逐章流水账。",
+        "所有资料必须写成新书《目标书》的设定体系：严禁把参考源的人名、地名、姓氏、势力名、事件名、功法/招式/道具名、等级名、专用术语、称谓口吻、固定句式和话语体系直接代入新书资料。",
+        "需要保留参考关系时只能写功能映射，例如“参考源对应主角功能位 / 反派压迫功能 / 升级爽点功能”，不得把原作实体名当成新书实体名。",
         "全书大纲只保留卷级主线、核心转折和后续约束；章节级细节放在卷纲、章纲或卷级剧情进程。",
+        "世界模型同时承担世界观设计职责；不要把世界观和世界模型拆成两份重复资料。",
         "全书故事线蓝图只保留故事线 owner、功能映射、全书走向、卷级作用、跨卷锚点和待后续补全；禁止章级情节、场景或事件清单。",
-        "伏笔文档只保留会跨章、跨卷影响后续仿写的高价值伏笔；一次性细节、已完全回收且不再影响后文的内容应压缩为一行归档或移出全局层。",
-        "同一信息只放在最合适的一份文档中：世界规则放世界模型，剧情推进放卷级剧情进程，章节细节放章纲/正文审核，伏笔只记录未来需要记住的钩子。",
+        "伏笔文档是全局文档：资料适配阶段只更新全书级/卷级伏笔设计索引，章节工作流写入的运行时记录是受保护内容，不得删改、压缩或归并。",
+        "同一信息只放在最合适的位置：世界规则放世界模型，剧情推进放卷级剧情进程，章节细节放章纲/正文审核；伏笔文档中的设计索引记录设计意图、功能映射和后续呼应方向，已有运行时记录必须原样保留。",
         "如果现有全局文档已经过细，本次更新应顺手压缩重复和低价值明细，而不是继续追加同等粒度内容。",
     ]
+
+def source_contamination_guardrails() -> list[str]:
+    return [
+        "【强制禁止】参考源只能作为功能映射来源，绝不能把原书内容直接写成新书内容。",
+        "【强制禁止】严禁把参考源的人名、地名、姓氏、势力名、宗门名、家族名、事件名、功法名、招式名、道具名、等级名、职业名、专用术语、数值体系直接写成新书设定。",
+        "【强制禁止】严禁把参考源的称谓口吻、固定句式、标志性台词、叙述腔调、概念话语体系直接代入新书资料；文档必须使用目标世界观下的新命名、新术语和新表达。",
+        "【允许但必须转换】映射关系是必须保留的，但只能写成功能映射或抽象职责映射，例如“参考源对应的师门压迫功能 -> 新书宗门规训压力”“参考源对应的升级资源功能 -> 新书灵脉资源压力”。",
+        "【禁止混淆】不得把原作实体名保留为新书实体；不得把原作实体名、原作术语或原作话语体系保留为新书实体；如果确需说明参考源侧，只能放在“参考源功能映射”语境中，且不得作为新书设定主体。",
+        "【污染清理】如果当前已有资料里残留参考源实体名或话语体系，本次更新必须优先用 edit 清理或替换；不能继续沿用污染内容。",
+    ]
+
+def source_material_boundary(doc_label: str) -> dict[str, Any]:
+    return {
+        "applies_to": doc_label,
+        "core_boundary": "参考源只提供情节功能、结构功能、爽点功能、角色功能位和设定功能的映射依据，不是新书资料正文。",
+        "mapping_required": "必须保留映射，但映射要写成“参考源功能 -> 新书设计”的转换关系。",
+        "hard_ban": [
+            "不得把原书人物、地点、势力、事件、物品、功法、等级、术语、数值体系直接当成新书人物、地点、势力、事件、物品、功法、等级、术语或数值体系。",
+            "不得把原书的称谓口吻、标志性台词、叙述腔调、概念话语体系直接当成新书的话语体系。",
+            "不得把参考源原句、原段落或原设定说明直接搬入新书资料文档。",
+        ],
+        "required_conversion": [
+            "新书设定主体必须使用新书自己的姓名、地名、势力名、术语名、等级名、事件名和表达方式。",
+            "参考源侧信息只能作为功能映射依据，不得占据新书设定正文的位置。",
+            "如果已有目标文档把原书内容当成新书内容，本次必须优先清理污染，再补充新书设定。",
+        ],
+    }
 
 def print_request_context_summary(
     *,
@@ -65,7 +96,6 @@ def print_request_context_summary(
     print_progress(f"  已附带文件清单：{len(loaded_files)} 项。")
 
     for doc_key, label in (
-        ("world_design", "世界观设计"),
         ("world_model", "世界模型"),
         ("style_guide", "文笔写作风格"),
         ("book_outline", "全书大纲"),
@@ -103,13 +133,6 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
                 "并说明与原书的功能映射，避免只给空泛风格形容词。"
             ),
         },
-        "world_design": {
-            "role": "资深网络小说世界观设定编辑",
-            "task": "当前任务只产出 1 份世界观设计文档正文。",
-            "scope": (
-                "文档需覆盖世界观设定、背景故事、能力设计、道具设计、势力设计、角色功能位、故事类型与原书映射关系。"
-            ),
-        },
         "book_outline": {
             "role": "资深网络小说总纲编辑",
             "task": "当前任务只产出 1 份全书大纲文档正文。",
@@ -127,12 +150,12 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
             "role": "资深网络小说伏笔统筹编辑",
             "task": "当前任务只产出 1 份伏笔文档正文。",
             "scope": (
-                "文档只管理后续仿写必须长期记住的高价值伏笔索引，区分待埋设、已埋设、待回收、已回收。"
-                "当前卷细节、普通剧情提示和已闭合小事件不要写进全局伏笔文档；只保留功能映射、回收约束和后续影响。"
+                "文档是资料适配阶段的伏笔设计索引，只记录全书级或卷级伏笔的参考源功能映射、新书伏笔设计、埋设意图、适用范围和后续呼应方向。"
+                "不要判断伏笔是否已经推进或兑现，不新增、不改写运行时推进、兑现、闭合等记录；如果文件里已有章节工作流写入的运行时记录，必须视为受保护内容并原样保留。"
             ),
         },
         "world_model": {
-            "role": "资深网络小说世界知识建模编辑",
+            "role": "资深网络小说世界观与世界知识建模统筹编辑",
             "task": "当前任务只产出 1 份世界模型文档正文。",
             "scope": world_model_scope_text(),
         },
@@ -144,12 +167,13 @@ def build_document_request(doc_key: str) -> dict[str, Any]:
     }
     if doc_key not in request_specs:
         fail(f"不支持的文档类型：{doc_key}")
-    return {"doc_key": doc_key, **request_specs[doc_key]}
+    spec = {"doc_key": doc_key, **request_specs[doc_key]}
+    spec["source_material_boundary"] = source_material_boundary(spec["task"])
+    return spec
 
 def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
     if should_generate_style_guide(volume_number):
         return [
-            {"key": "world_design", "label": "世界观设计文档", "scope": "global"},
             {"key": "world_model", "label": "世界模型文档", "scope": "global"},
             {"key": "style_guide", "label": "文笔写作风格文档", "scope": "global"},
             {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
@@ -158,7 +182,6 @@ def build_document_plan(volume_number: str) -> list[dict[str, Any]]:
             {"key": "volume_outline", "label": "卷级大纲文档", "scope": "volume"},
         ]
     return [
-        {"key": "world_design", "label": "世界观设计文档", "scope": "global"},
         {"key": "world_model", "label": "世界模型文档", "scope": "global"},
         {"key": "book_outline", "label": "全书大纲文档", "scope": "global"},
         {"key": "foreshadowing", "label": "伏笔文档", "scope": "global"},
@@ -213,9 +236,10 @@ def build_stage_shared_prompt(
         "project": build_stage_project_context(manifest, volume_material),
         "stage_rules": [
             "这一卷的全部生成都属于同一个阶段会话，请沿用同一会话的上下文连续工作。",
-            "全书大纲、世界观文档、全书故事线蓝图文档、伏笔文档、世界模型文档是每阶段都要注入的全局资料。",
+            "全书大纲、全书故事线蓝图文档、伏笔文档、世界模型文档是每阶段都要注入的全局资料；世界模型已经合并承载世界观设计职责。",
             "卷级大纲不作为全局注入资料，不要把卷级大纲当成下一份文档的依赖前提。",
             "所有映射关系都写成功能映射，不要照抄参考源原文句子。",
+            "严禁把参考源的人名、地名、势力名、事件名、专用术语、等级体系、称谓口吻或话语体系直接代入新书资料；必须转换为目标世界观下的新命名与新表达。",
             "本阶段的每一次请求都会重新附带当前卷全部文件原文与文件清单。",
         ],
         "global_document_compaction_policy": global_document_compaction_policy(),
@@ -290,8 +314,10 @@ def generate_document_operation(
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
+                "source_material_boundary": source_material_boundary("文笔写作风格文档"),
                 "required_file": GLOBAL_FILE_NAMES["style_guide"],
                 "requirements": [
+                    *source_contamination_guardrails(),
                     "标题稳定，适合后续工作流长期注入。",
                     "这是全书级写作风格文档，仅在第一卷阶段生成与定稿。",
                     "必须明确提炼爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式这些可执行维度。",
@@ -313,42 +339,19 @@ def generate_document_operation(
             prompt_cache_key=prompt_cache_key,
         )
 
-    if doc_key == "world_design":
-        payload = build_payload_with_trailing_docs(
-            stable_fields={
-                "document_request": document_request,
-                "required_file": GLOBAL_FILE_NAMES["world_design"],
-                "requirements": [
-                    "保留历史世界观设计的连续性，并把当前卷新增内容补充进去。",
-                    "按修改意图使用 edit 或 patch 对已有条目、段落或小节做增量更新，不要整篇重写世界观文档。",
-                    "未变化的世界知识、术语、层级结构、历史背景必须保留。",
-                ],
-            },
-            trailing_doc_fields={
-                "target_file": target_file,
-                "injected_global_docs": injected_globals,
-            },
-        )
-        return call_document_operation_response(
-            client,
-            model,
-            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
-            stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-            previous_response_id=previous_response_id,
-            prompt_cache_key=prompt_cache_key,
-        )
-
     if doc_key == "book_outline":
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
+                "source_material_boundary": source_material_boundary("全书大纲文档"),
                 "required_file": GLOBAL_FILE_NAMES["book_outline"],
                 "requirements": [
+                    *source_contamination_guardrails(),
                     "这是整本书的大纲文档，不是单卷总结。",
                     "当前阶段只允许新增或改写当前卷对应的全书大纲段落，以及与已处理卷直接相关的衔接说明。",
                     "只展开 processed_volumes_including_current 中列出的卷；未读取参考源的后续卷必须二选一：要么不写，要么仅保留“第X卷：待后续阶段补全”这类占位说明。",
                     "未读取卷不得出现剧情梗概、角色推进、冲突设计、伏笔安排、高潮设计或结局走向。",
-                    "如果旧版全书大纲里已经提前写了未读取卷的详细内容，本次要把那些未读取卷删掉，或回收为占位状态，不能继续保留伪细纲。",
+                    "如果旧版全书大纲里已经提前写了未读取卷的详细内容，本次要把那些未读取卷删掉，或降级为占位状态，不能继续保留伪细纲。",
                     "第一卷阶段尤其不能提前写第二卷及之后的详细大纲。",
                     "全书大纲是卷级方向文档，不要把每章剧情、每场战斗、每个小事件都写进去；当前卷通常保留 6-10 个关键推进点即可。",
                     "如果全书大纲已经和故事线蓝图、伏笔文档或卷级大纲重复，本次要压缩重复内容，只保留大纲层真正需要的方向和约束。",
@@ -373,8 +376,10 @@ def generate_document_operation(
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
+                "source_material_boundary": source_material_boundary("全书故事线蓝图文档"),
                 "required_file": GLOBAL_FILE_NAMES["storyline_blueprint"],
                 "requirements": [
+                    *source_contamination_guardrails(),
                     "这是全书故事线蓝图文档，用于沉淀参考源故事线的功能映射、新书全书走向与跨卷设计，不是实时进度账本、卷级剧情进程或章节细纲。",
                     "文档只覆盖到当前卷为止仍然有效的重要故事线，包括主线、关键支线、反派线、终局线、跨卷线，以及当前卷新出现且会长期影响后续仿写的故事线。",
                     "如果当前文件已存在，必须按修改意图使用 edit 或 patch 工具做增量更新，不得整篇覆盖式重写全书故事线蓝图。",
@@ -406,17 +411,20 @@ def generate_document_operation(
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
+                "source_material_boundary": source_material_boundary("伏笔文档"),
                 "required_file": GLOBAL_FILE_NAMES["foreshadowing"],
                 "requirements": [
-                    "优先保持伏笔清单的可追踪性、后续工作流可读性和体量可控。",
-                    "请基于全书大纲、世界观文档和当前卷原文上下文补充更新。",
-                    "只记录会影响后续章节、后续卷、角色关系、世界真相或核心爽点回收的高价值伏笔。",
-                    "单章内完成的小提示、普通物品、一次性情绪铺垫、已经完全回收且后续不再影响剧情的内容，不要进入全局伏笔文档。",
-                    "已回收伏笔只保留一行归档摘要和影响结果，不要保留完整铺垫过程。",
-                    "当前卷的细节推进应留给卷级剧情进程或章级文档；伏笔文档只保留未来还必须记住的钩子。",
-                    "如果已有伏笔文档过细，本次更新要压缩重复、归并同类项、删除低价值明细，而不是继续追加同等粒度内容。",
+                    *source_contamination_guardrails(),
+                    "优先保持伏笔设计索引的可追踪性、后续工作流可读性和体量可控。",
+                    "请基于全书大纲、世界模型文档和当前卷原文上下文补充更新。",
+                    "只记录会影响后续章节、后续卷、角色关系、世界真相或核心爽点兑现的全书级/卷级伏笔设计。",
+                    "每条伏笔应写清参考源承担的功能、新书对应设计、埋设意图、适用范围和后续呼应方向；不要写成章节运行时进度或状态表。",
+                    "单章内完成的小提示、普通物品、一次性情绪铺垫和普通剧情细节，不要作为资料适配阶段新增的全局伏笔设计。",
+                    "不要判断或记录伏笔是否已经推进、兑现、闭合；资料适配阶段只做设计索引，不做伏笔状态管理。",
+                    "如果目标文件已有章节工作流写入的运行时记录，必须原样保留这些记录；不得删除、压缩、归并、重命名或根据资料适配审核意见改写它们。",
+                    "如果已有伏笔文档的资料适配设计索引部分过细，本次更新要压缩重复、归并同类项、删除低价值明细，而不是继续追加同等粒度内容；压缩只允许发生在设计索引部分，且必须保留全书级/卷级设计意图。",
                     "建议整份文档控制在 5000-10000 字符；除非确有必要，不要超过 12000 字符。",
-                    "按修改意图使用 edit 或 patch 做增量补充、状态推进或局部修订。",
+                    "按修改意图使用 edit 或 patch 做新增设计、补充映射或局部修订。",
                 ],
             },
             trailing_doc_fields={
@@ -437,12 +445,15 @@ def generate_document_operation(
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
+                "source_material_boundary": source_material_boundary("世界模型文档"),
                 "required_file": GLOBAL_FILE_NAMES["world_model"],
                 "requirements": [
-                    "这是全书级世界模型文档，但采用按卷增量维护方式：每卷只补充、修正到当前卷为止新增的世界知识。",
+                    *source_contamination_guardrails(),
+                    "这是全书级世界模型文档，并合并承载世界观设计职责；采用按卷增量维护方式，每卷只补充、修正到当前卷为止新增或变化的世界知识与世界观设定。",
                     "如果当前文件已存在，必须按修改意图使用 edit 或 patch 做增量更新，不得整篇覆盖式重写世界模型。",
-                    "未变化的世界知识、术语、势力、地点、历史背景与规则结构必须保留。",
-                    "本次只允许补充、修正与当前卷直接相关的世界知识，不要把文档改写成只剩最近一卷。",
+                    "未变化的世界观设定、背景故事、故事类型、角色功能位、世界知识、术语、势力、地点、历史背景与规则结构必须保留。",
+                    "本次只允许补充、修正与当前卷直接相关的世界观和世界知识，不要把文档改写成只剩最近一卷。",
+                    "必须覆盖原世界观设计阶段独有职责：目标世界观设定、背景故事、能力设计、道具设计、势力设计、角色功能位、故事类型与原书功能映射。",
                     "默认使用 scope 中给出的 16 个二级标题组织世界模型；如果某些栏目当前卷暂无信息，可以保留简短占位说明，但不要删除默认标题。",
                     "每个二级标题下可以根据实际小说内容需要展开多个三级标题，用于细分该栏目的不同知识类型；不要强行把所有内容挤在一个段落里。",
                     "只有当默认 16 个栏目确实无法容纳本书特有世界知识时，才使用“可扩展世界专题”新增专题。新增专题必须长期可复用。",
@@ -466,9 +477,11 @@ def generate_document_operation(
         payload = build_payload_with_trailing_docs(
             stable_fields={
                 "document_request": document_request,
+                "source_material_boundary": source_material_boundary("卷级大纲文档"),
                 "required_file": f"{volume_material['volume_number']}_volume_outline.md",
                 "requirements": [
-                    "卷纲要包含本卷定位、主要冲突、角色推进、高潮设计、结尾钩子、与原卷映射关系。",
+                    *source_contamination_guardrails(),
+                    "卷纲要包含本卷定位、主要冲突、角色推进、高潮设计、结尾钩子、与参考源卷级功能映射关系。",
                     "这是卷级注入文档，不要改写成全书文档。",
                     "卷纲要服务后续章节仿写，不要把 50 章逐章展开成超长流水账；优先写可执行的卷级结构、阶段推进和关键映射。",
                     "建议控制在 6000-10000 字符左右；除非确有必要，不要输出超过 12000 字符的卷纲。",
@@ -497,7 +510,7 @@ def adaptation_doc_label(doc_key: str) -> str:
         "world_model": "世界模型",
         "style_guide": "文笔写作风格",
         "book_outline": "全书大纲",
-        "foreshadowing": "伏笔管理",
+        "foreshadowing": "伏笔设计索引",
         "storyline_blueprint": "全书故事线蓝图",
         "volume_outline": "卷级大纲",
     }
@@ -509,6 +522,8 @@ def adaptation_doc_scope(doc_key: str) -> str:
 __all__ = [
     'world_model_scope_text',
     'storyline_blueprint_scope_text',
+    'source_contamination_guardrails',
+    'source_material_boundary',
     'print_request_context_summary',
     'should_generate_style_guide',
     'build_document_request',

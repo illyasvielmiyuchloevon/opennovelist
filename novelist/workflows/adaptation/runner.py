@@ -306,7 +306,6 @@ def main() -> int:
             print_progress(f"全局注入目录：{paths['global_dir']}")
             print_progress(f"卷级注入目录：{paths['volume_dir']}")
             print_progress(f"全书大纲：{paths['book_outline']}")
-            print_progress(f"世界观设计：{paths['world_design']}")
             print_progress(f"世界模型：{paths['world_model']}")
             print_progress(f"全书故事线蓝图：{paths['storyline_blueprint']}")
             if any(item.get("key") == "style_guide" for item in generated_documents):
