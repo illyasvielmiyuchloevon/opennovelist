@@ -82,28 +82,28 @@ class FilesPatchTests(unittest.TestCase):
             warnings = migrate_renamed_files(
                 root,
                 {
-                    "08_world_model.md": "02_world_model.md",
-                    "04_foreshadowing.md": "05_foreshadowing.md",
+                    "08_world_model.md": "01_world_model.md",
+                    "05_foreshadowing.md": "04_foreshadowing.md",
                 },
             )
 
             self.assertEqual(warnings, [])
             self.assertFalse(old_world_model.exists())
-            self.assertTrue((root / "02_world_model.md").exists())
-            self.assertIn("旧编号内容", (root / "02_world_model.md").read_text(encoding="utf-8"))
+            self.assertTrue((root / "01_world_model.md").exists())
+            self.assertIn("旧编号内容", (root / "01_world_model.md").read_text(encoding="utf-8"))
 
     def test_migrate_renamed_files_warns_when_new_and_old_differ(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             old_file = root / "08_global_plot_progress.md"
-            new_file = root / "06_storyline_blueprint.md"
+            new_file = root / "05_storyline_blueprint.md"
             old_file.write_text("# 全书故事线蓝图\n\n- 旧内容。\n", encoding="utf-8")
             new_file.write_text("# 全书故事线蓝图\n\n- 新内容。\n", encoding="utf-8")
 
             warnings = migrate_renamed_files(
                 root,
                 {
-                    "08_global_plot_progress.md": "06_storyline_blueprint.md",
+                    "08_global_plot_progress.md": "05_storyline_blueprint.md",
                 },
             )
 
@@ -330,8 +330,8 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            storyline_blueprint = root / "06_storyline_blueprint.md"
-            world_state = root / "09_world_state.md"
+            storyline_blueprint = root / "05_storyline_blueprint.md"
+            world_state = root / "08_world_state.md"
             storyline_blueprint.write_text(
                 "# 全书故事线蓝图\n\n## 故事线：主线\n- 主角刚刚进入宗门外门。\n",
                 encoding="utf-8",
@@ -431,7 +431,7 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patch_ignores_noop_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            world_state = root / "09_world_state.md"
+            world_state = root / "08_world_state.md"
             original = "# 世界状态\n\n## 地点状态\n- 青岚城：表面平静。\n"
             world_state.write_text(original, encoding="utf-8")
 
@@ -472,7 +472,7 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patch_replace_all_skips_missing_terms(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            world_state = root / "09_world_state.md"
+            world_state = root / "08_world_state.md"
             world_state.write_text("赤穹修行馆。\n", encoding="utf-8")
 
             operation = document_ops.DocumentOperationCallResult(

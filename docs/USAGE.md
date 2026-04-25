@@ -352,14 +352,14 @@ python -m novelist.workflows.novel_chapter_rewrite "F:\books\玄幻忍者" `
 
 全局长期注入文档，典型包括：
 
-- `02_world_model.md`（合并世界观设计与世界模型）
-- `03_style_guide.md`
-- `04_book_outline.md`
-- `05_foreshadowing.md`
-- `06_storyline_blueprint.md`
-- `07_character_status_cards.md`
-- `08_character_relationship_graph.md`
-- `09_world_state.md`
+- `01_world_model.md`（合并世界观设计与世界模型）
+- `02_style_guide.md`
+- `03_book_outline.md`
+- `04_foreshadowing.md`
+- `05_storyline_blueprint.md`
+- `06_character_status_cards.md`
+- `07_character_relationship_graph.md`
+- `08_world_state.md`
 
 ### 9.4 `volume_injection`
 
@@ -413,8 +413,9 @@ rewritten_novel/
 - 尽量保留未变化内容
 - 只有必要时才更新对应文档
 - 全局资料只保留长期复用的索引、规则、蓝图和映射，不写成逐章流水账
+- `01_world_model.md` 是新书全书世界观、世界知识模型和设定的唯一来源，必须使用新书自己的命名、数值体系、等级体系、术语体系和话语体系，不能沿用参考源同名实体或同一套概念表达
 - 资料适配生成任何文档时，都不得把参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系直接写成新书设定；只能保留功能映射，并转换成目标世界观下的新命名和新表达
-- `03_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；第 002 卷开始只读取与审核，不再更新或返修文风文档
+- `02_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；第 002 卷开始只读取与审核，不再更新或返修文风文档
 
 特别是这些文档：
 

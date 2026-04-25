@@ -41,9 +41,10 @@
   - 文件与路径工具
   - UI 输出
 
-资料适配生成的全局文档会按“长期索引 / 规则 / 蓝图 / 映射”定位控制粒度；`05_foreshadowing.md` 是唯一的全局伏笔文档，资料适配阶段只更新设计索引，章节工作流写入的运行时记录必须保留；故事线不会继续按逐章流水账膨胀，章节工作流注入这些文档时也会按文档类型做上下文裁剪。
-世界观设定不再单独生成 `01_world_design.md`，由 `02_world_model.md` 统一承载，避免世界观与世界模型重复注入。
-`03_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；后续卷只读取与审核这份文风文档，不再更新它。
+资料适配生成的全局文档会按“长期索引 / 规则 / 蓝图 / 映射”定位控制粒度；`04_foreshadowing.md` 是唯一的全局伏笔文档，资料适配阶段只更新设计索引，章节工作流写入的运行时记录必须保留；故事线不会继续按逐章流水账膨胀，章节工作流注入这些文档时也会按文档类型做上下文裁剪。
+世界观设定不再单独生成 `01_world_design.md`，由 `01_world_model.md` 统一承载，避免世界观与世界模型重复注入。
+`01_world_model.md` 是新书全书世界观、世界知识模型和设定的唯一来源，必须使用新书自己的命名、数值体系、等级体系、术语体系和话语体系，不能沿用参考源同名实体或同一套概念表达。
+`02_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；后续卷只读取与审核这份文风文档，不再更新它。
 资料适配阶段会硬性阻断参考源污染：生成任何规划文档时都禁止把参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系直接写入新书资料，只允许保留功能映射。
 
 ## 推荐用法
@@ -167,11 +168,11 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 工程目录/
 ├─ 00_project_manifest.md
 ├─ global_injection/
-│  ├─ 02_world_model.md        # 合并世界观设计与世界模型
-│  ├─ 03_style_guide.md
-│  ├─ 04_book_outline.md
-│  ├─ 05_foreshadowing.md
-│  └─ 06_storyline_blueprint.md
+│  ├─ 01_world_model.md        # 合并世界观设计与世界模型
+│  ├─ 02_style_guide.md
+│  ├─ 03_book_outline.md
+│  ├─ 04_foreshadowing.md
+│  └─ 05_storyline_blueprint.md
 └─ volume_injection/
    ├─ 001_volume_injection/
    │  ├─ 001_volume_outline.md
@@ -186,9 +187,9 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 工程目录/
 ├─ 00_chapter_rewrite_manifest.md
 ├─ global_injection/
-│  ├─ 07_character_status_cards.md
-│  ├─ 08_character_relationship_graph.md
-│  └─ 09_world_state.md
+│  ├─ 06_character_status_cards.md
+│  ├─ 07_character_relationship_graph.md
+│  └─ 08_world_state.md
 ├─ volume_injection/
 │  └─ 001_volume_injection/
 │     ├─ 001_volume_plot_progress.md

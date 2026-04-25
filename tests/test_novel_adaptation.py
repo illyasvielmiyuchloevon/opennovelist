@@ -191,13 +191,57 @@ class WorldModelDefinitionTests(unittest.TestCase):
 
     def test_world_model_scope_text_mentions_expansion_section(self) -> None:
         scope = adaptation_workflow.world_model_scope_text()
+        self.assertIn("设定唯一来源", scope)
         self.assertIn("可扩展世界专题", scope)
         self.assertIn("16 个二级标题", scope)
         self.assertIn("多个三级标题", scope)
         self.assertIn("世界观设计", scope)
         self.assertIn("背景故事", scope)
         self.assertIn("角色功能位", scope)
+        self.assertIn("新书自己的命名、数值体系、等级体系、术语体系和话语体系", scope)
+        self.assertIn("不能与参考源出现相同命名、数值或话语体系", scope)
         self.assertIn("不要另建或依赖独立世界观设计文档", scope)
+
+    def test_world_model_generation_payload_declares_unique_new_book_world_source(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_call(*args, **kwargs):
+            captured["user_input"] = args[3]
+            return (object(), None)
+
+        with patch.object(adaptation_workflow, "call_document_operation_response", side_effect=fake_call):
+            adaptation_workflow.generate_document_operation(
+                client=None,  # type: ignore[arg-type]
+                model="gpt-test",
+                manifest={
+                    "new_book_title": "测试书",
+                    "target_worldview": "测试世界",
+                    "total_volumes": 1,
+                    "processed_volumes": [],
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                },
+                volume_material={"volume_number": "001", "chapters": [], "extras": []},
+                current_docs={
+                    "world_model": "既有世界模型",
+                    "style_guide": "文风",
+                    "book_outline": "全书大纲",
+                    "foreshadowing": "伏笔",
+                    "storyline_blueprint": "故事线",
+                },
+                doc_key="world_model",
+                output_path=Path("F:/novelist/.tmp_world_model_test.md"),
+                stage_shared_prompt="",
+                previous_response_id=None,
+                prompt_cache_key="test-cache-key",
+            )
+
+        payload = adaptation_workflow.json.loads(str(captured["user_input"]))
+        requirements = "\n".join(payload["requirements"])
+        self.assertIn("设定唯一来源", requirements)
+        self.assertIn("新书自己的命名系统、数值系统、等级体系", requirements)
+        self.assertIn("不得沿用参考源的同名实体", requirements)
+        self.assertIn("参考源功能 -> 新书世界模型设计", requirements)
 
 
 class StorylineBlueprintDefinitionTests(unittest.TestCase):
@@ -212,8 +256,8 @@ class StorylineBlueprintDefinitionTests(unittest.TestCase):
         self.assertNotIn("待推进", scope)
         self.assertNotIn("当前状态", scope)
 
-    def test_storyline_blueprint_file_number_is_six(self) -> None:
-        self.assertEqual(adaptation_workflow.GLOBAL_FILE_NAMES["storyline_blueprint"], "06_storyline_blueprint.md")
+    def test_storyline_blueprint_file_number_is_five(self) -> None:
+        self.assertEqual(adaptation_workflow.GLOBAL_FILE_NAMES["storyline_blueprint"], "05_storyline_blueprint.md")
 
     def test_storyline_blueprint_request_definition_is_blueprint_planning(self) -> None:
         request = adaptation_workflow.build_document_request("storyline_blueprint")
@@ -274,7 +318,7 @@ class ForeshadowingDefinitionTests(unittest.TestCase):
 
         payload = adaptation_workflow.json.loads(str(captured["user_input"]))
         requirements = "\n".join(payload["requirements"])
-        self.assertEqual(payload["required_file"], "05_foreshadowing.md")
+        self.assertEqual(payload["required_file"], "04_foreshadowing.md")
         self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
         self.assertIn("伏笔设计索引", requirements)
         self.assertIn("参考源承担的功能", requirements)
@@ -431,7 +475,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
 
         payload = adaptation_workflow.json.loads(str(captured["user_input"]))
         requirements = "\n".join(payload["requirements"])
-        self.assertEqual(payload["required_file"], "06_storyline_blueprint.md")
+        self.assertEqual(payload["required_file"], "05_storyline_blueprint.md")
         self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
         self.assertIn("该卷在全书故事线中的功能", requirements)
         self.assertIn("已有卷级设计压缩到信息缺失", requirements)
@@ -794,6 +838,9 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
         self.assertIn("标志性台词", requirements)
         self.assertIn("话语体系", requirements)
         self.assertIn("不得直接照搬", requirements)
+        self.assertIn("设定唯一来源", requirements)
+        self.assertIn("新书自己的命名系统、数值系统、等级体系", requirements)
+        self.assertIn("不得与参考源出现相同命名、数值体系或概念话语体系", requirements)
 
     def test_review_failure_repairs_documents_then_passes_without_marking_processed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

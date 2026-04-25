@@ -571,7 +571,7 @@ class SupportUpdateScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
             paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
-        self.assertEqual(paths["storyline_blueprint"].name, "06_storyline_blueprint.md")
+        self.assertEqual(paths["storyline_blueprint"].name, "05_storyline_blueprint.md")
 
     def test_support_updates_and_review_do_not_duplicate_current_chapter_text(self) -> None:
         volume_material = {
@@ -637,7 +637,7 @@ class SupportUpdateScopeTests(unittest.TestCase):
 class StableGlobalInjectionOrderingTests(unittest.TestCase):
     def test_serialized_global_docs_use_context_budget(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "05_foreshadowing.md"
+            path = Path(temp_dir) / "04_foreshadowing.md"
             path.write_text("伏" * 20000, encoding="utf-8")
             serialized = rewrite_workflow.serialize_doc_for_prompt(
                 {

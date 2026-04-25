@@ -77,16 +77,16 @@ RUN_MODE_LABELS = {
 
 ADAPTATION_GLOBAL_FILE_NAMES = {
     "world_design": "01_world_design.md",
-    "world_model": "02_world_model.md",
-    "style_guide": "03_style_guide.md",
-    "book_outline": "04_book_outline.md",
-    "foreshadowing": "05_foreshadowing.md",
-    "storyline_blueprint": "06_storyline_blueprint.md",
+    "world_model": "01_world_model.md",
+    "style_guide": "02_style_guide.md",
+    "book_outline": "03_book_outline.md",
+    "foreshadowing": "04_foreshadowing.md",
+    "storyline_blueprint": "05_storyline_blueprint.md",
 }
 REWRITE_GLOBAL_FILE_NAMES = {
-    "character_status_cards": "07_character_status_cards.md",
-    "character_relationship_graph": "08_character_relationship_graph.md",
-    "world_state": "09_world_state.md",
+    "character_status_cards": "06_character_status_cards.md",
+    "character_relationship_graph": "07_character_relationship_graph.md",
+    "world_state": "08_world_state.md",
 }
 PROMPT_DOC_CONTENT_LIMITS = {
     "world_model": 18000,
@@ -112,19 +112,26 @@ def prompt_doc_content_limit(doc_key: str) -> int:
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
+    "02_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
+    "03_style_guide.md": ADAPTATION_GLOBAL_FILE_NAMES["style_guide"],
+    "04_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
     "04_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
     "05_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["storyline_blueprint"],
+    "05_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "06_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["storyline_blueprint"],
+    "06_storyline_blueprint.md": ADAPTATION_GLOBAL_FILE_NAMES["storyline_blueprint"],
     "06_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "04_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
-    "05_foreshadowing.md": ADAPTATION_GLOBAL_FILE_NAMES["foreshadowing"],
     "08_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
     "07_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["storyline_blueprint"],
     "08_global_plot_progress.md": ADAPTATION_GLOBAL_FILE_NAMES["storyline_blueprint"],
     "05_character_status_cards.md": REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
     "06_character_status_cards.md": REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
+    "07_character_status_cards.md": REWRITE_GLOBAL_FILE_NAMES["character_status_cards"],
     "06_character_relationship_graph.md": REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
     "07_character_relationship_graph.md": REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
+    "08_character_relationship_graph.md": REWRITE_GLOBAL_FILE_NAMES["character_relationship_graph"],
+    "09_world_state.md": REWRITE_GLOBAL_FILE_NAMES["world_state"],
 }
 
 COMMON_FUNCTION_OUTPUT_RULE = (

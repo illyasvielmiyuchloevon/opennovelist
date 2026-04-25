@@ -39,11 +39,11 @@ VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
 GLOBAL_FILE_NAMES = {
     "world_design": "01_world_design.md",
-    "world_model": "02_world_model.md",
-    "style_guide": "03_style_guide.md",
-    "book_outline": "04_book_outline.md",
-    "foreshadowing": "05_foreshadowing.md",
-    "storyline_blueprint": "06_storyline_blueprint.md",
+    "world_model": "01_world_model.md",
+    "style_guide": "02_style_guide.md",
+    "book_outline": "03_book_outline.md",
+    "foreshadowing": "04_foreshadowing.md",
+    "storyline_blueprint": "05_storyline_blueprint.md",
 }
 GLOBAL_INJECTION_DOC_ORDER = [
     "world_model",
@@ -67,19 +67,26 @@ def adaptation_doc_context_limit(doc_key: str) -> int:
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": GLOBAL_FILE_NAMES["world_design"],
+    "02_world_model.md": GLOBAL_FILE_NAMES["world_model"],
+    "03_style_guide.md": GLOBAL_FILE_NAMES["style_guide"],
+    "04_book_outline.md": GLOBAL_FILE_NAMES["book_outline"],
     "04_world_model.md": GLOBAL_FILE_NAMES["world_model"],
     "05_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
+    "05_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "06_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
+    "06_storyline_blueprint.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
     "06_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "04_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
-    "05_foreshadowing.md": GLOBAL_FILE_NAMES["foreshadowing"],
     "08_world_model.md": GLOBAL_FILE_NAMES["world_model"],
     "07_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
     "08_global_plot_progress.md": GLOBAL_FILE_NAMES["storyline_blueprint"],
-    "05_character_status_cards.md": "07_character_status_cards.md",
-    "06_character_status_cards.md": "07_character_status_cards.md",
-    "06_character_relationship_graph.md": "08_character_relationship_graph.md",
-    "07_character_relationship_graph.md": "08_character_relationship_graph.md",
+    "05_character_status_cards.md": "06_character_status_cards.md",
+    "06_character_status_cards.md": "06_character_status_cards.md",
+    "07_character_status_cards.md": "06_character_status_cards.md",
+    "06_character_relationship_graph.md": "07_character_relationship_graph.md",
+    "07_character_relationship_graph.md": "07_character_relationship_graph.md",
+    "08_character_relationship_graph.md": "07_character_relationship_graph.md",
+    "09_world_state.md": "08_world_state.md",
 }
 WORLD_MODEL_DEFAULT_SECTIONS = [
     "世界背景与时代",
