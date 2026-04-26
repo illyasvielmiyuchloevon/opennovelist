@@ -84,6 +84,8 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
         self.assertIn("严禁把参考源的人名、地名、姓氏、势力名、事件名、专用术语", instructions)
         self.assertIn("话语体系", instructions)
         self.assertIn("转换成新书自己的命名、设定与表达", instructions)
+        self.assertIn("按真实需要编写", instructions)
+        self.assertIn("不要为了显得完整、填满结构或覆盖全部素材而硬塞内容", instructions)
 
     def test_stage_shared_prompt_contains_source_contamination_guardrails(self) -> None:
         prompt = adaptation_workflow.build_stage_shared_prompt(
@@ -97,6 +99,12 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
         self.assertIn("严禁把参考源的人名", prompt)
         self.assertIn("话语体系", prompt)
         self.assertIn("功能映射", prompt)
+        self.assertIn("资料适配不是从当前卷原文抽取百科资料", prompt)
+        self.assertIn("完整卷原文只提供判断依据", prompt)
+        self.assertIn("不得写入全局资料", prompt)
+        self.assertIn("所有资料都按需要编写", prompt)
+        self.assertIn("没有实际用途的信息应当不写、不新增", prompt)
+        self.assertIn("不要为了显得完整、填满结构或覆盖全部素材而硬塞内容", prompt)
 
     def test_document_request_contains_explicit_source_material_boundary(self) -> None:
         for doc_key in [
@@ -183,23 +191,58 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
                 self.assertIn("不得把原作实体名保留为新书实体", requirements)
                 self.assertIn("残留参考源实体名或话语体系", requirements)
 
+        style_scope = captured["style_guide"]["document_request"]["scope"]
+        style_requirements = "\n".join(captured["style_guide"]["requirements"])
+        self.assertIn("后续章节仿写会反复使用", style_scope)
+        self.assertIn("没有稳定规律或后续执行价值的维度不要写", style_scope)
+        self.assertIn("不要求每个维度都写", style_requirements)
+        self.assertIn("避免风格百科", style_requirements)
+        self.assertNotIn("文档必须覆盖写作方式", style_scope)
+        self.assertNotIn("必须明确提炼", style_requirements)
+
+        book_requirements = "\n".join(captured["book_outline"]["requirements"])
+        self.assertIn("普通章节事件、普通战斗、临时小冲突不进入全书大纲", book_requirements)
+        self.assertIn("可以不新增段落", book_requirements)
+        self.assertNotIn("6-10 个关键推进点", book_requirements)
+
+        volume_requirements = "\n".join(captured["volume_outline"]["requirements"])
+        self.assertIn("没有设计价值的普通事件不写", volume_requirements)
+        self.assertIn("不登记章节素材", volume_requirements)
+        self.assertIn("不为了覆盖全部原文而补齐所有事件", volume_requirements)
+        self.assertNotIn("必要信息必须完整保留", volume_requirements)
+
 
 class WorldModelDefinitionTests(unittest.TestCase):
     def test_world_model_default_sections_has_sixteen_entries(self) -> None:
         self.assertEqual(len(adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS), 16)
+        self.assertIn("世界历史与纪元背景", adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS)
+        self.assertIn("世界真相与认知边界", adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS)
+        self.assertIn("本卷新增或修正世界设定", adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS)
         self.assertEqual(adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS[-1], "可扩展世界专题")
+        self.assertNotIn("历史与大事件", adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS)
+        self.assertNotIn("已公开真相 / 未公开真相", adaptation_workflow.WORLD_MODEL_DEFAULT_SECTIONS)
 
     def test_world_model_scope_text_mentions_expansion_section(self) -> None:
         scope = adaptation_workflow.world_model_scope_text()
         self.assertIn("设定唯一来源", scope)
         self.assertIn("可扩展世界专题", scope)
         self.assertIn("16 个二级标题", scope)
-        self.assertIn("多个三级标题", scope)
+        self.assertIn("完整卷原文只是判断依据，不是待抽取清单", scope)
+        self.assertIn("少量必要子条目", scope)
+        self.assertNotIn("多个三级标题", scope)
         self.assertIn("世界观设计", scope)
         self.assertIn("背景故事", scope)
         self.assertIn("角色功能位", scope)
+        self.assertIn("世界模型只允许写世界观与世界知识", scope)
+        self.assertIn("严禁写卷内已发生大事件", scope)
+        self.assertIn("剧情推进清单", scope)
         self.assertIn("新书自己的命名、数值体系、等级体系、术语体系和话语体系", scope)
         self.assertIn("不能与参考源出现相同命名、数值或话语体系", scope)
+        self.assertIn("通用语素和玄幻/仙侠常见通用术语可以使用", scope)
+        self.assertIn("参考源自造名词、专属组合词、专用话语体系必须改名或重构", scope)
+        self.assertIn("如果参考源境界名是“XX境”", scope)
+        self.assertIn("不能沿用相同“XX”前缀", scope)
+        self.assertIn("“境”作为通用后缀可以保留", scope)
         self.assertIn("不要另建或依赖独立世界观设计文档", scope)
 
     def test_world_model_generation_payload_declares_unique_new_book_world_source(self) -> None:
@@ -242,6 +285,19 @@ class WorldModelDefinitionTests(unittest.TestCase):
         self.assertIn("新书自己的命名系统、数值系统、等级体系", requirements)
         self.assertIn("不得沿用参考源的同名实体", requirements)
         self.assertIn("参考源功能 -> 新书世界模型设计", requirements)
+        self.assertIn("严禁记录卷内已发生大事件", requirements)
+        self.assertIn("主角个人战绩", requirements)
+        self.assertIn("治疗进度", requirements)
+        self.assertIn("不属于世界模型", requirements)
+        self.assertIn("完整卷原文只是世界设计判断依据，不是设定清单", requirements)
+        self.assertIn("后续章节会反复使用", requirements)
+        self.assertIn("不要把当前卷原文逐项抽取成设定库", requirements)
+        self.assertIn("通用语素和玄幻/仙侠常见通用术语可以使用", requirements)
+        self.assertIn("专用话语术语", requirements)
+        self.assertIn("参考源自造名词、专属组合词、标志性称谓和专用话语体系必须改名或重构", requirements)
+        self.assertIn("参考源若使用“XX境”", requirements)
+        self.assertIn("新书必须替换“XX”前缀", requirements)
+        self.assertIn("“境”这个通用后缀允许继续使用", requirements)
 
 
 class StorylineBlueprintDefinitionTests(unittest.TestCase):
@@ -280,6 +336,9 @@ class ForeshadowingDefinitionTests(unittest.TestCase):
         self.assertIn("新书伏笔设计", scope)
         self.assertIn("埋设意图", scope)
         self.assertIn("后续呼应方向", scope)
+        self.assertIn("伏笔设计索引，只记录真正会跨章、跨卷或贯穿全书回收的伏笔设计", scope)
+        self.assertIn("普通剧情细节", scope)
+        self.assertIn("都不算全局伏笔", scope)
         self.assertIn("不要判断伏笔是否已经推进或兑现", scope)
         self.assertIn("受保护内容", scope)
         self.assertIn("原样保留", scope)
@@ -328,6 +387,12 @@ class ForeshadowingDefinitionTests(unittest.TestCase):
         self.assertIn("参考源承担的功能", requirements)
         self.assertIn("新书对应设计", requirements)
         self.assertIn("后续呼应方向", requirements)
+        self.assertIn("伏笔准入门槛", requirements)
+        self.assertIn("普通剧情细节", requirements)
+        self.assertIn("阶段性战绩", requirements)
+        self.assertIn("治疗进度", requirements)
+        self.assertIn("埋设内容 -> 后续触发/兑现方向", requirements)
+        self.assertIn("世界知识放世界模型", requirements)
         self.assertIn("资料适配阶段只做设计索引", requirements)
         self.assertIn("运行时记录", requirements)
         self.assertIn("不得删除、归并、重命名", requirements)
@@ -831,6 +896,25 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
         self.assertIn("不得要求删除或改写", requirements)
         self.assertIn("不得仅因其存在判定资料适配不通过", requirements)
 
+    def test_review_payload_rejects_plot_details_as_global_foreshadowing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            paths = _seed_adaptation_docs(project_root, "001")
+            request = adaptation_workflow.build_adaptation_review_request(
+                manifest=manifest,  # type: ignore[arg-type]
+                volume_material=_volume_material("001"),  # type: ignore[arg-type]
+                allowed_files=adaptation_workflow.adaptation_review_document_files(paths),
+            )
+
+        requirements = "\n".join(request["requirements"])
+        self.assertIn("伏笔准入门槛", requirements)
+        self.assertIn("普通剧情细节", requirements)
+        self.assertIn("阶段性战绩", requirements)
+        self.assertIn("治疗进度", requirements)
+        self.assertIn("未来触发、反转、兑现或呼应方向", requirements)
+        self.assertIn("如果只能说明已经发生的剧情事实，就不应写入伏笔文档", requirements)
+
     def test_review_payload_checks_source_names_and_discourse_system(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -850,6 +934,13 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
         self.assertIn("设定唯一来源", requirements)
         self.assertIn("新书自己的命名系统、数值系统、等级体系", requirements)
         self.assertIn("不得与参考源出现相同命名、数值体系或概念话语体系", requirements)
+        self.assertIn("通用语素和玄幻/仙侠常见通用术语可以使用，不应判为污染", requirements)
+        self.assertIn("专用话语术语", requirements)
+        self.assertIn("参考源自造名词、专属组合词、标志性称谓和专用话语体系必须改名或重构", requirements)
+        self.assertIn("“境”这个通用后缀允许继续使用，不应因后缀相同判定为污染", requirements)
+        self.assertIn("只包含世界观与世界知识", requirements)
+        self.assertIn("卷内已发生大事件", requirements)
+        self.assertIn("剧情推进清单", requirements)
 
     def test_review_failure_repairs_documents_then_passes_without_marking_processed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

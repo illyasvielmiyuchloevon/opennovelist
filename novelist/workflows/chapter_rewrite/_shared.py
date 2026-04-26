@@ -75,7 +75,6 @@ RUN_MODE_LABELS = {
 }
 
 ADAPTATION_GLOBAL_FILE_NAMES = {
-    "world_design": "01_world_design.md",
     "world_model": "01_world_model.md",
     "style_guide": "02_style_guide.md",
     "book_outline": "03_book_outline.md",
@@ -89,7 +88,7 @@ REWRITE_GLOBAL_FILE_NAMES = {
 }
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
-    "02_world_design.md": ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
+    "02_world_design.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
     "02_world_model.md": ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
     "03_style_guide.md": ADAPTATION_GLOBAL_FILE_NAMES["style_guide"],
     "04_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],

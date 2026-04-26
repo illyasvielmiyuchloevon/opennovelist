@@ -58,6 +58,29 @@ def _seed_rewrite_files(project_root: Path, chapter_numbers: list[str]) -> None:
     _write_text(volume_paths["volume_review"], "# 卷级审核\n")
 
 
+class VolumeReadinessTests(unittest.TestCase):
+    def test_world_design_file_is_not_required_after_world_model_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir) / "project"
+            source_root = Path(temp_dir) / "source"
+            source_volume = source_root / "001"
+            source_volume.mkdir(parents=True)
+            _write_text(source_volume / "0001.txt", "参考源章节。\n")
+
+            paths = rewrite_workflow.rewrite_paths(project_root, "001")
+            _write_text(paths["world_model"], "# 世界模型\n")
+            _write_text(paths["style_guide"], "# 文笔写作风格\n")
+            _write_text(paths["book_outline"], "# 全书大纲\n")
+            _write_text(paths["foreshadowing"], "# 伏笔管理\n")
+            _write_text(paths["storyline_blueprint"], "# 全书故事线蓝图\n")
+            _write_text(paths["volume_outline"], "# 卷级大纲\n")
+
+            readiness = rewrite_workflow.assess_volume_readiness(project_root, source_root, "001")
+
+        self.assertTrue(readiness["eligible"])
+        self.assertNotIn("01_world_design.md", "\n".join(readiness["missing"]))
+
+
 class ReviewPayloadNormalizationTests(unittest.TestCase):
     def test_finalize_review_payload_infers_passed_from_review_text(self) -> None:
         payload = rewrite_workflow.WorkflowSubmissionPayload(

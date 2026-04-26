@@ -16,7 +16,6 @@ def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | 
         "rewritten_root": rewritten_root,
         "rewritten_volume_dir": rewritten_volume_dir,
         "book_outline": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
-        "world_design": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
         "style_guide": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["style_guide"],
         "storyline_blueprint": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["storyline_blueprint"],
         "world_model": global_dir / ADAPTATION_GLOBAL_FILE_NAMES["world_model"],
