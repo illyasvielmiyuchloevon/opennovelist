@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from novelist.workflows import novel_adaptation as adaptation_workflow
+from novelist.workflows.adaptation import review as adaptation_review_module
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -1005,10 +1006,116 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertTrue(result.payload.passed)
             self.assertEqual(response_id, "resp_review_2")
             self.assertEqual(review_call.call_count, 2)
+            self.assertEqual(review_call.call_args_list[0].kwargs["previous_response_id"], "resp_docs")
+            self.assertEqual(review_call.call_args_list[1].kwargs["previous_response_id"], "resp_fix")
             fix_call.assert_called_once()
+            self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_review_1")
             self.assertEqual(manifest["processed_volumes"], [])
             self.assertIn("新书主角名已替换", paths["world_model"].read_text(encoding="utf-8"))
             self.assertTrue(paths["adaptation_review"].exists())
+
+    def test_adaptation_review_allows_five_total_review_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+            failed_review = adaptation_workflow.AdaptationReviewPayload(
+                passed=False,
+                review_md="仍不通过。",
+                blocking_issues=["世界模型残留参考源话语体系"],
+                rewrite_targets=["world_model"],
+            )
+            applied_fix = adaptation_workflow.document_ops.AppliedDocumentOperation(
+                mode="edit",
+                files=[
+                    adaptation_workflow.document_ops.AppliedDocumentFile(
+                        file_key="world_model",
+                        path=paths["world_model"],
+                        mode="edit",
+                        emitted=True,
+                        changed=True,
+                        edit_count=1,
+                    )
+                ],
+            )
+
+            with (
+                self.assertRaises(adaptation_workflow.llm_runtime.ModelOutputError),
+                patch.object(
+                    adaptation_review_module,
+                    "call_adaptation_review_response",
+                    side_effect=[
+                        (failed_review, f"resp_review_{index}", Mock(response_id=f"resp_review_{index}"))
+                        for index in range(1, 6)
+                    ],
+                ) as review_call,
+                patch.object(
+                    adaptation_review_module,
+                    "apply_adaptation_review_fix_with_repair",
+                    side_effect=[
+                        (applied_fix, f"resp_fix_{index}", [f"resp_fix_{index}"])
+                        for index in range(1, 5)
+                    ],
+                ) as fix_call,
+            ):
+                adaptation_review_module.run_adaptation_review_until_passed(
+                    client=Mock(),
+                    model="test-model",
+                    manifest=manifest,  # type: ignore[arg-type]
+                    volume_material=volume_material,  # type: ignore[arg-type]
+                    stage_shared_prompt="shared\n",
+                    previous_response_id="resp_docs",
+                    prompt_cache_key="cache-key",
+                )
+
+            self.assertEqual(adaptation_workflow.MAX_ADAPTATION_REVIEW_ATTEMPTS, 5)
+            self.assertEqual(adaptation_workflow.MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS, 4)
+            self.assertEqual(review_call.call_count, 5)
+            self.assertEqual(fix_call.call_count, 4)
+            self.assertEqual(review_call.call_args_list[0].kwargs["previous_response_id"], "resp_docs")
+            self.assertEqual(review_call.call_args_list[4].kwargs["previous_response_id"], "resp_fix_4")
+
+    def test_reviewing_snapshot_preserves_document_session_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+            generated_documents = [
+                {
+                    "index": 1,
+                    "key": "world_model",
+                    "label": "世界模型文档",
+                    "response_id": "resp_world",
+                    "output_path": str(paths["world_model"]),
+                }
+            ]
+
+            adaptation_workflow.write_stage_status_snapshot(
+                manifest,  # type: ignore[arg-type]
+                volume_material,  # type: ignore[arg-type]
+                status="document_generated",
+                note="世界模型文档已生成，断点已保存。",
+                total_batches=6,
+                current_batch=1,
+                current_batch_range="world_model",
+                generated_documents=generated_documents,
+                previous_response_id="resp_world",
+            )
+            adaptation_workflow.write_stage_status_snapshot(
+                manifest,  # type: ignore[arg-type]
+                volume_material,  # type: ignore[arg-type]
+                status="adaptation_reviewing",
+                note="正在进行卷资料审核。",
+                previous_response_id="resp_world",
+            )
+
+            payload = adaptation_workflow.load_stage_manifest_payload(paths["stage_manifest"])
+
+        self.assertEqual(payload["last_response_id"], "resp_world")
+        self.assertEqual(payload["generated_document_keys"], ["world_model"])
+        self.assertEqual(payload["api_calls"][0]["response_id"], "resp_world")
 
     def test_review_fix_rejects_unauthorized_file_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

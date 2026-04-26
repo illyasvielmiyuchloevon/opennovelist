@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
+from novelist.workflows.chapter_rewrite import chapter_runner as chapter_runner_module
+from novelist.workflows.chapter_rewrite import review as chapter_review_module
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -56,6 +58,22 @@ def _seed_rewrite_files(project_root: Path, chapter_numbers: list[str]) -> None:
     _write_text(volume_paths["volume_outline"], "# 卷级大纲\n")
     _write_text(volume_paths["volume_plot_progress"], "# 卷级剧情进程\n")
     _write_text(volume_paths["volume_review"], "# 卷级审核\n")
+
+
+def _applied_fix(file_key: str, path: Path) -> rewrite_workflow.document_ops.AppliedDocumentOperation:
+    return rewrite_workflow.document_ops.AppliedDocumentOperation(
+        mode="edit",
+        files=[
+            rewrite_workflow.document_ops.AppliedDocumentFile(
+                file_key=file_key,
+                path=path,
+                mode="edit",
+                emitted=True,
+                changed=True,
+                edit_count=1,
+            )
+        ],
+    )
 
 
 class VolumeReadinessTests(unittest.TestCase):
@@ -439,6 +457,115 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(state["pending_phases"], [])
             self.assertIn("修复后的正文", paths["rewritten_chapter"].read_text(encoding="utf-8"))
 
+    def test_chapter_review_allows_five_total_review_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material(["0001"])
+            _seed_rewrite_files(project_root, ["0001"])
+            rewrite_workflow.update_chapter_state(
+                manifest,
+                "001",
+                "0001",
+                status="in_progress",
+                pending_phases=[rewrite_workflow.PHASE3_REVIEW],
+            )
+            paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
+            failed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="章审仍不通过。",
+                blocking_issues=["正文仍需修复"],
+                rewrite_targets=["chapter_text"],
+            )
+            applied_fix = _applied_fix("rewritten_chapter", paths["rewritten_chapter"])
+
+            with (
+                self.assertRaisesRegex(ValueError, "连续 5 次审核"),
+                patch.object(
+                    chapter_runner_module,
+                    "call_chapter_review_response",
+                    side_effect=[
+                        (failed_review, f"resp_review_{index}", Mock(response_id=f"resp_review_{index}"))
+                        for index in range(1, 6)
+                    ],
+                ) as review_call,
+                patch.object(
+                    chapter_runner_module,
+                    "apply_review_fix_with_repair",
+                    side_effect=[
+                        (applied_fix, f"resp_fix_{index}", [f"resp_fix_{index}"])
+                        for index in range(1, 5)
+                    ],
+                ) as fix_call,
+                patch.object(chapter_runner_module, "print_request_context_summary"),
+            ):
+                chapter_runner_module.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+            state = rewrite_workflow.get_chapter_state(manifest, "001", "0001")
+            self.assertEqual(rewrite_workflow.MAX_CHAPTER_REVIEW_ATTEMPTS, 5)
+            self.assertEqual(rewrite_workflow.MAX_CHAPTER_REVIEW_FIX_ATTEMPTS, 4)
+            self.assertEqual(review_call.call_count, 5)
+            self.assertEqual(fix_call.call_count, 4)
+            self.assertEqual(review_call.call_args_list[4].kwargs["previous_response_id"], "resp_fix_4")
+            self.assertEqual(state["status"], "failed")
+
+    def test_chapter_review_resume_uses_previous_stage_response_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material(["0001"])
+            _seed_rewrite_files(project_root, ["0001"])
+            paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
+            rewrite_workflow.update_chapter_state(
+                manifest,
+                "001",
+                "0001",
+                status="in_progress",
+                pending_phases=[rewrite_workflow.PHASE3_REVIEW],
+            )
+            rewrite_workflow.write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number="001",
+                chapter_number="0001",
+                status="in_progress",
+                note="配套状态文档已完成，准备进入章级审核。",
+                attempt=1,
+                last_phase=rewrite_workflow.PHASE3_REVIEW,
+                response_ids=["resp_outline", "resp_text", "resp_support"],
+            )
+            passed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="通过。",
+            )
+
+            with (
+                patch.object(
+                    rewrite_workflow,
+                    "call_chapter_review_response",
+                    return_value=(passed_review, "resp_review", Mock(response_id="resp_review")),
+                ) as review_call,
+                patch.object(rewrite_workflow, "print_request_context_summary"),
+            ):
+                rewrite_workflow.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+            review_call.assert_called_once()
+            self.assertEqual(review_call.call_args.kwargs["previous_response_id"], "resp_support")
+            payload = rewrite_workflow.load_chapter_stage_manifest_payload(paths["chapter_stage_manifest"])
+            self.assertEqual(payload["last_response_id"], "resp_review")
+            self.assertEqual(payload["response_ids"], ["resp_outline", "resp_text", "resp_support", "resp_review"])
+
     def test_group_review_failure_repairs_in_review_phase(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -489,7 +616,7 @@ class ReviewFixLoopTests(unittest.TestCase):
                         (passed_review, "resp_group_review_2", Mock(response_id="resp_group_review_2")),
                     ],
                 ) as review_call,
-                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation),
+                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation) as fix_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
                 passed = rewrite_workflow.run_five_chapter_review(
@@ -509,8 +636,136 @@ class ReviewFixLoopTests(unittest.TestCase):
             chapter_state = manifest.get("chapter_states", {}).get("001", {}).get("0003", {})
             self.assertTrue(passed)
             self.assertEqual(review_call.call_count, 2)
+            self.assertIsNone(review_call.call_args_list[0].kwargs["previous_response_id"])
+            self.assertEqual(review_call.call_args_list[1].kwargs["previous_response_id"], "resp_group_fix")
+            fix_call.assert_called_once()
+            self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_group_review_1")
             self.assertEqual(group_state["status"], "passed")
+            self.assertEqual(group_state["last_response_id"], "resp_group_review_2")
+            self.assertEqual(
+                group_state["response_ids"],
+                ["resp_group_review_1", "resp_group_fix", "resp_group_review_2"],
+            )
             self.assertNotEqual(chapter_state.get("status"), "needs_revision")
+
+    def test_group_review_resume_uses_persisted_response_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
+            volume_material = _volume_material(chapter_numbers)
+            _seed_rewrite_files(project_root, chapter_numbers)
+            batch_id = rewrite_workflow.five_chapter_batch_id(chapter_numbers)
+            rewrite_workflow.update_five_chapter_review_state(
+                manifest,
+                "001",
+                batch_id,
+                chapter_numbers,
+                status="in_review_fix",
+                attempts=1,
+                response_ids=["resp_group_review_1", "resp_group_fix"],
+                last_response_id="resp_group_fix",
+            )
+            reloaded_manifest = rewrite_workflow.load_rewrite_manifest(project_root)
+            self.assertIsNotNone(reloaded_manifest)
+            passed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="组审查通过。",
+            )
+
+            with (
+                patch.object(
+                    rewrite_workflow,
+                    "call_five_chapter_review_response",
+                    return_value=(passed_review, "resp_group_review_2", Mock(response_id="resp_group_review_2")),
+                ) as review_call,
+                patch.object(rewrite_workflow, "print_request_context_summary"),
+            ):
+                passed = rewrite_workflow.run_five_chapter_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=reloaded_manifest,
+                    volume_material=volume_material,
+                    chapter_numbers=chapter_numbers,
+                )
+
+            group_state = rewrite_workflow.get_five_chapter_review_state(
+                reloaded_manifest,
+                "001",
+                batch_id,
+                chapter_numbers,
+            )
+            self.assertTrue(passed)
+            review_call.assert_called_once()
+            self.assertEqual(review_call.call_args.kwargs["previous_response_id"], "resp_group_fix")
+            self.assertEqual(group_state["status"], "passed")
+            self.assertEqual(group_state["last_response_id"], "resp_group_review_2")
+            self.assertEqual(
+                group_state["response_ids"],
+                ["resp_group_review_1", "resp_group_fix", "resp_group_review_2"],
+            )
+
+    def test_group_review_allows_ten_total_review_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
+            volume_material = _volume_material(chapter_numbers)
+            _seed_rewrite_files(project_root, chapter_numbers)
+            batch_id = rewrite_workflow.five_chapter_batch_id(chapter_numbers)
+            failed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="组审查仍不通过。",
+                blocking_issues=["0003 仍需修复"],
+                rewrite_targets=["0003:chapter_text"],
+                chapters_to_revise=["0003"],
+            )
+            applied_fix = _applied_fix(
+                "0003_rewritten_chapter",
+                rewrite_workflow.rewrite_paths(project_root, "001", "0003")["rewritten_chapter"],
+            )
+
+            with (
+                self.assertRaisesRegex(ValueError, "连续 10 次审核"),
+                patch.object(
+                    chapter_review_module,
+                    "call_five_chapter_review_response",
+                    side_effect=[
+                        (failed_review, f"resp_group_review_{index}", Mock(response_id=f"resp_group_review_{index}"))
+                        for index in range(1, 11)
+                    ],
+                ) as review_call,
+                patch.object(
+                    chapter_review_module,
+                    "apply_review_fix_with_repair",
+                    side_effect=[
+                        (applied_fix, f"resp_group_fix_{index}", [f"resp_group_fix_{index}"])
+                        for index in range(1, 10)
+                    ],
+                ) as fix_call,
+                patch.object(chapter_review_module, "print_request_context_summary"),
+            ):
+                chapter_review_module.run_five_chapter_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_numbers=chapter_numbers,
+                )
+
+            group_state = rewrite_workflow.get_five_chapter_review_state(
+                manifest,
+                "001",
+                batch_id,
+                chapter_numbers,
+            )
+            self.assertEqual(rewrite_workflow.MAX_GROUP_REVIEW_ATTEMPTS, 10)
+            self.assertEqual(rewrite_workflow.MAX_GROUP_REVIEW_FIX_ATTEMPTS, 9)
+            self.assertEqual(review_call.call_count, 10)
+            self.assertEqual(fix_call.call_count, 9)
+            self.assertEqual(review_call.call_args_list[9].kwargs["previous_response_id"], "resp_group_fix_9")
+            self.assertEqual(group_state["status"], "failed")
+            self.assertEqual(group_state["attempts"], 10)
 
     def test_volume_review_failure_repairs_in_review_phase(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -562,7 +817,7 @@ class ReviewFixLoopTests(unittest.TestCase):
                         (passed_review, "resp_volume_review_2", Mock(response_id="resp_volume_review_2")),
                     ],
                 ) as review_call,
-                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation),
+                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation) as fix_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
                 passed = rewrite_workflow.run_volume_review(
@@ -576,9 +831,122 @@ class ReviewFixLoopTests(unittest.TestCase):
             chapter_state = manifest.get("chapter_states", {}).get("001", {}).get("0002", {})
             self.assertTrue(passed)
             self.assertEqual(review_call.call_count, 2)
+            self.assertIsNone(review_call.call_args_list[0].kwargs["previous_response_id"])
+            self.assertEqual(review_call.call_args_list[1].kwargs["previous_response_id"], "resp_volume_fix")
+            fix_call.assert_called_once()
+            self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_volume_review_1")
             self.assertEqual(volume_state["status"], "passed")
+            self.assertEqual(volume_state["last_response_id"], "resp_volume_review_2")
+            self.assertEqual(
+                volume_state["response_ids"],
+                ["resp_volume_review_1", "resp_volume_fix", "resp_volume_review_2"],
+            )
             self.assertIn("001", manifest["processed_volumes"])
             self.assertNotEqual(chapter_state.get("status"), "needs_revision")
+
+    def test_volume_review_resume_uses_persisted_response_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002"]
+            volume_material = _volume_material(chapter_numbers)
+            _seed_rewrite_files(project_root, chapter_numbers)
+            rewrite_workflow.update_volume_review_state(
+                manifest,
+                "001",
+                status="in_review_fix",
+                attempts=1,
+                response_ids=["resp_volume_review_1", "resp_volume_fix"],
+                last_response_id="resp_volume_fix",
+            )
+            reloaded_manifest = rewrite_workflow.load_rewrite_manifest(project_root)
+            self.assertIsNotNone(reloaded_manifest)
+            passed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="卷级审核通过。",
+            )
+
+            with (
+                patch.object(
+                    rewrite_workflow,
+                    "call_volume_review_response",
+                    return_value=(passed_review, "resp_volume_review_2", Mock(response_id="resp_volume_review_2")),
+                ) as review_call,
+                patch.object(rewrite_workflow, "print_request_context_summary"),
+            ):
+                passed = rewrite_workflow.run_volume_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=reloaded_manifest,
+                    volume_material=volume_material,
+                )
+
+            volume_state = rewrite_workflow.get_volume_review_state(reloaded_manifest, "001")
+            self.assertTrue(passed)
+            review_call.assert_called_once()
+            self.assertEqual(review_call.call_args.kwargs["previous_response_id"], "resp_volume_fix")
+            self.assertEqual(volume_state["status"], "passed")
+            self.assertEqual(volume_state["last_response_id"], "resp_volume_review_2")
+            self.assertEqual(
+                volume_state["response_ids"],
+                ["resp_volume_review_1", "resp_volume_fix", "resp_volume_review_2"],
+            )
+            self.assertIn("001", reloaded_manifest["processed_volumes"])
+
+    def test_volume_review_allows_ten_total_review_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002"]
+            volume_material = _volume_material(chapter_numbers)
+            _seed_rewrite_files(project_root, chapter_numbers)
+            failed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="卷审查仍不通过。",
+                blocking_issues=["0002 仍需修复"],
+                rewrite_targets=["0002:chapter_text"],
+                chapters_to_revise=["0002"],
+            )
+            applied_fix = _applied_fix(
+                "0002_rewritten_chapter",
+                rewrite_workflow.rewrite_paths(project_root, "001", "0002")["rewritten_chapter"],
+            )
+
+            with (
+                self.assertRaisesRegex(ValueError, "连续 10 次审核"),
+                patch.object(
+                    chapter_review_module,
+                    "call_volume_review_response",
+                    side_effect=[
+                        (failed_review, f"resp_volume_review_{index}", Mock(response_id=f"resp_volume_review_{index}"))
+                        for index in range(1, 11)
+                    ],
+                ) as review_call,
+                patch.object(
+                    chapter_review_module,
+                    "apply_review_fix_with_repair",
+                    side_effect=[
+                        (applied_fix, f"resp_volume_fix_{index}", [f"resp_volume_fix_{index}"])
+                        for index in range(1, 10)
+                    ],
+                ) as fix_call,
+                patch.object(chapter_review_module, "print_request_context_summary"),
+            ):
+                chapter_review_module.run_volume_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                )
+
+            volume_state = rewrite_workflow.get_volume_review_state(manifest, "001")
+            self.assertEqual(rewrite_workflow.MAX_VOLUME_REVIEW_ATTEMPTS, 10)
+            self.assertEqual(rewrite_workflow.MAX_VOLUME_REVIEW_FIX_ATTEMPTS, 9)
+            self.assertEqual(review_call.call_count, 10)
+            self.assertEqual(fix_call.call_count, 9)
+            self.assertEqual(review_call.call_args_list[9].kwargs["previous_response_id"], "resp_volume_fix_9")
+            self.assertEqual(volume_state["status"], "failed")
+            self.assertEqual(volume_state["attempts"], 10)
 
 
 class SupportUpdateScopeTests(unittest.TestCase):

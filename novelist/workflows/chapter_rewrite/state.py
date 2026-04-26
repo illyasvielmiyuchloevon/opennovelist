@@ -275,6 +275,8 @@ def get_volume_review_state(manifest: dict[str, Any], volume_number: str) -> dic
             "chapters_to_revise": [],
             "updated_at": None,
             "blocking_issues": [],
+            "response_ids": [],
+            "last_response_id": None,
         },
     )
 
@@ -306,6 +308,8 @@ def get_five_chapter_review_state(
             "chapters_to_revise": [],
             "updated_at": None,
             "blocking_issues": [],
+            "response_ids": [],
+            "last_response_id": None,
         },
     )
 

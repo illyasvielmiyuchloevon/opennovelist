@@ -295,14 +295,15 @@ def run_adaptation_review_until_passed(
     current_response_id = previous_response_id
     last_review: AdaptationReviewPayload | None = None
 
-    for attempt in range(1, MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS + 2):
+    for attempt in range(1, MAX_ADAPTATION_REVIEW_ATTEMPTS + 1):
         write_stage_status_snapshot(
             manifest,
             volume_material,
             status="adaptation_reviewing",
             note=f"正在进行第 {attempt} 次卷资料审核；审核通过后才会标记本卷完成。",
+            previous_response_id=current_response_id,
         )
-        print_progress(f"卷资料审核第 {attempt}/{MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS + 1} 次调用：审核第 {volume_material['volume_number']} 卷资料。")
+        print_progress(f"卷资料审核第 {attempt}/{MAX_ADAPTATION_REVIEW_ATTEMPTS} 次调用：审核第 {volume_material['volume_number']} 卷资料。")
         review_payload = build_adaptation_review_request(
             manifest=manifest,
             volume_material=volume_material,
@@ -339,8 +340,11 @@ def run_adaptation_review_until_passed(
                 current_response_id,
             )
 
-        if attempt > MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS:
-            error_message = f"卷资料审核原地返修 {MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+        if attempt >= MAX_ADAPTATION_REVIEW_ATTEMPTS:
+            error_message = (
+                f"卷资料审核连续 {MAX_ADAPTATION_REVIEW_ATTEMPTS} 次审核、"
+                f"原地返修 {MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+            )
             write_response_debug_snapshot(
                 manifest,
                 volume_material,

@@ -171,6 +171,28 @@ def apply_document_operation_with_repair(
 
     raise RuntimeError("目标文件编辑修正流程异常结束。")
 
+def load_chapter_stage_manifest_payload(stage_manifest_path: Path) -> dict[str, Any]:
+    text = read_text_if_exists(stage_manifest_path)
+    if not text.strip():
+        return {}
+    try:
+        return extract_json_payload(text)
+    except Exception:
+        return {}
+
+def latest_chapter_stage_response_id(stage_manifest_path: Path) -> str | None:
+    payload = load_chapter_stage_manifest_payload(stage_manifest_path)
+    last_response_id = str(payload.get("last_response_id") or "").strip()
+    if last_response_id:
+        return last_response_id
+    response_ids = payload.get("response_ids")
+    if isinstance(response_ids, list):
+        for response_id in reversed(response_ids):
+            value = str(response_id or "").strip()
+            if value:
+                return value
+    return None
+
 def write_chapter_stage_snapshot(
     stage_manifest_path: Path,
     *,
@@ -182,6 +204,15 @@ def write_chapter_stage_snapshot(
     last_phase: str | None = None,
     response_ids: list[str] | None = None,
 ) -> None:
+    existing_payload = load_chapter_stage_manifest_payload(stage_manifest_path)
+    if response_ids is None and isinstance(existing_payload.get("response_ids"), list):
+        current_response_ids = list(existing_payload["response_ids"])
+    else:
+        current_response_ids = response_ids or []
+    last_response_id = next(
+        (str(response_id or "").strip() for response_id in reversed(current_response_ids) if str(response_id or "").strip()),
+        None,
+    )
     write_markdown_data(
         stage_manifest_path,
         title=f"Chapter Stage Manifest {volume_number}-{chapter_number}",
@@ -193,7 +224,8 @@ def write_chapter_stage_snapshot(
             "note": note,
             "attempt": attempt,
             "last_phase": last_phase,
-            "response_ids": response_ids or [],
+            "response_ids": current_response_ids,
+            "last_response_id": last_response_id,
         },
         summary_lines=[
             f"volume_number: {volume_number}",
@@ -201,6 +233,7 @@ def write_chapter_stage_snapshot(
             f"status: {status}",
             f"attempt: {attempt}",
             f"last_phase: {last_phase or 'none'}",
+            f"last_response_id: {last_response_id or 'none'}",
             f"note: {note}",
         ],
     )
@@ -254,6 +287,8 @@ __all__ = [
     'build_document_operation_repair_payload',
     'write_document_operation_apply_debug_snapshot',
     'apply_document_operation_with_repair',
+    'load_chapter_stage_manifest_payload',
+    'latest_chapter_stage_response_id',
     'write_chapter_stage_snapshot',
     'write_volume_stage_snapshot',
     'doc_label_for_key',

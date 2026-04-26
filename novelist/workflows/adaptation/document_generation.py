@@ -224,6 +224,15 @@ def write_stage_status_snapshot(
     project_root = Path(manifest["project_root"])
     paths = stage_paths(project_root, volume_material["volume_number"])
     loaded_files = build_loaded_file_inventory(volume_material)
+    existing_payload = load_stage_manifest_payload(paths["stage_manifest"])
+    existing_api_calls = existing_payload.get("api_calls") if isinstance(existing_payload, dict) else None
+    existing_generated_keys = existing_payload.get("generated_document_keys") if isinstance(existing_payload, dict) else None
+    api_calls = generated_documents if generated_documents is not None else (existing_api_calls or [])
+    generated_keys = (
+        [item.get("key") for item in generated_documents]
+        if generated_documents is not None
+        else (existing_generated_keys or [item.get("key") for item in api_calls])
+    )
 
     payload = {
         "generated_at": now_iso(),
@@ -237,8 +246,8 @@ def write_stage_status_snapshot(
         "current_batch": current_batch,
         "current_batch_range": current_batch_range,
         "error_message": error_message,
-        "api_calls": generated_documents or [],
-        "generated_document_keys": [item.get("key") for item in generated_documents or []],
+        "api_calls": api_calls,
+        "generated_document_keys": generated_keys,
         "last_response_id": previous_response_id,
         "loaded_files": loaded_files,
     }

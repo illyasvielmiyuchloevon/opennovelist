@@ -143,7 +143,7 @@ def apply_review_fix_with_repair(
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
     )
-    response_ids = [str(operation.response_id or "")]
+    response_ids = [str(operation.response_id)] if operation.response_id else []
     applied, current_response_id, repair_response_ids = apply_document_operation_with_repair(
         client=client,
         model=model,
@@ -192,10 +192,12 @@ def run_five_chapter_review(
         source_bundle=source_bundle,
         rewritten_chapters=rewritten_chapters,
     )
-    previous_response_id: str | None = None
-    response_ids: list[str] = []
+    review_state = get_five_chapter_review_state(rewrite_manifest, volume_number, batch_id, chapter_numbers)
+    previous_response_id = str(review_state.get("last_response_id") or "").strip() or None
+    stored_response_ids = review_state.get("response_ids")
+    response_ids = [str(item) for item in stored_response_ids if str(item or "").strip()] if isinstance(stored_response_ids, list) else []
 
-    for attempt in range(1, MAX_REVIEW_FIX_ATTEMPTS + 2):
+    for attempt in range(1, MAX_GROUP_REVIEW_ATTEMPTS + 1):
         rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
         update_five_chapter_review_state(
             rewrite_manifest,
@@ -206,6 +208,8 @@ def run_five_chapter_review(
             attempts=attempt,
             chapters_to_revise=[],
             blocking_issues=[],
+            response_ids=response_ids,
+            last_response_id=previous_response_id,
         )
         catalog = read_doc_catalog(project_root, volume_number, chapter_numbers[0])
         payload, included_docs, omitted_docs = build_five_chapter_review_payload(
@@ -216,7 +220,8 @@ def run_five_chapter_review(
             rewritten_chapters=rewritten_chapters,
         )
         print_progress(
-            f"{FIVE_CHAPTER_REVIEW_NAME} 调用：审核第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。"
+            f"{FIVE_CHAPTER_REVIEW_NAME} 第 {attempt}/{MAX_GROUP_REVIEW_ATTEMPTS} 次调用："
+            f"审核第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。"
         )
         print_request_context_summary(
             request_label=f"{FIVE_CHAPTER_REVIEW_NAME}（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
@@ -256,7 +261,8 @@ def run_five_chapter_review(
                 prompt_cache_key=prompt_cache_key,
             )
             previous_response_id = response_id
-            response_ids.append(str(response_id or ""))
+            if response_id:
+                response_ids.append(str(response_id))
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):
                 write_response_debug_snapshot(
@@ -272,6 +278,8 @@ def run_five_chapter_review(
                 chapter_numbers,
                 status="failed",
                 attempts=attempt,
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             raise
         group_review_changed = write_artifact(review_path, review.review_md)
@@ -291,6 +299,8 @@ def run_five_chapter_review(
                 attempts=attempt,
                 chapters_to_revise=[],
                 blocking_issues=[],
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             print_progress(
                 f"{FIVE_CHAPTER_REVIEW_NAME} 已通过：第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。"
@@ -298,7 +308,7 @@ def run_five_chapter_review(
             return True
 
         chapters_to_revise = [item.zfill(4) for item in review.chapters_to_revise if item]
-        if attempt > MAX_REVIEW_FIX_ATTEMPTS:
+        if attempt >= MAX_GROUP_REVIEW_ATTEMPTS:
             update_five_chapter_review_state(
                 rewrite_manifest,
                 volume_number,
@@ -308,10 +318,13 @@ def run_five_chapter_review(
                 attempts=attempt,
                 chapters_to_revise=chapters_to_revise,
                 blocking_issues=review.blocking_issues,
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             fail(
                 f"第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} "
-                f"{FIVE_CHAPTER_REVIEW_NAME}原地返修 {MAX_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+                f"{FIVE_CHAPTER_REVIEW_NAME}连续 {MAX_GROUP_REVIEW_ATTEMPTS} 次审核、"
+                f"原地返修 {MAX_GROUP_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
             )
 
         update_five_chapter_review_state(
@@ -323,6 +336,8 @@ def run_five_chapter_review(
             attempts=attempt,
             chapters_to_revise=chapters_to_revise,
             blocking_issues=review.blocking_issues,
+            response_ids=response_ids,
+            last_response_id=previous_response_id,
         )
         print_progress(
             f"{FIVE_CHAPTER_REVIEW_NAME} 未通过，将在当前审核阶段直接修复。"
@@ -362,9 +377,23 @@ def run_five_chapter_review(
                 attempts=attempt,
                 chapters_to_revise=chapters_to_revise,
                 blocking_issues=review.blocking_issues,
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             raise
-        response_ids.extend(fix_response_ids)
+        response_ids.extend(str(item) for item in fix_response_ids if item)
+        update_five_chapter_review_state(
+            rewrite_manifest,
+            volume_number,
+            batch_id,
+            chapter_numbers,
+            status="in_review_fix",
+            attempts=attempt,
+            chapters_to_revise=chapters_to_revise,
+            blocking_issues=review.blocking_issues,
+            response_ids=response_ids,
+            last_response_id=previous_response_id,
+        )
         print_call_artifact_report(
             f"{FIVE_CHAPTER_REVIEW_NAME}原地返修调用",
             [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
@@ -426,9 +455,12 @@ def run_volume_review(
         volume_material=volume_material,
         rewritten_chapters=rewritten_chapters,
     )
-    previous_response_id: str | None = None
+    review_state = get_volume_review_state(rewrite_manifest, volume_material["volume_number"])
+    previous_response_id = str(review_state.get("last_response_id") or "").strip() or None
+    stored_response_ids = review_state.get("response_ids")
+    response_ids = [str(item) for item in stored_response_ids if str(item or "").strip()] if isinstance(stored_response_ids, list) else []
 
-    for attempt in range(1, MAX_REVIEW_FIX_ATTEMPTS + 2):
+    for attempt in range(1, MAX_VOLUME_REVIEW_ATTEMPTS + 1):
         update_volume_review_state(
             rewrite_manifest,
             volume_material["volume_number"],
@@ -436,6 +468,8 @@ def run_volume_review(
             attempts=attempt,
             chapters_to_revise=[],
             blocking_issues=[],
+            response_ids=response_ids,
+            last_response_id=previous_response_id,
         )
         write_volume_stage_snapshot(
             paths["volume_stage_manifest"],
@@ -458,7 +492,10 @@ def run_volume_review(
                 catalog=catalog,
                 rewritten_chapters=rewritten_chapters,
             )
-            print_progress(f"卷级审核调用：审核第 {volume_material['volume_number']} 卷。")
+            print_progress(
+                f"卷级审核第 {attempt}/{MAX_VOLUME_REVIEW_ATTEMPTS} 次调用："
+                f"审核第 {volume_material['volume_number']} 卷。"
+            )
             print_request_context_summary(
                 request_label="卷级审核",
                 volume_number=volume_material["volume_number"],
@@ -489,6 +526,8 @@ def run_volume_review(
                 prompt_cache_key=prompt_cache_key,
             )
             previous_response_id = response_id
+            if response_id:
+                response_ids.append(str(response_id))
             volume_review_changed = write_artifact(paths["volume_review"], volume_review.review_md)
             print_call_artifact_report(
                 "卷级审核调用",
@@ -517,12 +556,14 @@ def run_volume_review(
                     attempts=attempt,
                     chapters_to_revise=[],
                     blocking_issues=[],
+                    response_ids=response_ids,
+                    last_response_id=previous_response_id,
                 )
                 print_progress(f"第 {volume_material['volume_number']} 卷已通过卷级审核。")
                 return True
 
             chapters_to_revise = [item.zfill(4) for item in volume_review.chapters_to_revise if item]
-            if attempt > MAX_REVIEW_FIX_ATTEMPTS:
+            if attempt >= MAX_VOLUME_REVIEW_ATTEMPTS:
                 update_volume_review_state(
                     rewrite_manifest,
                     volume_material["volume_number"],
@@ -530,10 +571,13 @@ def run_volume_review(
                     attempts=attempt,
                     chapters_to_revise=chapters_to_revise,
                     blocking_issues=volume_review.blocking_issues,
+                    response_ids=response_ids,
+                    last_response_id=previous_response_id,
                 )
                 fail(
-                    f"第 {volume_material['volume_number']} 卷卷级审核原地返修 "
-                    f"{MAX_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+                    f"第 {volume_material['volume_number']} 卷卷级审核连续 "
+                    f"{MAX_VOLUME_REVIEW_ATTEMPTS} 次审核、原地返修 "
+                    f"{MAX_VOLUME_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
                 )
 
             update_volume_review_state(
@@ -543,12 +587,14 @@ def run_volume_review(
                 attempts=attempt,
                 chapters_to_revise=chapters_to_revise,
                 blocking_issues=volume_review.blocking_issues,
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             print_progress(
                 f"第 {volume_material['volume_number']} 卷卷级审核未通过，将在审核阶段直接修复。"
                 f" 目标章节：{'、'.join(chapters_to_revise) or '未明确'}。"
             )
-            applied_fix, previous_response_id, _ = apply_review_fix_with_repair(
+            applied_fix, previous_response_id, fix_response_ids = apply_review_fix_with_repair(
                 client=client,
                 model=model,
                 review_kind="volume",
@@ -563,6 +609,17 @@ def run_volume_review(
                 previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
                 debug_path=paths["volume_response_debug"],
+            )
+            response_ids.extend(str(item) for item in fix_response_ids if item)
+            update_volume_review_state(
+                rewrite_manifest,
+                volume_material["volume_number"],
+                status="in_review_fix",
+                attempts=attempt,
+                chapters_to_revise=chapters_to_revise,
+                blocking_issues=volume_review.blocking_issues,
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             print_call_artifact_report(
                 "卷级审核原地返修调用",
@@ -582,6 +639,8 @@ def run_volume_review(
                 volume_material["volume_number"],
                 status="failed",
                 attempts=attempt,
+                response_ids=response_ids,
+                last_response_id=previous_response_id,
             )
             write_volume_stage_snapshot(
                 paths["volume_stage_manifest"],

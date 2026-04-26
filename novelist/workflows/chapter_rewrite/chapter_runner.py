@@ -29,12 +29,18 @@ def run_chapter_workflow(
             volume_material["volume_number"],
             chapter_number,
         )
+        full_plan = full_chapter_workflow_plan()
         if not phase_plan:
-            phase_plan = full_chapter_workflow_plan()
+            phase_plan = full_plan
         total_steps = len(phase_plan)
         step_map = {phase: index + 1 for index, phase in enumerate(phase_plan)}
-        response_ids: list[str] = []
-        previous_response_id: str | None = None
+        stage_payload = load_chapter_stage_manifest_payload(paths["chapter_stage_manifest"])
+        if phase_plan != full_plan and isinstance(stage_payload.get("response_ids"), list):
+            response_ids = [str(response_id) for response_id in stage_payload["response_ids"] if str(response_id or "").strip()]
+            previous_response_id = latest_chapter_stage_response_id(paths["chapter_stage_manifest"])
+        else:
+            response_ids = []
+            previous_response_id = None
         stage_shared_prompt = build_chapter_shared_prompt(
             manifest=rewrite_manifest,
             volume_material=volume_material,
@@ -333,7 +339,7 @@ def run_chapter_workflow(
                     )
 
             if PHASE3_REVIEW in phase_plan:
-                for review_cycle in range(1, MAX_REVIEW_FIX_ATTEMPTS + 2):
+                for review_cycle in range(1, MAX_CHAPTER_REVIEW_ATTEMPTS + 1):
                     current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
                     if not current_chapter_text:
                         fail(f"第 {chapter_number} 章缺少正文，无法执行章级审核。")
@@ -350,7 +356,8 @@ def run_chapter_workflow(
                     review_label = "第三阶段：章级审核" if review_cycle == 1 else "第三阶段：章级复审"
                     print_progress(
                         f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用："
-                        f"{'审核' if review_cycle == 1 else '复审'}第 {chapter_number} 章全部产物。"
+                        f"{'审核' if review_cycle == 1 else '复审'}第 {chapter_number} 章全部产物"
+                        f"（章审第 {review_cycle}/{MAX_CHAPTER_REVIEW_ATTEMPTS} 次）。"
                     )
                     print_request_context_summary(
                         request_label=review_label,
@@ -419,7 +426,7 @@ def run_chapter_workflow(
                         print_progress(f"第 {chapter_number} 章已通过章级审核。")
                         return
 
-                    if review_cycle > MAX_REVIEW_FIX_ATTEMPTS:
+                    if review_cycle >= MAX_CHAPTER_REVIEW_ATTEMPTS:
                         update_chapter_state(
                             rewrite_manifest,
                             volume_material["volume_number"],
@@ -437,12 +444,15 @@ def run_chapter_workflow(
                             volume_number=volume_material["volume_number"],
                             chapter_number=chapter_number,
                             status="failed",
-                            note="章级审核原地返修次数耗尽，仍未通过。",
+                            note="章级审核调用次数耗尽，仍未通过。",
                             attempt=attempt,
                             last_phase=PHASE3_REVIEW,
                             response_ids=response_ids,
                         )
-                        fail(f"第 {chapter_number} 章章级审核原地返修 {MAX_REVIEW_FIX_ATTEMPTS} 次后仍未通过。")
+                        fail(
+                            f"第 {chapter_number} 章章级审核连续 {MAX_CHAPTER_REVIEW_ATTEMPTS} 次审核、"
+                            f"原地返修 {MAX_CHAPTER_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+                        )
 
                     update_chapter_state(
                         rewrite_manifest,
