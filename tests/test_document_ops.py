@@ -95,15 +95,15 @@ class FilesPatchTests(unittest.TestCase):
     def test_migrate_renamed_files_warns_when_new_and_old_differ(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            old_file = root / "08_global_plot_progress.md"
-            new_file = root / "05_storyline_blueprint.md"
-            old_file.write_text("# 全书故事线蓝图\n\n- 旧内容。\n", encoding="utf-8")
-            new_file.write_text("# 全书故事线蓝图\n\n- 新内容。\n", encoding="utf-8")
+            old_file = root / "08_world_state.md"
+            new_file = root / "07_world_state.md"
+            old_file.write_text("# 世界状态\n\n- 旧内容。\n", encoding="utf-8")
+            new_file.write_text("# 世界状态\n\n- 新内容。\n", encoding="utf-8")
 
             warnings = migrate_renamed_files(
                 root,
                 {
-                    "08_global_plot_progress.md": "05_storyline_blueprint.md",
+                    "08_world_state.md": "07_world_state.md",
                 },
             )
 
@@ -330,10 +330,10 @@ class DocumentOperationTests(unittest.TestCase):
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            storyline_blueprint = root / "05_storyline_blueprint.md"
-            world_state = root / "08_world_state.md"
-            storyline_blueprint.write_text(
-                "# 全书故事线蓝图\n\n## 故事线：主线\n- 主角刚刚进入宗门外门。\n",
+            book_outline = root / "03_book_outline.md"
+            world_state = root / "07_world_state.md"
+            book_outline.write_text(
+                "# 全书大纲\n\n## 第一卷\n- 主角刚刚进入宗门外门。\n",
                 encoding="utf-8",
             )
             world_state.write_text(
@@ -352,7 +352,7 @@ class DocumentOperationTests(unittest.TestCase):
                 patch_payload=document_ops.DocumentPatchPayload(
                     files=[
                         document_ops.DocumentPatchFile(
-                            file_key="storyline_blueprint",
+                            file_key="book_outline",
                             edits=[
                                 document_ops.DocumentPatchEdit(
                                     action="replace",
@@ -383,15 +383,15 @@ class DocumentOperationTests(unittest.TestCase):
             applied = document_ops.apply_document_operation(
                 operation,
                 allowed_files={
-                    "storyline_blueprint": storyline_blueprint,
+                    "book_outline": book_outline,
                     "world_state": world_state,
                 },
             )
 
             self.assertEqual(applied.mode, "patch")
-            self.assertCountEqual(applied.emitted_keys, ["storyline_blueprint", "world_state"])
-            self.assertCountEqual(applied.changed_keys, ["storyline_blueprint", "world_state"])
-            self.assertIn("异常玉符线索", read_text_if_exists(storyline_blueprint))
+            self.assertCountEqual(applied.emitted_keys, ["book_outline", "world_state"])
+            self.assertCountEqual(applied.changed_keys, ["book_outline", "world_state"])
+            self.assertIn("异常玉符线索", read_text_if_exists(book_outline))
             self.assertIn("试炼结束后开始戒严", read_text_if_exists(world_state))
             self.assertIn("## 事件状态", read_text_if_exists(world_state))
 

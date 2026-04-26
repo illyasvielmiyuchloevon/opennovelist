@@ -403,7 +403,6 @@ def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
         "book_outline": global_dir / GLOBAL_FILE_NAMES["book_outline"],
         "world_design": global_dir / GLOBAL_FILE_NAMES["world_design"],
         "style_guide": global_dir / GLOBAL_FILE_NAMES["style_guide"],
-        "storyline_blueprint": global_dir / GLOBAL_FILE_NAMES["storyline_blueprint"],
         "foreshadowing": global_dir / GLOBAL_FILE_NAMES["foreshadowing"],
         "world_model": global_dir / GLOBAL_FILE_NAMES["world_model"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
@@ -492,7 +491,7 @@ def write_stage_outputs(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
+            for key in ("book_outline", "style_guide", "world_model", "foreshadowing")
             if paths[key].exists()
         },
         "volume_files": {
@@ -558,7 +557,7 @@ def mark_volume_processed_after_review(
         "generated_document_keys": [item.get("key") for item in generated_documents],
         "global_files": {
             key: str(paths[key])
-            for key in ("book_outline", "style_guide", "world_model", "storyline_blueprint", "foreshadowing")
+            for key in ("book_outline", "style_guide", "world_model", "foreshadowing")
             if paths[key].exists()
         },
         "volume_files": {
