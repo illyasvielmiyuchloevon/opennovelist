@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
 from novelist.workflows.chapter_rewrite import chapter_runner as chapter_runner_module
+from novelist.workflows.chapter_rewrite import responses as chapter_responses_module
 from novelist.workflows.chapter_rewrite import review as chapter_review_module
 
 
@@ -73,6 +74,44 @@ def _applied_fix(file_key: str, path: Path) -> rewrite_workflow.document_ops.App
                 edit_count=1,
             )
         ],
+    )
+
+def _multi_tool_from_operation(
+    operation: rewrite_workflow.document_ops.DocumentOperationCallResult,
+) -> rewrite_workflow.llm_runtime.MultiFunctionToolResult:
+    if operation.mode == "write":
+        tool_name = rewrite_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME
+        parsed = operation.write_payload or rewrite_workflow.document_ops.DocumentWritePayload()
+    elif operation.mode == "edit":
+        tool_name = rewrite_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME
+        parsed = operation.edit_payload or rewrite_workflow.document_ops.DocumentEditPayload()
+    else:
+        tool_name = rewrite_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME
+        parsed = operation.patch_payload or rewrite_workflow.document_ops.DocumentPatchPayload()
+    return rewrite_workflow.llm_runtime.MultiFunctionToolResult(
+        tool_name=tool_name,
+        parsed=parsed,
+        response_id=operation.response_id,
+        status=operation.status,
+        output_types=operation.output_types,
+        preview=operation.preview,
+        raw_body_text=operation.raw_body_text,
+        raw_json=operation.raw_json,
+    )
+
+def _workflow_multi_tool_result(
+    payload: rewrite_workflow.WorkflowSubmissionPayload,
+    response_id: str = "resp_workflow",
+) -> rewrite_workflow.llm_runtime.MultiFunctionToolResult:
+    return rewrite_workflow.llm_runtime.MultiFunctionToolResult(
+        tool_name=rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
+        parsed=payload,
+        response_id=response_id,
+        status="completed",
+        output_types=["function_call"],
+        preview="workflow",
+        raw_body_text="",
+        raw_json={},
     )
 
 
@@ -244,6 +283,77 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertEqual(payload["current_generated_chapter"]["content"], "这是现有章节正文。")
 
 
+class ChapterStageToolContractTests(unittest.TestCase):
+    def test_workflow_submission_uses_unified_chapter_stage_tools(self) -> None:
+        result = _workflow_multi_tool_result(
+            rewrite_workflow.WorkflowSubmissionPayload(content_md="# 章纲\n"),
+            response_id="resp_outline",
+        )
+
+        with patch.object(chapter_responses_module.llm_runtime, "call_function_tools", return_value=result) as call_tools:
+            payload, response_id, _ = chapter_responses_module.call_workflow_submission_response(
+                Mock(),
+                model="test-model",
+                instructions="instructions",
+                user_input="input",
+                previous_response_id="resp_prev",
+                prompt_cache_key="cache-key",
+            )
+
+        self.assertEqual(payload.content_md, "# 章纲\n")
+        self.assertEqual(response_id, "resp_outline")
+        self.assertEqual(
+            [spec.name for spec in call_tools.call_args.kwargs["tool_specs"]],
+            [spec.name for spec in rewrite_workflow.chapter_rewrite_stage_tool_specs()],
+        )
+        self.assertEqual(
+            call_tools.call_args.kwargs["tool_choice"],
+            {"type": "function", "name": rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME},
+        )
+
+    def test_document_operation_stage_uses_same_unified_tools(self) -> None:
+        operation = rewrite_workflow.document_ops.DocumentOperationCallResult(
+            mode="edit",
+            response_id="resp_edit",
+            status="completed",
+            output_types=["function_call"],
+            preview="edit",
+            raw_body_text="",
+            raw_json={},
+            edit_payload=rewrite_workflow.document_ops.DocumentEditPayload(
+                files=[
+                    rewrite_workflow.document_ops.DocumentEditFile(
+                        file_key="rewritten_chapter",
+                        edits=[
+                            rewrite_workflow.document_ops.DocumentEditEdit(
+                                old_text="旧正文",
+                                new_text="新正文",
+                            )
+                        ],
+                    )
+                ]
+            ),
+        )
+
+        with patch.object(chapter_responses_module.llm_runtime, "call_function_tools", return_value=_multi_tool_from_operation(operation)) as call_tools:
+            result, response_id, _ = chapter_responses_module.call_chapter_text_revision_response(
+                Mock(),
+                model="test-model",
+                instructions="instructions",
+                user_input="input",
+                previous_response_id="resp_prev",
+                prompt_cache_key="cache-key",
+            )
+
+        self.assertEqual(result.mode, "edit")
+        self.assertEqual(response_id, "resp_edit")
+        self.assertEqual(
+            [spec.name for spec in call_tools.call_args.kwargs["tool_specs"]],
+            [spec.name for spec in rewrite_workflow.chapter_rewrite_stage_tool_specs()],
+        )
+        self.assertEqual(call_tools.call_args.kwargs["tool_choice"], "auto")
+
+
 class RevisionPlanTests(unittest.TestCase):
     def test_build_chapter_revision_plan_for_text_only(self) -> None:
         plan = rewrite_workflow.build_chapter_revision_plan(rewrite_targets=["chapter_text"])
@@ -320,9 +430,9 @@ class DocumentOperationRepairTests(unittest.TestCase):
             )
 
             with patch.object(
-                rewrite_workflow.document_ops,
-                "call_document_operation_tools",
-                return_value=repaired_operation,
+                rewrite_workflow.llm_runtime,
+                "call_function_tools",
+                return_value=_multi_tool_from_operation(repaired_operation),
             ) as call_tools:
                 applied, response_id, repair_response_ids = rewrite_workflow.apply_document_operation_with_repair(
                     client=Mock(),
@@ -348,6 +458,10 @@ class DocumentOperationRepairTests(unittest.TestCase):
             self.assertIn("第二段被模型改写后的文字。", repair_input)
             self.assertIn("第二段原文。", repair_input)
             self.assertIn("逐字复制", repair_input)
+            self.assertEqual(
+                [spec.name for spec in call_tools.call_args.kwargs["tool_specs"]],
+                [spec.name for spec in rewrite_workflow.chapter_rewrite_stage_tool_specs()],
+            )
 
 
 class ReviewFixLoopTests(unittest.TestCase):
@@ -365,7 +479,7 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             with (
                 self.assertRaises(rewrite_workflow.llm_runtime.ModelOutputError),
-                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools") as call_tools,
+                patch.object(rewrite_workflow.llm_runtime, "call_function_tools") as call_tools,
             ):
                 rewrite_workflow.apply_review_fix_with_repair(
                     client=Mock(),
@@ -439,7 +553,11 @@ class ReviewFixLoopTests(unittest.TestCase):
                         (passed_review, "resp_review_2", Mock(response_id="resp_review_2")),
                     ],
                 ) as review_call,
-                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation),
+                patch.object(
+                    rewrite_workflow.llm_runtime,
+                    "call_function_tools",
+                    return_value=_multi_tool_from_operation(fix_operation),
+                ) as fix_call,
                 patch.object(rewrite_workflow, "call_chapter_text_revision_response", side_effect=AssertionError("should not restart text phase")),
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
@@ -453,6 +571,7 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             state = rewrite_workflow.get_chapter_state(manifest, "001", "0001")
             self.assertEqual(review_call.call_count, 2)
+            fix_call.assert_called_once()
             self.assertEqual(state["status"], "passed")
             self.assertEqual(state["pending_phases"], [])
             self.assertIn("修复后的正文", paths["rewritten_chapter"].read_text(encoding="utf-8"))
@@ -616,7 +735,11 @@ class ReviewFixLoopTests(unittest.TestCase):
                         (passed_review, "resp_group_review_2", Mock(response_id="resp_group_review_2")),
                     ],
                 ) as review_call,
-                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation) as fix_call,
+                patch.object(
+                    rewrite_workflow.llm_runtime,
+                    "call_function_tools",
+                    return_value=_multi_tool_from_operation(fix_operation),
+                ) as fix_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
                 passed = rewrite_workflow.run_five_chapter_review(
@@ -817,7 +940,11 @@ class ReviewFixLoopTests(unittest.TestCase):
                         (passed_review, "resp_volume_review_2", Mock(response_id="resp_volume_review_2")),
                     ],
                 ) as review_call,
-                patch.object(rewrite_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation) as fix_call,
+                patch.object(
+                    rewrite_workflow.llm_runtime,
+                    "call_function_tools",
+                    return_value=_multi_tool_from_operation(fix_operation),
+                ) as fix_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
                 passed = rewrite_workflow.run_volume_review(

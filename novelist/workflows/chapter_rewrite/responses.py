@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .models import (
+    WorkflowSubmissionPayload,
+    chapter_rewrite_stage_tool_specs,
+    document_operation_result_from_stage_tool_result,
+    workflow_submission_result_from_stage_tool_result,
+)
 
 
 def call_workflow_submission_response(
@@ -16,18 +22,18 @@ def call_workflow_submission_response(
     str | None,
     llm_runtime.FunctionToolResult[WorkflowSubmissionPayload],
 ]:
-    result = llm_runtime.call_function_tool(
+    result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=instructions,
         user_input=user_input,
-        tool_model=WorkflowSubmissionPayload,
-        tool_name=WORKFLOW_SUBMISSION_TOOL_NAME,
-        tool_description=WORKFLOW_SUBMISSION_TOOL_DESCRIPTION,
+        tool_specs=chapter_rewrite_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
+        tool_choice={"type": "function", "name": WORKFLOW_SUBMISSION_TOOL_NAME},
     )
-    return result.parsed, result.response_id, result
+    workflow_result = workflow_submission_result_from_stage_tool_result(result)
+    return workflow_result.parsed, workflow_result.response_id, workflow_result
 
 def call_markdown_tool_response(
     client: OpenAI,
@@ -86,15 +92,18 @@ def call_support_updates_response(
     str | None,
     document_ops.DocumentOperationCallResult,
 ]:
-    result = document_ops.call_document_operation_tools(
+    result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=instructions,
         user_input=user_input,
+        tool_specs=chapter_rewrite_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
+        tool_choice="auto",
     )
-    return result, result.response_id, result
+    operation = document_operation_result_from_stage_tool_result(result)
+    return operation, operation.response_id, operation
 
 def call_chapter_text_revision_response(
     client: OpenAI,
@@ -109,15 +118,18 @@ def call_chapter_text_revision_response(
     str | None,
     document_ops.DocumentOperationCallResult,
 ]:
-    result = document_ops.call_document_operation_tools(
+    result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=instructions,
         user_input=user_input,
+        tool_specs=chapter_rewrite_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
+        tool_choice="auto",
     )
-    return result, result.response_id, result
+    operation = document_operation_result_from_stage_tool_result(result)
+    return operation, operation.response_id, operation
 
 def call_chapter_review_response(
     client: OpenAI,

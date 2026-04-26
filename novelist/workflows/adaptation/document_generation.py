@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .models import adaptation_stage_tool_specs
 
 
 def call_document_operation_response(
@@ -12,17 +13,64 @@ def call_document_operation_response(
     prompt_cache_key: str | None = None,
     retries: int = DEFAULT_API_RETRIES,
 ) -> tuple[document_ops.DocumentOperationCallResult, str | None]:
-    result = document_ops.call_document_operation_tools(
+    result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=instructions,
         user_input=user_input,
+        tool_specs=adaptation_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
         retries=retries,
         retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+        tool_choice="auto",
     )
-    return result, result.response_id
+    operation = document_operation_result_from_stage_tool_result(result)
+    return operation, operation.response_id
+
+def document_operation_result_from_stage_tool_result(
+    result: llm_runtime.MultiFunctionToolResult,
+) -> document_ops.DocumentOperationCallResult:
+    if result.tool_name == document_ops.DOCUMENT_WRITE_TOOL_NAME:
+        return document_ops.DocumentOperationCallResult(
+            mode="write",
+            response_id=result.response_id,
+            status=result.status,
+            output_types=result.output_types,
+            preview=result.preview,
+            raw_body_text=result.raw_body_text,
+            raw_json=result.raw_json,
+            write_payload=document_ops.DocumentWritePayload.model_validate(result.parsed),
+        )
+    if result.tool_name == document_ops.DOCUMENT_EDIT_TOOL_NAME:
+        return document_ops.DocumentOperationCallResult(
+            mode="edit",
+            response_id=result.response_id,
+            status=result.status,
+            output_types=result.output_types,
+            preview=result.preview,
+            raw_body_text=result.raw_body_text,
+            raw_json=result.raw_json,
+            edit_payload=document_ops.DocumentEditPayload.model_validate(result.parsed),
+        )
+    if result.tool_name == document_ops.DOCUMENT_PATCH_TOOL_NAME:
+        return document_ops.DocumentOperationCallResult(
+            mode="patch",
+            response_id=result.response_id,
+            status=result.status,
+            output_types=result.output_types,
+            preview=result.preview,
+            raw_body_text=result.raw_body_text,
+            raw_json=result.raw_json,
+            patch_payload=document_ops.DocumentPatchPayload.model_validate(result.parsed),
+        )
+    if result.tool_name == ADAPTATION_REVIEW_TOOL_NAME:
+        raise llm_runtime.ModelOutputError(
+            "当前资料生成/修复步骤必须调用文档 write/edit/patch 工具，不能调用 submit_adaptation_review。",
+            preview=result.preview,
+            raw_body_text=result.raw_body_text,
+        )
+    raise llm_runtime.ModelOutputError(f"模型调用了未支持的资料阶段工具：{result.tool_name}")
 
 def load_stage_manifest_payload(stage_manifest_path: Path) -> dict[str, Any]:
     if not stage_manifest_path.exists():
@@ -414,16 +462,19 @@ def apply_document_operation_with_repair(
                 failed_operation=current_operation,
                 allowed_files=allowed_files,
             )
-            current_operation = document_ops.call_document_operation_tools(
+            repair_result = llm_runtime.call_function_tools(
                 client,
                 model=model,
                 instructions=instructions,
                 user_input=shared_prompt + json.dumps(repair_payload, ensure_ascii=False, indent=2),
+                tool_specs=adaptation_stage_tool_specs(),
                 previous_response_id=current_response_id,
                 prompt_cache_key=prompt_cache_key,
                 retries=DEFAULT_API_RETRIES,
                 retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+                tool_choice="auto",
             )
+            current_operation = document_operation_result_from_stage_tool_result(repair_result)
             current_response_id = current_operation.response_id
             repair_response_ids.append(str(current_operation.response_id or ""))
 
@@ -431,6 +482,7 @@ def apply_document_operation_with_repair(
 
 __all__ = [
     'call_document_operation_response',
+    'document_operation_result_from_stage_tool_result',
     'load_stage_manifest_payload',
     'completed_document_keys_from_stage_payload',
     'previous_processed_volume_number',

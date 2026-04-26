@@ -12,7 +12,11 @@ def chapter_shared_prefix_summary_lines(
     chapter = get_chapter_material(volume_material, chapter_number)
     return [
         "共享前缀构造：COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + build_chapter_shared_prompt()。",
-        f"固定函数工具：{WORKFLOW_SUBMISSION_TOOL_NAME}（统一 workflow schema）。",
+        (
+            "固定函数工具："
+            f"{document_ops.DOCUMENT_WRITE_TOOL_NAME} / {document_ops.DOCUMENT_EDIT_TOOL_NAME} / "
+            f"{document_ops.DOCUMENT_PATCH_TOOL_NAME} / {WORKFLOW_SUBMISSION_TOOL_NAME}。"
+        ),
         (
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前章：{chapter_number}。"
@@ -31,7 +35,11 @@ def group_review_shared_prefix_summary_lines(
 ) -> list[str]:
     return [
         "共享前缀构造：COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS + build_five_chapter_review_shared_prompt()。",
-        f"固定函数工具：{WORKFLOW_SUBMISSION_TOOL_NAME}（统一 workflow schema）。",
+        (
+            "固定函数工具："
+            f"{document_ops.DOCUMENT_WRITE_TOOL_NAME} / {document_ops.DOCUMENT_EDIT_TOOL_NAME} / "
+            f"{document_ops.DOCUMENT_PATCH_TOOL_NAME} / {WORKFLOW_SUBMISSION_TOOL_NAME}。"
+        ),
         (
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前组："
@@ -50,7 +58,11 @@ def volume_review_shared_prefix_summary_lines(
     total_chars = sum(len(data.get("text", "")) for data in rewritten_chapters.values())
     return [
         "共享前缀构造：COMMON_VOLUME_REVIEW_INSTRUCTIONS + build_volume_review_shared_prompt()。",
-        f"固定函数工具：{WORKFLOW_SUBMISSION_TOOL_NAME}（统一 workflow schema）。",
+        (
+            "固定函数工具："
+            f"{document_ops.DOCUMENT_WRITE_TOOL_NAME} / {document_ops.DOCUMENT_EDIT_TOOL_NAME} / "
+            f"{document_ops.DOCUMENT_PATCH_TOOL_NAME} / {WORKFLOW_SUBMISSION_TOOL_NAME}。"
+        ),
         (
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']}。"

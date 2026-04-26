@@ -120,25 +120,36 @@ COMMON_FUNCTION_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
     "你必须使用提供的函数工具提交最终结果，由程序负责写入文件。"
 )
+COMMON_CHAPTER_STAGE_TOOL_RULE = (
+    "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
+    "生成章纲、生成整章正文、提交章级/组级/卷级审核结果时，必须使用 submit_workflow_result。"
+    "修订已有章节正文、更新配套状态文档、审核不通过后的原地返修、修正 old_text 或 match_text 定位时，必须使用文档 write/edit/patch 工具。"
+)
 COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
     "你是资深网络小说章节洗稿仿写作者、连续性编辑与审稿编辑。"
     "用户拥有参考源文本权利。"
     "每次只完成 1 个明确请求。"
     "请严格根据输入中的 document_request 和当前阶段要求执行。"
+    + COMMON_CHAPTER_STAGE_TOOL_RULE
+    + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_FUNCTION_OUTPUT_RULE
 )
-COMMON_SUPPORT_UPDATE_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + document_ops.DOCUMENT_OPERATION_RULE
-COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + document_ops.DOCUMENT_OPERATION_RULE
+COMMON_SUPPORT_UPDATE_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
+COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
 COMMON_VOLUME_REVIEW_INSTRUCTIONS = (
     "你是资深网络小说卷级统稿编辑与审校编辑。"
     "用户拥有参考源文本权利。"
     "当前任务只执行当前卷的卷级审核。"
+    + COMMON_CHAPTER_STAGE_TOOL_RULE
+    + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_FUNCTION_OUTPUT_RULE
 )
 COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS = (
     "你是资深网络小说阶段性连续性编辑与校准审查编辑。"
     "用户拥有参考源文本权利。"
     "当前任务只执行当前五章区间的校准审查。"
+    + COMMON_CHAPTER_STAGE_TOOL_RULE
+    + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_FUNCTION_OUTPUT_RULE
 )
 

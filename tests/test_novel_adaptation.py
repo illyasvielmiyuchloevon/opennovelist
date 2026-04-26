@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from novelist.workflows import novel_adaptation as adaptation_workflow
+from novelist.workflows.adaptation import document_generation as adaptation_document_generation_module
 from novelist.workflows.adaptation import review as adaptation_review_module
+
+ORIGINAL_ADAPTATION_CALL_DOCUMENT_OPERATION_RESPONSE = adaptation_document_generation_module.call_document_operation_response
+ORIGINAL_ADAPTATION_APPLY_DOCUMENT_OPERATION_WITH_REPAIR = adaptation_document_generation_module.apply_document_operation_with_repair
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -87,6 +91,98 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
         self.assertIn("转换成新书自己的命名、设定与表达", instructions)
         self.assertIn("按真实需要编写", instructions)
         self.assertIn("不要为了显得完整、填满结构或覆盖全部素材而硬塞内容", instructions)
+
+    def test_adaptation_review_instructions_extend_document_stage_prefix(self) -> None:
+        document_instructions = adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS
+        review_instructions = adaptation_workflow.COMMON_ADAPTATION_REVIEW_INSTRUCTIONS
+
+        self.assertTrue(review_instructions.startswith(document_instructions))
+        self.assertNotIn(adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME, document_instructions)
+        self.assertIn(adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME, review_instructions)
+        self.assertIn("工具列表末尾", review_instructions)
+
+    def test_adaptation_review_appends_review_tool_after_document_tools(self) -> None:
+        result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
+            tool_name=adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+            parsed=adaptation_workflow.AdaptationReviewPayload(passed=True, review_md="通过。"),
+            response_id="resp_review",
+            status="completed",
+            output_types=["function_call"],
+            preview="review",
+            raw_body_text="",
+            raw_json={},
+        )
+
+        with patch.object(adaptation_review_module.llm_runtime, "call_function_tools", return_value=result) as call_tools:
+            review, response_id, _ = adaptation_review_module.call_adaptation_review_response(
+                client=Mock(),
+                model="test-model",
+                instructions=adaptation_workflow.COMMON_ADAPTATION_REVIEW_INSTRUCTIONS,
+                user_input="shared prompt\n{}",
+                previous_response_id="resp_docs",
+                prompt_cache_key="cache-key",
+            )
+
+        tool_names = [spec.name for spec in call_tools.call_args.kwargs["tool_specs"]]
+        self.assertEqual(
+            tool_names,
+            [
+                adaptation_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME,
+                adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
+                adaptation_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME,
+                adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+            ],
+        )
+        self.assertTrue(review.passed)
+        self.assertEqual(response_id, "resp_review")
+        self.assertEqual(call_tools.call_args.kwargs["previous_response_id"], "resp_docs")
+        self.assertEqual(
+            call_tools.call_args.kwargs["tool_choice"],
+            {"type": "function", "name": adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME},
+        )
+
+    def test_document_generation_uses_same_stage_tool_prefix(self) -> None:
+        write_payload = adaptation_workflow.document_ops.DocumentWritePayload(
+            files=[
+                adaptation_workflow.document_ops.DocumentWriteFile(
+                    file_key="world_model",
+                    content="世界模型正文。",
+                )
+            ]
+        )
+        result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
+            tool_name=adaptation_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME,
+            parsed=write_payload,
+            response_id="resp_world_model",
+            status="completed",
+            output_types=["function_call"],
+            preview="write",
+            raw_body_text="",
+            raw_json={},
+        )
+
+        with patch.object(adaptation_document_generation_module.llm_runtime, "call_function_tools", return_value=result) as call_tools:
+            operation, response_id = ORIGINAL_ADAPTATION_CALL_DOCUMENT_OPERATION_RESPONSE(
+                client=Mock(),
+                model="test-model",
+                instructions=adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+                user_input="shared prompt\n{}",
+                previous_response_id=None,
+                prompt_cache_key="cache-key",
+            )
+
+        self.assertEqual(operation.mode, "write")
+        self.assertEqual(response_id, "resp_world_model")
+        self.assertEqual(
+            [spec.name for spec in call_tools.call_args.kwargs["tool_specs"]],
+            [
+                adaptation_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME,
+                adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
+                adaptation_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME,
+                adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+            ],
+        )
+        self.assertEqual(call_tools.call_args.kwargs["tool_choice"], "auto")
 
     def test_stage_shared_prompt_contains_source_contamination_guardrails(self) -> None:
         prompt = adaptation_workflow.build_stage_shared_prompt(
@@ -605,35 +701,36 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                     ]
                 ),
             )
-            repaired_operation = adaptation_workflow.document_ops.DocumentOperationCallResult(
-                mode="edit",
+            repaired_payload = adaptation_workflow.document_ops.DocumentEditPayload(
+                files=[
+                    adaptation_workflow.document_ops.DocumentEditFile(
+                        file_key="world_model",
+                        edits=[
+                            adaptation_workflow.document_ops.DocumentEditEdit(
+                                old_text="第二段原文。",
+                                new_text="第二段修订后。",
+                            )
+                        ],
+                    )
+                ]
+            )
+            repaired_result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
+                tool_name=adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
+                parsed=repaired_payload,
                 response_id="resp_repair",
                 status="completed",
                 output_types=["function_call"],
                 preview="fixed edit",
                 raw_body_text="",
                 raw_json={},
-                edit_payload=adaptation_workflow.document_ops.DocumentEditPayload(
-                    files=[
-                        adaptation_workflow.document_ops.DocumentEditFile(
-                            file_key="world_model",
-                            edits=[
-                                adaptation_workflow.document_ops.DocumentEditEdit(
-                                    old_text="第二段原文。",
-                                    new_text="第二段修订后。",
-                                )
-                            ],
-                        )
-                    ]
-                ),
             )
 
             with patch.object(
-                adaptation_workflow.document_ops,
-                "call_document_operation_tools",
-                return_value=repaired_operation,
+                adaptation_document_generation_module.llm_runtime,
+                "call_function_tools",
+                return_value=repaired_result,
             ) as call_tools:
-                applied, response_id, repair_response_ids = adaptation_workflow.apply_document_operation_with_repair(
+                applied, response_id, repair_response_ids = ORIGINAL_ADAPTATION_APPLY_DOCUMENT_OPERATION_WITH_REPAIR(
                     client=Mock(),
                     model="test-model",
                     instructions=adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
@@ -654,6 +751,10 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertEqual(applied.changed_keys, ["world_model"])
             self.assertIn("第二段修订后。", paths["world_model"].read_text(encoding="utf-8"))
             call_tools.assert_called_once()
+            self.assertEqual(
+                [spec.name for spec in call_tools.call_args.kwargs["tool_specs"]],
+                [spec.name for spec in adaptation_workflow.adaptation_stage_tool_specs()],
+            )
             repair_input = call_tools.call_args.kwargs["user_input"]
             self.assertIn("第二段模型误写。", repair_input)
             self.assertIn("第二段原文。", repair_input)
@@ -959,41 +1060,42 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                 passed=True,
                 review_md="审核通过。",
             )
-            fix_operation = adaptation_workflow.document_ops.DocumentOperationCallResult(
-                mode="edit",
+            fix_payload = adaptation_workflow.document_ops.DocumentEditPayload(
+                files=[
+                    adaptation_workflow.document_ops.DocumentEditFile(
+                        file_key="world_model",
+                        edits=[
+                            adaptation_workflow.document_ops.DocumentEditEdit(
+                                old_text="源人物名仍残留",
+                                new_text="新书主角名已替换",
+                            )
+                        ],
+                    )
+                ]
+            )
+            fix_result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
+                tool_name=adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
+                parsed=fix_payload,
                 response_id="resp_fix",
                 status="completed",
                 output_types=["function_call"],
                 preview="fix",
                 raw_body_text="",
                 raw_json={},
-                edit_payload=adaptation_workflow.document_ops.DocumentEditPayload(
-                    files=[
-                        adaptation_workflow.document_ops.DocumentEditFile(
-                            file_key="world_model",
-                            edits=[
-                                adaptation_workflow.document_ops.DocumentEditEdit(
-                                    old_text="源人物名仍残留",
-                                    new_text="新书主角名已替换",
-                                )
-                            ],
-                        )
-                    ]
-                ),
             )
 
             with (
                 patch.object(
-                    adaptation_workflow,
+                    adaptation_review_module,
                     "call_adaptation_review_response",
                     side_effect=[
                         (failed_review, "resp_review_1", Mock(response_id="resp_review_1")),
                         (passed_review, "resp_review_2", Mock(response_id="resp_review_2")),
                     ],
                 ) as review_call,
-                patch.object(adaptation_workflow.document_ops, "call_document_operation_tools", return_value=fix_operation) as fix_call,
+                patch.object(adaptation_review_module.llm_runtime, "call_function_tools", return_value=fix_result) as fix_call,
             ):
-                result, response_id = adaptation_workflow.run_adaptation_review_until_passed(
+                result, response_id = adaptation_review_module.run_adaptation_review_until_passed(
                     client=Mock(),
                     model="test-model",
                     manifest=manifest,  # type: ignore[arg-type]
@@ -1010,6 +1112,10 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertEqual(review_call.call_args_list[1].kwargs["previous_response_id"], "resp_fix")
             fix_call.assert_called_once()
             self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_review_1")
+            self.assertEqual(
+                [spec.name for spec in fix_call.call_args.kwargs["tool_specs"]],
+                [spec.name for spec in adaptation_workflow.adaptation_stage_tool_specs()],
+            )
             self.assertEqual(manifest["processed_volumes"], [])
             self.assertIn("新书主角名已替换", paths["world_model"].read_text(encoding="utf-8"))
             self.assertTrue(paths["adaptation_review"].exists())
@@ -1129,33 +1235,34 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                 blocking_issues=["越权测试"],
                 rewrite_targets=["world_model"],
             )
-            bad_operation = adaptation_workflow.document_ops.DocumentOperationCallResult(
-                mode="patch",
+            bad_payload = adaptation_workflow.document_ops.DocumentPatchPayload(
+                files=[
+                    adaptation_workflow.document_ops.DocumentPatchFile(
+                        file_path=str(project_root / "outside.md"),
+                        edits=[
+                            adaptation_workflow.document_ops.DocumentPatchEdit(
+                                action="append",
+                                new_text="越权内容",
+                            )
+                        ],
+                    )
+                ]
+            )
+            bad_result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
+                tool_name=adaptation_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME,
+                parsed=bad_payload,
                 response_id="resp_bad",
                 status="completed",
                 output_types=["function_call"],
                 preview="bad",
                 raw_body_text="",
                 raw_json={},
-                patch_payload=adaptation_workflow.document_ops.DocumentPatchPayload(
-                    files=[
-                        adaptation_workflow.document_ops.DocumentPatchFile(
-                            file_path=str(project_root / "outside.md"),
-                            edits=[
-                                adaptation_workflow.document_ops.DocumentPatchEdit(
-                                    action="append",
-                                    new_text="越权内容",
-                                )
-                            ],
-                        )
-                    ]
-                ),
             )
 
             with (
                 self.assertRaises(ValueError),
                 patch.object(adaptation_workflow, "MAX_DOCUMENT_OPERATION_REPAIR_ATTEMPTS", 0),
-                patch.object(adaptation_workflow.document_ops, "call_document_operation_tools", return_value=bad_operation),
+                patch.object(adaptation_review_module.llm_runtime, "call_function_tools", return_value=bad_result),
             ):
                 adaptation_workflow.apply_adaptation_review_fix_with_repair(
                     client=Mock(),

@@ -29,8 +29,20 @@ class AdaptationReviewResult(BaseModel):
     review_path: str = ""
     fix_attempts: int = 0
 
+
+def adaptation_stage_tool_specs() -> list[llm_runtime.FunctionToolSpec[Any]]:
+    return [
+        *document_ops.document_tool_specs(),
+        llm_runtime.FunctionToolSpec(
+            model=AdaptationReviewPayload,
+            name=ADAPTATION_REVIEW_TOOL_NAME,
+            description=ADAPTATION_REVIEW_TOOL_DESCRIPTION,
+        ),
+    ]
+
 __all__ = [
     'AdaptationReviewTarget',
     'AdaptationReviewPayload',
     'AdaptationReviewResult',
+    'adaptation_stage_tool_specs',
 ]

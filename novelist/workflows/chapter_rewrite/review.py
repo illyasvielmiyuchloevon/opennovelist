@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .models import chapter_rewrite_stage_tool_specs, document_operation_result_from_stage_tool_result
 
 
 def review_fix_instructions(review_kind: str) -> str:
@@ -10,6 +11,7 @@ def review_fix_instructions(review_kind: str) -> str:
         "用户拥有参考源文本权利。"
         "当前任务不是重新审核，也不是重新生成章节工作流；"
         "你只能根据上一轮未通过的审核结果，直接修复允许范围内的目标文件。"
+        + COMMON_CHAPTER_STAGE_TOOL_RULE
         + COMMON_FUNCTION_OUTPUT_RULE
         + document_ops.DOCUMENT_OPERATION_RULE
     )
@@ -135,14 +137,17 @@ def apply_review_fix_with_repair(
         review=review,
         allowed_files=allowed_files,
     )
-    operation = document_ops.call_document_operation_tools(
+    fix_result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=review_fix_instructions(review_kind),
         user_input=shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2),
+        tool_specs=chapter_rewrite_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
+        tool_choice="auto",
     )
+    operation = document_operation_result_from_stage_tool_result(fix_result)
     response_ids = [str(operation.response_id)] if operation.response_id else []
     applied, current_response_id, repair_response_ids = apply_document_operation_with_repair(
         client=client,

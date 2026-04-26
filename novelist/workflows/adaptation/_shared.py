@@ -128,7 +128,7 @@ COMMON_DOCUMENT_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
     "你必须使用提供的文档工具提交结果，由程序负责写入或 patch 到文件。"
 )
-COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
+COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"
     "用户拥有参考源文本权利。"
     "当前任务每次只处理 1 份目标文档。"
@@ -140,11 +140,12 @@ COMMON_STAGE_DOCUMENT_INSTRUCTIONS = (
     + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_DOCUMENT_OUTPUT_RULE
 )
+COMMON_STAGE_DOCUMENT_INSTRUCTIONS = COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS
 COMMON_ADAPTATION_REVIEW_INSTRUCTIONS = (
-    "你是资深网络小说仿写资料总审核编辑。"
-    "用户拥有参考源文本权利。"
-    "当前任务是审核本卷已经生成或继承的改编资料是否能支撑后续章节仿写。"
-    "不要直接输出普通文本答案，必须调用 submit_adaptation_review 提交结构化审核结果。"
+    COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS
+    + "本次任务是 adaptation_volume_review 卷资料审核，不是资料文档生成或返修。"
+    "本条审核工具规则优先于前面的文档工具提交规则："
+    "必须调用追加在工具列表末尾的 submit_adaptation_review 提交结构化审核结果，不要调用 write/edit/patch 文档写入工具。"
 )
 COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS = (
     "你是资深网络小说仿写资料原地返修编辑。"

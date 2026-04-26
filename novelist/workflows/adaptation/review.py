@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .document_generation import document_operation_result_from_stage_tool_result
+from .models import AdaptationReviewPayload, adaptation_stage_tool_specs
 
 
 def call_adaptation_review_response(
@@ -16,27 +18,37 @@ def call_adaptation_review_response(
     str | None,
     llm_runtime.FunctionToolResult[AdaptationReviewPayload],
 ]:
-    result = llm_runtime.call_function_tool(
+    result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=instructions,
         user_input=user_input,
-        tool_model=AdaptationReviewPayload,
-        tool_name=ADAPTATION_REVIEW_TOOL_NAME,
-        tool_description=ADAPTATION_REVIEW_TOOL_DESCRIPTION,
+        tool_specs=adaptation_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
         retries=DEFAULT_API_RETRIES,
         retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+        tool_choice={"type": "function", "name": ADAPTATION_REVIEW_TOOL_NAME},
     )
-    payload = result.parsed
+    if result.tool_name != ADAPTATION_REVIEW_TOOL_NAME:
+        raise llm_runtime.ModelOutputError(f"模型调用了意外工具：{result.tool_name}，期望工具：{ADAPTATION_REVIEW_TOOL_NAME}")
+    payload = AdaptationReviewPayload.model_validate(result.parsed)
     if payload.passed is None or not payload.review_md.strip():
         raise llm_runtime.ModelOutputError(
             "模型未通过卷资料审核工具返回完整的 passed / review_md 字段。",
             preview=result.preview,
             raw_body_text=result.raw_body_text,
         )
-    return payload, result.response_id, result
+    return payload, result.response_id, llm_runtime.FunctionToolResult(
+        parsed=payload,
+        response_id=result.response_id,
+        status=result.status,
+        output_types=result.output_types,
+        token_usage=result.token_usage,
+        preview=result.preview,
+        raw_body_text=result.raw_body_text,
+        raw_json=result.raw_json,
+    )
 
 def adaptation_review_document_files(paths: dict[str, Path]) -> dict[str, Path]:
     targets = {doc_key: paths[doc_key] for doc_key in GLOBAL_INJECTION_DOC_ORDER}
@@ -241,16 +253,19 @@ def apply_adaptation_review_fix_with_repair(
         review=review,
         allowed_files=allowed_files,
     )
-    operation = document_ops.call_document_operation_tools(
+    operation_result = llm_runtime.call_function_tools(
         client,
         model=model,
         instructions=COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS,
         user_input=shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2),
+        tool_specs=adaptation_stage_tool_specs(),
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
         retries=DEFAULT_API_RETRIES,
         retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+        tool_choice="auto",
     )
+    operation = document_operation_result_from_stage_tool_result(operation_result)
     response_ids = [str(operation.response_id or "")]
     applied, current_response_id, repair_response_ids = apply_document_operation_with_repair(
         client=client,

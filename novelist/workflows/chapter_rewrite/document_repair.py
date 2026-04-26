@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .models import chapter_rewrite_stage_tool_specs, document_operation_result_from_stage_tool_result
 
 
 def write_response_debug_snapshot(
@@ -158,14 +159,17 @@ def apply_document_operation_with_repair(
                 failed_operation=current_operation,
                 allowed_files=allowed_files,
             )
-            current_operation = document_ops.call_document_operation_tools(
+            repair_result = llm_runtime.call_function_tools(
                 client,
                 model=model,
                 instructions=instructions,
                 user_input=shared_prompt + json.dumps(repair_payload, ensure_ascii=False, indent=2),
+                tool_specs=chapter_rewrite_stage_tool_specs(),
                 previous_response_id=current_response_id,
                 prompt_cache_key=prompt_cache_key,
+                tool_choice="auto",
             )
+            current_operation = document_operation_result_from_stage_tool_result(repair_result)
             current_response_id = current_operation.response_id
             repair_response_ids.append(str(current_operation.response_id or ""))
 
