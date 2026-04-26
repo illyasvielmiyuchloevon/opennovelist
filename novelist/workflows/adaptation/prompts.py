@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .document_generation import call_document_operation_response
+from .materials import chunk_text_items, protagonist_context, style_reference_context
 
 
 def world_model_scope_text() -> str:
@@ -24,7 +26,7 @@ def source_contamination_guardrails() -> list[str]:
         "【强制禁止】严禁把参考源的称谓口吻、固定句式、标志性台词、叙述腔调、概念话语体系直接代入新书资料；文档必须使用目标世界观下的新命名、新术语和新表达。",
         "【允许但必须转换】映射关系是必须保留的，但只能写成功能映射或抽象职责映射，例如“参考源对应的师门压迫功能 -> 新书宗门规训压力”“参考源对应的升级资源功能 -> 新书灵脉资源压力”。",
         "【禁止混淆】不得把原作实体名保留为新书实体；不得把原作实体名、原作术语或原作话语体系保留为新书实体；如果确需说明参考源侧，只能放在“参考源功能映射”语境中，且不得作为新书设定主体。",
-        "【污染清理】如果当前已有资料里残留参考源实体名或话语体系，本次更新必须优先用 edit 清理或替换；不能继续沿用污染内容。",
+        "【污染清理】如果当前已有资料在新书设定正文中残留参考源实体名或话语体系，本次更新必须优先用 edit 清理或替换；明确标注为参考源功能映射或参考源侧说明的信息可以保留，但不得占据新书设定主体。",
     ]
 
 def source_material_boundary(doc_label: str) -> dict[str, Any]:
