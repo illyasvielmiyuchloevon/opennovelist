@@ -51,8 +51,6 @@ def adaptation_review_allowed_files(paths: dict[str, Path], *, volume_number: st
 
 def adaptation_review_target_snapshot(
     allowed_files: dict[str, Path | document_ops.DocumentTarget],
-    *,
-    content_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     snapshots: list[dict[str, Any]] = []
     for file_key, target in allowed_files.items():
@@ -67,10 +65,7 @@ def adaptation_review_target_snapshot(
                 scope=adaptation_doc_scope(file_key),
                 exists=path.exists(),
                 current_char_count=len(current_content),
-                current_content=clip_for_context(
-                    current_content,
-                    limit=content_limit or adaptation_doc_context_limit(file_key),
-                ),
+                current_content=current_content,
                 preferred_mode="edit_or_patch" if current_content else "write",
             ).model_dump(mode="json")
         )
@@ -111,10 +106,9 @@ def build_adaptation_review_request(
             "检查世界模型中的地点、势力、能力、资源、规则、术语、道具设计与原书功能映射是否清晰。",
             "检查全书大纲是否是仿写书籍的大纲，不得把参考源原大纲照抄为新书大纲。",
             "检查当前卷卷级大纲的角色推进、冲突、高潮、结尾钩子是否正确映射。",
-            "检查全书故事线蓝图是否按故事线独立保留蓝图、参考源功能映射、跨卷锚点与后续约束，同时避免逐章复述、卷级剧情进程重复和过度细纲化。",
-            "检查伏笔文档中由资料适配新增或修改的部分是否是全书级/卷级伏笔设计索引，是否保留参考源功能映射、新书伏笔设计、埋设意图、后续呼应方向与命名映射；如果文件中已有章节工作流写入的运行时记录，应视为受保护内容，不得要求删除、压缩或改写，也不得仅因其存在判定资料适配不通过。",
+            "检查全书故事线蓝图是否只用二级标题维护不同故事线，并在故事线内部紧凑保留功能映射、全书走向、卷际连续性与后续约束；不得写成待补全模板、逐章复述、卷级剧情进程或进度台账。",
+            "检查伏笔文档中由资料适配新增或修改的部分是否是全书级/卷级伏笔设计索引，是否保留参考源功能映射、新书伏笔设计、埋设意图、后续呼应方向与命名映射；如果文件中已有章节工作流写入的运行时记录，应视为受保护内容，不得要求删除或改写，也不得仅因其存在判定资料适配不通过。",
             "检查全局资料之间是否重复承载同一信息；世界规则应在世界模型，卷内推进应在卷级剧情进程，章节细节应在章纲或审核文档。",
-            "检查全局文档体量是否适合作为后续章节仿写的长期注入资料；过细、重复、接近流水账的资料应判为需要压缩返修。",
             "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容；文风文档只在第 001 卷生成和定稿，后续卷只能读取与审核，不得把 style_guide 写入 rewrite_targets。",
             "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_model、book_outline、volume_outline。",
         ],
@@ -180,7 +174,7 @@ def build_adaptation_review_fix_request(
             "替换已有正文、清理参考源残留人物名/地名/术语/事件名时，优先使用 edit，可按需要使用 replace_all。",
             "插入新条目、追加新段落、按标题补充或替换小节正文时，使用 patch。",
             "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
-            "如果修复目标包含伏笔文档，只能修复资料适配设计索引相关内容；已有章节工作流写入的运行时记录是受保护内容，禁止删除、压缩、归并或改写。",
+            "如果修复目标包含伏笔文档，只能修复资料适配设计索引相关内容；已有章节工作流写入的运行时记录是受保护内容，禁止删除、归并或改写。",
             "所有 file_key 或 file_path 必须来自 update_target_files，禁止修改未授权文件。",
             "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
             "不得把审核失败降级为重新跑整卷资料生成阶段。",

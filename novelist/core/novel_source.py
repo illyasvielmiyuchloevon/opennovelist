@@ -42,19 +42,6 @@ def first_non_empty_line(text: str) -> str:
     return ""
 
 
-def clip_for_context(text: str, limit: int = 18000) -> str:
-    stripped = text.strip()
-    if len(stripped) <= limit:
-        return stripped
-    head = int(limit * 0.55)
-    tail = limit - head
-    return (
-        stripped[:head].rstrip()
-        + "\n\n[...中间内容为节省上下文已省略...]\n\n"
-        + stripped[-tail:].lstrip()
-    )
-
-
 def load_volume_material(volume_dir: Path) -> dict[str, Any]:
     chapter_files, extra_files = discover_volume_files(volume_dir)
     if not chapter_files:

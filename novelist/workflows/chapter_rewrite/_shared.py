@@ -24,7 +24,6 @@ from novelist.core.files import (
 import novelist.core.document_ops as document_ops
 from novelist.core.novel_source import (
     build_chapter_source_bundle,
-    clip_for_context,
     discover_volume_dirs,
     get_chapter_material,
     load_volume_material,
@@ -88,27 +87,6 @@ REWRITE_GLOBAL_FILE_NAMES = {
     "character_relationship_graph": "07_character_relationship_graph.md",
     "world_state": "08_world_state.md",
 }
-PROMPT_DOC_CONTENT_LIMITS = {
-    "world_model": 18000,
-    "style_guide": 12000,
-    "book_outline": 14000,
-    "foreshadowing": 10000,
-    "storyline_blueprint": 12000,
-    "character_status_cards": 12000,
-    "character_relationship_graph": 10000,
-    "world_state": 10000,
-    "volume_outline": 12000,
-    "volume_plot_progress": 14000,
-    "volume_review": 10000,
-    "chapter_outline": 10000,
-    "chapter_review": 8000,
-    "rewritten_chapter": 30000,
-}
-
-
-def prompt_doc_content_limit(doc_key: str) -> int:
-    return PROMPT_DOC_CONTENT_LIMITS.get(doc_key, 12000)
-
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": ADAPTATION_GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": ADAPTATION_GLOBAL_FILE_NAMES["world_design"],
@@ -257,7 +235,7 @@ HEADING_MANAGED_DOC_SPECS = {
             "更新时只改受影响故事线下的对应三级标题块，不要整段替换整条故事线；修改已有记录用 edit，追加新记录用 patch。",
             "如果只是给某条故事线补充一条新的推进记录，可以用 patch 的 insert_after 追加到该三级标题下最后一条相关记录后面。",
             "如果只是推进某条故事线的发展，就只更新该线的“已发生发展 / 当前状态 / 待推进”等相关三级标题，不要覆盖它的“起始”或其他未变化部分。",
-            "未变化的卷内推进必须原样保留，不得重写整卷进程总结，也不得把每条故事线压缩成只剩最新发展。",
+            "未变化的卷内推进必须原样保留，不得重写整卷进程总结，也不得把每条故事线改成只剩最新发展。",
             "如果当前章节没有推动卷内层面的进程，可以完全不更新此文档。",
         ],
     },
@@ -296,7 +274,7 @@ HEADING_MANAGED_DOC_SPECS = {
         ],
         "update_rules": [
             "只更新受当前章节影响的世界动态与本章状态变化。",
-            "未变化的状态内容必须原样保留，不得把世界状态压缩成只剩最近一章。",
+            "未变化的状态内容必须原样保留，不得把世界状态改成只剩最近一章。",
             "如果当前章节没有造成世界状态变化，可以完全不更新此文档。",
         ],
     },

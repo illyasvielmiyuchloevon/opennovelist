@@ -23,7 +23,7 @@ def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> 
                 "不要把整章当成全新生成任务推倒重写。",
                 "未变化段落应尽量保留，优先只修改受审核意见影响的局部。",
             ],
-            "current_content": clip_for_context(current_text, limit=30000),
+            "current_content": current_text.strip(),
         }
     ]
 
@@ -65,7 +65,7 @@ def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, An
                 "template": rule.get("template", []),
                 "section_policy": rule.get("section_policy", []),
                 "update_rules": rule.get("update_rules", []),
-                "current_content": clip_for_context(current_content, limit=18000),
+                "current_content": current_content,
             }
         )
     return inventory
@@ -429,7 +429,7 @@ def build_five_chapter_review_payload(
                 "label": f"{FIVE_CHAPTER_REVIEW_NAME}（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
                 "file_name": current_review_path.name,
                 "file_path": str(current_review_path),
-                "content": clip_for_context(current_review_content, limit=40000),
+                "content": current_review_content,
             }
         ]
         included_five_reviews = [

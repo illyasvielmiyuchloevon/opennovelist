@@ -16,7 +16,7 @@ def load_chapter_review_skill_reference() -> dict[str, Any]:
         "label": "AI 痕迹审查 Skill",
         "file_name": CHAPTER_REVIEW_SKILL_PATH.name,
         "file_path": str(CHAPTER_REVIEW_SKILL_PATH),
-        "content": clip_for_context(content, limit=50000),
+        "content": content,
     }
 
 def load_chapter_writing_skill_reference() -> dict[str, Any]:
@@ -32,7 +32,7 @@ def load_chapter_writing_skill_reference() -> dict[str, Any]:
         "label": "写作规范 Skill",
         "file_name": CHAPTER_WRITING_SKILL_PATH.name,
         "file_path": str(CHAPTER_WRITING_SKILL_PATH),
-        "content": clip_for_context(content, limit=50000),
+        "content": content,
     }
 
 def normalize_review_chapter_numbers(

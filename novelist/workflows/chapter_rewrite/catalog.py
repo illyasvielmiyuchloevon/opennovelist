@@ -122,17 +122,14 @@ def read_doc_catalog(project_root: Path, volume_number: str, chapter_number: str
 
     return catalog
 
-def serialize_doc_for_prompt(entry: dict[str, Any], *, limit: int = 120000) -> dict[str, Any]:
+def serialize_doc_for_prompt(entry: dict[str, Any]) -> dict[str, Any]:
     content = str(entry["content"]).strip()
-    doc_key = str(entry.get("key") or "")
-    effective_limit = min(limit, prompt_doc_content_limit(doc_key))
     return {
         "label": entry["label"],
         "file_name": Path(entry["path"]).name,
         "file_path": str(entry["path"]),
         "char_count": len(content),
-        "content_limit": effective_limit,
-        "content": clip_for_context(content, limit=effective_limit),
+        "content": content,
     }
 
 def prepare_injected_docs(
@@ -394,7 +391,7 @@ def load_relevant_five_chapter_review_docs(
                     "label": f"{FIVE_CHAPTER_REVIEW_NAME}（{group[0]}-{group[-1]}）",
                     "file_name": path.name,
                     "file_path": str(path),
-                    "content": clip_for_context(content, limit=40000),
+                    "content": content,
                 }
             ],
             [f"{label} -> {path}（字符数约 {len(content)}）"],

@@ -250,9 +250,12 @@ class StorylineBlueprintDefinitionTests(unittest.TestCase):
         self.assertIn("全书故事线蓝图", scope)
         self.assertIn("故事线为 owner", scope)
         self.assertIn("二级标题", scope)
-        self.assertIn("三级标题", scope)
-        self.assertIn("分卷蓝图", scope)
-        self.assertIn("待后续补全", scope)
+        self.assertIn("紧凑标签", scope)
+        self.assertIn("卷际连续性", scope)
+        self.assertIn("不按卷汇总成实时进展", scope)
+        self.assertNotIn("默认使用三级标题", scope)
+        self.assertNotIn("分卷蓝图", scope)
+        self.assertNotIn("待后续补全", scope)
         self.assertNotIn("待推进", scope)
         self.assertNotIn("当前状态", scope)
 
@@ -262,7 +265,8 @@ class StorylineBlueprintDefinitionTests(unittest.TestCase):
     def test_storyline_blueprint_request_definition_is_blueprint_planning(self) -> None:
         request = adaptation_workflow.build_document_request("storyline_blueprint")
         self.assertIn("全书故事线蓝图文档", request["task"])
-        self.assertIn("三级标题", request["scope"])
+        self.assertIn("二级标题只允许用于不同故事线", request["scope"])
+        self.assertIn("不要使用固定三级标题模板", request["scope"])
         self.assertNotIn("全书故事线规划", request["task"])
 
 
@@ -326,7 +330,7 @@ class ForeshadowingDefinitionTests(unittest.TestCase):
         self.assertIn("后续呼应方向", requirements)
         self.assertIn("资料适配阶段只做设计索引", requirements)
         self.assertIn("运行时记录", requirements)
-        self.assertIn("不得删除、压缩、归并、重命名", requirements)
+        self.assertIn("不得删除、归并、重命名", requirements)
         for forbidden in ("待埋设", "已埋设", "待回收", "已回收", "回收记录", "状态推进"):
             self.assertNotIn(forbidden, requirements)
 
@@ -383,7 +387,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         )
         self.assertNotIn("style_guide", injected)
 
-    def test_build_injected_global_docs_uses_per_document_context_budget(self) -> None:
+    def test_build_injected_global_docs_keeps_full_content(self) -> None:
         injected = adaptation_workflow.build_injected_global_docs(
             {
                 "foreshadowing": "伏" * 20000,
@@ -391,8 +395,8 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
             }
         )
 
-        self.assertLessEqual(len(injected["foreshadowing"]), adaptation_workflow.ADAPTATION_DOC_CONTEXT_LIMITS["foreshadowing"] + 80)
-        self.assertLessEqual(len(injected["storyline_blueprint"]), adaptation_workflow.ADAPTATION_DOC_CONTEXT_LIMITS["storyline_blueprint"] + 80)
+        self.assertEqual(injected["foreshadowing"], "伏" * 20000)
+        self.assertEqual(injected["storyline_blueprint"], "线" * 20000)
 
     def test_style_guide_generation_does_not_duplicate_existing_content(self) -> None:
         captured: dict[str, object] = {}
@@ -460,7 +464,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
                 },
                 volume_material={"volume_number": "002", "chapters": [], "extras": []},
                 current_docs={
-                    "storyline_blueprint": "# 全书故事线蓝图\n\n## 故事线：主线\n### 分卷蓝图\n#### 第001卷\n- 既有蓝图。",
+                    "storyline_blueprint": "# 全书故事线蓝图\n\n## 故事线：主线\n- 功能定位：既有蓝图。\n- 卷际连续性：既有约束。",
                     "book_outline": "全书大纲",
                     "world_design": "世界观设计",
                     "world_model": "世界模型",
@@ -477,10 +481,15 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         requirements = "\n".join(payload["requirements"])
         self.assertEqual(payload["required_file"], "05_storyline_blueprint.md")
         self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
-        self.assertIn("该卷在全书故事线中的功能", requirements)
-        self.assertIn("已有卷级设计压缩到信息缺失", requirements)
+        self.assertIn("二级标题只允许用于不同故事线", requirements)
+        self.assertIn("卷际连续性", requirements)
+        self.assertIn("待补全占位", requirements)
+        self.assertIn("故事线连续性蓝图", requirements)
+        self.assertIn("已有故事线设计改到信息缺失", requirements)
         self.assertIn("严禁在全书故事线蓝图中记录章内事件", requirements)
         self.assertIn("重复", requirements)
+        self.assertNotIn("分卷蓝图", requirements)
+        self.assertNotIn("待后续补全", requirements)
         self.assertNotIn("卷级锚点摘要", requirements)
         self.assertNotIn("6000-12000", requirements)
         self.assertNotIn("当前状态", requirements)
@@ -819,7 +828,7 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
         requirements = "\n".join(request["requirements"])
         self.assertIn("运行时记录", requirements)
         self.assertIn("受保护内容", requirements)
-        self.assertIn("不得要求删除、压缩或改写", requirements)
+        self.assertIn("不得要求删除或改写", requirements)
         self.assertIn("不得仅因其存在判定资料适配不通过", requirements)
 
     def test_review_payload_checks_source_names_and_discourse_system(self) -> None:

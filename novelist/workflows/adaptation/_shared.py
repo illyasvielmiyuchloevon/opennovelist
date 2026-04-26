@@ -52,18 +52,6 @@ GLOBAL_INJECTION_DOC_ORDER = [
     "foreshadowing",
     "storyline_blueprint",
 ]
-ADAPTATION_DOC_CONTEXT_LIMITS = {
-    "world_model": 18000,
-    "style_guide": 12000,
-    "book_outline": 14000,
-    "foreshadowing": 10000,
-    "storyline_blueprint": 12000,
-    "volume_outline": 12000,
-}
-
-
-def adaptation_doc_context_limit(doc_key: str) -> int:
-    return ADAPTATION_DOC_CONTEXT_LIMITS.get(doc_key, 12000)
 LEGACY_GLOBAL_FILE_RENAMES = {
     "01_book_outline.md": GLOBAL_FILE_NAMES["book_outline"],
     "02_world_design.md": GLOBAL_FILE_NAMES["world_design"],
@@ -106,13 +94,14 @@ WORLD_MODEL_DEFAULT_SECTIONS = [
     "本卷新增或修正世界知识",
     "可扩展世界专题",
 ]
-STORYLINE_BLUEPRINT_DEFAULT_SECTIONS = [
-    "蓝图定位",
+STORYLINE_BLUEPRINT_INLINE_FIELDS = [
+    "功能定位",
     "参考源功能映射",
-    "分卷蓝图",
-    "跨卷递进",
-    "待后续补全",
+    "新书主轴",
+    "卷际连续性",
+    "后续约束",
 ]
+STORYLINE_BLUEPRINT_DEFAULT_SECTIONS = STORYLINE_BLUEPRINT_INLINE_FIELDS
 STYLE_MODE_CUSTOM = "custom_style_file"
 STYLE_MODE_SOURCE = "reference_source_style"
 PROTAGONIST_MODE_CUSTOM = "custom_design"

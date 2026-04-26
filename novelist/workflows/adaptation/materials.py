@@ -15,18 +15,6 @@ def first_non_empty_line(text: str) -> str:
             return stripped
     return ""
 
-def clip_for_context(text: str, limit: int = 18000) -> str:
-    stripped = text.strip()
-    if len(stripped) <= limit:
-        return stripped
-    head = int(limit * 0.55)
-    tail = limit - head
-    return (
-        stripped[:head].rstrip()
-        + "\n\n[...中间内容为节省上下文已省略...]\n\n"
-        + stripped[-tail:].lstrip()
-    )
-
 def load_volume_material(volume_dir: Path) -> dict[str, Any]:
     chapter_files, extra_files = discover_volume_files(volume_dir)
     if not chapter_files:
@@ -151,8 +139,7 @@ def style_reference_context(manifest: dict[str, Any]) -> str:
         style_file = manifest["style"]["style_file"]
         if not style_file:
             return "未提供自定义风格文件。"
-        text = read_text(Path(style_file))
-        return clip_for_context(text, limit=12000)
+        return read_text(Path(style_file)).strip()
     return "请从当前卷参考源中提炼写作风格，不额外加载外部风格文件。"
 
 def protagonist_context(manifest: dict[str, Any]) -> str:
@@ -173,7 +160,6 @@ def read_existing_global_docs(project_root: Path) -> dict[str, str]:
 __all__ = [
     'build_phase_session_key',
     'first_non_empty_line',
-    'clip_for_context',
     'load_volume_material',
     'build_loaded_file_inventory',
     'build_volume_source_bundle',

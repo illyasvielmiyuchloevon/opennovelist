@@ -54,7 +54,7 @@ def document_operation_target_snapshot(
                 "file_path": str(path),
                 "exists": path.exists(),
                 "current_char_count": len(current_content),
-                "current_content": clip_for_context(current_content, limit=30000),
+                "current_content": current_content,
             }
         )
     return snapshots
