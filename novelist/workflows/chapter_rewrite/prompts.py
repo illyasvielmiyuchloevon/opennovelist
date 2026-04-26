@@ -70,6 +70,22 @@ def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, An
         )
     return inventory
 
+def latest_work_target(
+    instruction: str,
+    *,
+    required_tool: str | None = None,
+    forbidden_tool: str | None = None,
+) -> dict[str, Any]:
+    target: dict[str, Any] = {
+        "type": "latest_user_input",
+        "instruction": instruction,
+    }
+    if required_tool:
+        target["required_tool"] = required_tool
+    if forbidden_tool:
+        target["forbidden_tool"] = forbidden_tool
+    return target
+
 def print_call_artifact_report(
     call_label: str,
     artifacts: list[tuple[str, Path]],
@@ -162,6 +178,10 @@ def build_phase_request_payload(
                 "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
                 "rolling_injected_group_docs": five_chapter_review_docs,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：只生成当前章的章纲 Markdown。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
+                    required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+                ),
             },
         )
         return payload, included_docs, omitted_docs
@@ -217,6 +237,10 @@ def build_phase_request_payload(
                         "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
                         "content": chapter_text.strip(),
                     },
+                    "latest_work_target": latest_work_target(
+                        "这是本次请求的最新工作目标：对当前章现有正文做增量修订。必须调用 write/edit/patch 文档工具，不要调用 submit_workflow_result。",
+                        forbidden_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+                    ),
                 },
             )
             return payload, included_docs, omitted_docs
@@ -255,6 +279,10 @@ def build_phase_request_payload(
                 "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
                 "rolling_injected_group_docs": five_chapter_review_docs,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：只生成当前章的完整仿写章节正文。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
+                    required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+                ),
             },
         )
         return payload, included_docs, omitted_docs
@@ -296,6 +324,10 @@ def build_phase_request_payload(
                     "file_path": str(paths["rewritten_chapter"]),
                     "content": chapter_text.strip(),
                 },
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：根据刚写完的章节按需更新配套状态文档。必须调用 write/edit/patch 文档工具，不要调用 submit_workflow_result。",
+                    forbidden_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+                ),
             },
         )
         return payload, included_docs, omitted_docs
@@ -344,6 +376,10 @@ def build_phase_request_payload(
                     "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
                     "content": chapter_text.strip(),
                 },
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：审核当前章全部产物并提交章级审核结果。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
+                    required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+                ),
             },
         )
         return payload, included_docs, omitted_docs
@@ -403,6 +439,10 @@ def build_volume_review_payload(
             "rolling_injected_volume_docs": rolling_volume_docs,
             "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
+            "latest_work_target": latest_work_target(
+                "这是本次请求的最新工作目标：审核当前卷所有已生成章节与卷级文档。必须调用 submit_workflow_result 提交卷级审核结果，不要调用 write/edit/patch 文档工具。",
+                required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+            ),
         },
     )
     included_docs = [*included_globals, *included_volumes]
@@ -486,6 +526,10 @@ def build_five_chapter_review_payload(
             "rolling_injected_group_docs": five_chapter_review_docs,
             "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
+            "latest_work_target": latest_work_target(
+                f"这是本次请求的最新工作目标：审核当前五章区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。必须调用 submit_workflow_result 提交组审查结果，不要调用 write/edit/patch 文档工具。",
+                required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+            ),
         },
     )
     included_docs = [*included_globals, *included_volumes, *included_five_reviews]
@@ -497,6 +541,7 @@ __all__ = [
     'support_update_general_rules',
     'support_update_doc_rules',
     'support_update_target_inventory',
+    'latest_work_target',
     'print_call_artifact_report',
     'build_phase_request_payload',
     'build_volume_review_payload',

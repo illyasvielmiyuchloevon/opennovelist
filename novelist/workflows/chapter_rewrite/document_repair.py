@@ -87,6 +87,15 @@ def build_document_operation_repair_payload(
             "如果短句无法唯一定位，必须扩大到包含前后连续段落的稳定上下文块。",
             "保留原本的修改意图，只修正定位与必要的新文本，不要额外改写无关内容。",
         ],
+        "latest_work_target": {
+            "type": "latest_user_input",
+            "instruction": (
+                "这是本次请求的最新工作目标：修正上一轮无法定位的 old_text 或 match_text。"
+                "必须调用 write/edit/patch 文档工具重新提交可应用的局部编辑，"
+                "不要调用 submit_workflow_result。"
+            ),
+            "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
+        },
     }
 
 def write_document_operation_apply_debug_snapshot(

@@ -141,6 +141,15 @@ def build_adaptation_review_request(
             "blocking_issues": "不通过时列出会阻塞后续仿写的具体问题。",
             "rewrite_targets": "不通过时列出需要原地修复的目标 file_key；通过时为空数组。",
         },
+        "latest_work_target": {
+            "type": "latest_user_input",
+            "instruction": (
+                "这是本次请求的最新工作目标：执行 adaptation_volume_review 卷资料审核。"
+                "必须调用 submit_adaptation_review 提交结构化审核结果，"
+                "不要调用 write/edit/patch 文档写入工具。"
+            ),
+            "required_tool": ADAPTATION_REVIEW_TOOL_NAME,
+        },
     }
 
 def write_adaptation_review_report(
@@ -203,6 +212,15 @@ def build_adaptation_review_fix_request(
             "修复后仍必须符合目标世界观、实体改名、事件改名、术语映射、时间线和故事线整理要求。",
             "除明确标注的参考源侧功能映射外，修复后的新书设定主体不得残留参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系。",
         ],
+        "latest_work_target": {
+            "type": "latest_user_input",
+            "instruction": (
+                "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修资料文档。"
+                "必须调用 write/edit/patch 文档工具提交修改，不要调用 submit_adaptation_review，"
+                "不要重新生成整卷资料阶段。"
+            ),
+            "forbidden_tool": ADAPTATION_REVIEW_TOOL_NAME,
+        },
     }
 
 def apply_adaptation_review_fix_with_repair(
@@ -261,7 +279,7 @@ def apply_adaptation_review_fix_with_repair(
     operation_result = llm_runtime.call_function_tools(
         client,
         model=model,
-        instructions=COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS,
+        instructions=COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
         user_input=shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2),
         tool_specs=adaptation_stage_tool_specs(),
         previous_response_id=previous_response_id,
@@ -275,7 +293,7 @@ def apply_adaptation_review_fix_with_repair(
     applied, current_response_id, repair_response_ids = apply_document_operation_with_repair(
         client=client,
         model=model,
-        instructions=COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS,
+        instructions=COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
         shared_prompt=shared_prompt,
         operation=operation,
         allowed_files=allowed_files,
@@ -332,7 +350,7 @@ def run_adaptation_review_until_passed(
         review, current_response_id, _ = call_adaptation_review_response(
             client,
             model,
-            COMMON_ADAPTATION_REVIEW_INSTRUCTIONS,
+            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
             stage_shared_prompt + json.dumps(review_payload, ensure_ascii=False, indent=2),
             previous_response_id=current_response_id,
             prompt_cache_key=prompt_cache_key,

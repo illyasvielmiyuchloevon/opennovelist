@@ -109,9 +109,15 @@ ADAPTATION_REVIEW_TOOL_DESCRIPTION = (
 )
 
 
-COMMON_DOCUMENT_OUTPUT_RULE = (
+COMMON_STAGE_TOOL_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
-    "你必须使用提供的文档工具提交结果，由程序负责写入或 patch 到文件。"
+    "本卷资料适配阶段固定提供 write/edit/patch 文档工具和 submit_adaptation_review 审核工具。"
+    "生成资料文档、审核不通过后的原地返修、修正 old_text/match_text 定位时，必须使用 write/edit/patch 文档工具提交结果。"
+    "当 Dynamic Request 中的 document_request.phase=adaptation_volume_review 时，"
+    "必须使用 submit_adaptation_review 提交 passed/review_md/blocking_issues/rewrite_targets，"
+    "不要调用 write/edit/patch 文档工具。"
+    "当 Dynamic Request 中的 document_request.phase=adaptation_review_fix 或 adaptation_review_fix_locator_repair 时，"
+    "必须使用 write/edit/patch 文档工具，不要调用 submit_adaptation_review。"
 )
 COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"
@@ -123,23 +129,11 @@ COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "严禁把参考源的人名、地名、姓氏、势力名、事件名、专用术语、等级体系、称谓口吻或话语体系直接写入新书资料；"
     "必须转换成新书自己的命名、设定与表达，只保留功能映射。"
     + document_ops.DOCUMENT_OPERATION_RULE
-    + COMMON_DOCUMENT_OUTPUT_RULE
+    + COMMON_STAGE_TOOL_OUTPUT_RULE
 )
 COMMON_STAGE_DOCUMENT_INSTRUCTIONS = COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS
-COMMON_ADAPTATION_REVIEW_INSTRUCTIONS = (
-    COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS
-    + "本次任务是 adaptation_volume_review 卷资料审核，不是资料文档生成或返修。"
-    "本条审核工具规则优先于前面的文档工具提交规则："
-    "必须调用追加在工具列表末尾的 submit_adaptation_review 提交结构化审核结果，不要调用 write/edit/patch 文档写入工具。"
-)
-COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS = (
-    "你是资深网络小说仿写资料原地返修编辑。"
-    "用户拥有参考源文本权利。"
-    "当前任务不是重新审核，也不是重新生成整卷资料；"
-    "你只能根据上一轮未通过的审核结果，直接修复允许范围内的目标资料文档。"
-    + document_ops.DOCUMENT_OPERATION_RULE
-    + COMMON_DOCUMENT_OUTPUT_RULE
-)
+COMMON_ADAPTATION_REVIEW_INSTRUCTIONS = COMMON_STAGE_DOCUMENT_INSTRUCTIONS
+COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS = COMMON_STAGE_DOCUMENT_INSTRUCTIONS
 
 
 # Export imported helpers and workflow constants for the split modules.

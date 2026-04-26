@@ -5,16 +5,7 @@ from .models import chapter_rewrite_stage_tool_specs, document_operation_result_
 
 
 def review_fix_instructions(review_kind: str) -> str:
-    label = REVIEW_KIND_LABELS.get(review_kind, "审核")
-    return (
-        f"你是资深网络小说{label}原地返修编辑。"
-        "用户拥有参考源文本权利。"
-        "当前任务不是重新审核，也不是重新生成章节工作流；"
-        "你只能根据上一轮未通过的审核结果，直接修复允许范围内的目标文件。"
-        + COMMON_CHAPTER_STAGE_TOOL_RULE
-        + COMMON_FUNCTION_OUTPUT_RULE
-        + document_ops.DOCUMENT_OPERATION_RULE
-    )
+    return COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
 
 def review_fix_phase_key(review_kind: str) -> str:
     if review_kind == "group":
@@ -96,6 +87,15 @@ def build_review_fix_payload(
             "不要把审核失败降级为重新跑章纲、正文生成或配套文档生成阶段。",
             "修复后仍必须符合原审核阶段的风格、连续性、反 AI 痕迹和参考源转换要求。",
         ],
+        "latest_work_target": {
+            "type": "latest_user_input",
+            "instruction": (
+                f"这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修{label}指出的问题。"
+                "必须调用 write/edit/patch 文档工具提交修改，不要调用 submit_workflow_result，"
+                "不要重新生成章纲、正文或配套文档阶段。"
+            ),
+            "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
+        },
     }
 
 def apply_review_fix_with_repair(

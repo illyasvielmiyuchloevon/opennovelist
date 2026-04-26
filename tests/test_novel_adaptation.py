@@ -90,14 +90,17 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
         self.assertIn("按真实需要编写", instructions)
         self.assertIn("不要为了显得完整、填满结构或覆盖全部素材而硬塞内容", instructions)
 
-    def test_adaptation_review_instructions_extend_document_stage_prefix(self) -> None:
+    def test_adaptation_review_and_fix_reuse_document_stage_instructions(self) -> None:
         document_instructions = adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS
         review_instructions = adaptation_workflow.COMMON_ADAPTATION_REVIEW_INSTRUCTIONS
+        fix_instructions = adaptation_workflow.COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS
 
-        self.assertTrue(review_instructions.startswith(document_instructions))
-        self.assertNotIn(adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME, document_instructions)
+        self.assertEqual(review_instructions, document_instructions)
+        self.assertEqual(fix_instructions, document_instructions)
         self.assertIn(adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME, review_instructions)
-        self.assertIn("工具列表末尾", review_instructions)
+        self.assertIn("Dynamic Request", review_instructions)
+        self.assertIn("adaptation_volume_review", review_instructions)
+        self.assertIn("write/edit/patch", review_instructions)
 
     def test_adaptation_review_appends_review_tool_after_document_tools(self) -> None:
         result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
@@ -270,6 +273,14 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
             requirements = "\n".join(payload["requirements"])
             boundary_text = adaptation_workflow.json.dumps(payload["source_material_boundary"], ensure_ascii=False)
             with self.subTest(doc_key=doc_key):
+                self.assertEqual(list(payload.keys())[-1], "latest_work_target")
+                self.assertEqual(
+                    payload["latest_work_target"]["forbidden_tool"],
+                    adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+                )
+                self.assertIn("最新工作目标", payload["latest_work_target"]["instruction"])
+                self.assertIn("write/edit/patch", payload["latest_work_target"]["instruction"])
+                self.assertIn("不要调用 submit_adaptation_review", payload["latest_work_target"]["instruction"])
                 self.assertIn("参考源只提供", boundary_text)
                 self.assertIn("不是新书资料正文", boundary_text)
                 self.assertIn("参考源功能 -> 新书设计", boundary_text)
@@ -889,6 +900,52 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
         self.assertIn("style_guide", review_files)
         self.assertNotIn("style_guide", allowed_fix_files)
 
+    def test_review_and_fix_current_goals_are_trailing_dynamic_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            paths = _seed_adaptation_docs(project_root, "001")
+            review_request = adaptation_workflow.build_adaptation_review_request(
+                manifest=manifest,  # type: ignore[arg-type]
+                volume_material=_volume_material("001"),  # type: ignore[arg-type]
+                allowed_files=adaptation_workflow.adaptation_review_document_files(paths),
+            )
+            failed_review = adaptation_workflow.AdaptationReviewPayload(
+                passed=False,
+                review_md="不通过。",
+                blocking_issues=["世界模型残留参考源话语体系"],
+                rewrite_targets=["world_model"],
+            )
+            fix_request = adaptation_workflow.build_adaptation_review_fix_request(
+                review=failed_review,
+                allowed_files=adaptation_workflow.adaptation_review_allowed_files(paths),
+            )
+            repair_request = adaptation_workflow.build_document_operation_repair_payload(
+                apply_error=ValueError("未找到 old_text"),
+                failed_operation=adaptation_workflow.document_ops.DocumentOperationCallResult(
+                    mode="edit",
+                    response_id="resp_failed",
+                    status="completed",
+                    output_types=["function_call"],
+                    preview="failed edit",
+                    raw_body_text="",
+                    raw_json={},
+                ),
+                allowed_files=adaptation_workflow.adaptation_review_allowed_files(paths),
+            )
+
+        self.assertEqual(list(review_request.keys())[-1], "latest_work_target")
+        self.assertEqual(review_request["latest_work_target"]["required_tool"], adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME)
+        self.assertIn("必须调用 submit_adaptation_review", review_request["latest_work_target"]["instruction"])
+
+        self.assertEqual(list(fix_request.keys())[-1], "latest_work_target")
+        self.assertEqual(fix_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME)
+        self.assertIn("必须调用 write/edit/patch", fix_request["latest_work_target"]["instruction"])
+
+        self.assertEqual(list(repair_request.keys())[-1], "latest_work_target")
+        self.assertEqual(repair_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME)
+        self.assertIn("最新工作目标", repair_request["latest_work_target"]["instruction"])
+
     def test_review_payload_protects_chapter_runtime_foreshadowing_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -1028,9 +1085,12 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertTrue(result.payload.passed)
             self.assertEqual(response_id, "resp_review_2")
             self.assertEqual(review_call.call_count, 2)
+            self.assertEqual(review_call.call_args_list[0].args[2], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
+            self.assertEqual(review_call.call_args_list[1].args[2], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
             self.assertEqual(review_call.call_args_list[0].kwargs["previous_response_id"], "resp_docs")
             self.assertEqual(review_call.call_args_list[1].kwargs["previous_response_id"], "resp_fix")
             fix_call.assert_called_once()
+            self.assertEqual(fix_call.call_args.kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
             self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_review_1")
             self.assertEqual(
                 [spec.name for spec in fix_call.call_args.kwargs["tool_specs"]],

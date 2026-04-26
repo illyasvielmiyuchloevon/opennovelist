@@ -245,6 +245,13 @@ def build_payload_with_trailing_docs(
     payload.update(trailing_doc_fields)
     return payload
 
+def latest_work_target(instruction: str) -> dict[str, Any]:
+    return {
+        "type": "latest_user_input",
+        "instruction": instruction,
+        "forbidden_tool": ADAPTATION_REVIEW_TOOL_NAME,
+    }
+
 def document_output_path(paths: dict[str, Path], doc_key: str) -> Path:
     if doc_key in paths:
         return paths[doc_key]
@@ -309,6 +316,11 @@ def generate_document_operation(
             trailing_doc_fields={
                 "target_file": target_file,
                 "injected_global_docs": injected_globals,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：生成或增量修订文笔写作风格文档。"
+                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
+                    "不要调用 submit_adaptation_review。"
+                ),
             },
         )
         return call_document_operation_response(
@@ -345,6 +357,11 @@ def generate_document_operation(
             trailing_doc_fields={
                 "target_file": target_file,
                 "injected_global_docs": injected_globals,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：生成或增量修订全书大纲文档。"
+                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
+                    "不要调用 submit_adaptation_review。"
+                ),
             },
         )
         return call_document_operation_response(
@@ -380,6 +397,11 @@ def generate_document_operation(
             trailing_doc_fields={
                 "target_file": target_file,
                 "injected_global_docs": injected_globals,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：生成或增量修订伏笔文档。"
+                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
+                    "不要调用 submit_adaptation_review。"
+                ),
             },
         )
         return call_document_operation_response(
@@ -421,6 +443,11 @@ def generate_document_operation(
             trailing_doc_fields={
                 "target_file": target_file,
                 "injected_global_docs": injected_globals,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：生成或增量修订世界模型文档。"
+                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
+                    "不要调用 submit_adaptation_review。"
+                ),
             },
         )
         return call_document_operation_response(
@@ -450,6 +477,11 @@ def generate_document_operation(
             trailing_doc_fields={
                 "target_file": target_file,
                 "injected_global_docs": injected_globals,
+                "latest_work_target": latest_work_target(
+                    "这是本次请求的最新工作目标：生成或增量修订当前卷的卷级大纲文档。"
+                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
+                    "不要调用 submit_adaptation_review。"
+                ),
             },
         )
         return call_document_operation_response(
@@ -489,6 +521,7 @@ __all__ = [
     'build_stage_project_context',
     'build_stage_shared_prompt',
     'build_payload_with_trailing_docs',
+    'latest_work_target',
     'document_output_path',
     'build_target_file_context',
     'generate_document_operation',
