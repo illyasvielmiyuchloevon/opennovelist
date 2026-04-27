@@ -1166,8 +1166,23 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             def fake_run_agent_stage(*args, **kwargs):
                 if fake_run_agent_stage.call_count == 0:
                     _write_text(paths["world_model"], "世界模型：新书主角名已替换。\n")
+                    kwargs["on_tool_result"](
+                        Mock(
+                            tool_name="submit_document_edits",
+                            output="ok",
+                            applied=Mock(changed_keys=["world_model"]),
+                        )
+                    )
                     fake_run_agent_stage.call_count += 1
-                    return _agent_stage_result(failed_review, "resp_review_1", ["resp_fix_1", "resp_review_1"])
+                    result = _agent_stage_result(failed_review, "resp_review_1", ["resp_fix_1", "resp_review_1"])
+                    result.applications = [
+                        Mock(
+                            tool_name="submit_document_edits",
+                            output="ok",
+                            applied=Mock(changed_keys=["world_model"]),
+                        )
+                    ]
+                    return result
                 fake_run_agent_stage.call_count += 1
                 return _agent_stage_result(passed_review, "resp_review_2")
 
@@ -1179,6 +1194,7 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                     "run_agent_stage",
                     side_effect=fake_run_agent_stage,
                 ) as agent_call,
+                patch.object(adaptation_review_module, "print_progress") as progress_call,
             ):
                 result, response_id = adaptation_review_module.run_adaptation_review_until_passed(
                     client=Mock(),
@@ -1197,7 +1213,12 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
             self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
             self.assertIsNone(agent_call.call_args_list[1].kwargs["previous_response_id"])
+            self.assertTrue(callable(agent_call.call_args_list[0].kwargs["on_tool_result"]))
             self.assertIn("新书主角名已替换", agent_call.call_args_list[1].kwargs["user_input"])
+            progress_text = "\n".join(str(call.args[0]) for call in progress_call.call_args_list if call.args)
+            self.assertIn("卷资料审核 agent 工具已应用：submit_document_edits，变更=world_model", progress_text)
+            self.assertIn("卷资料审核 agent 本轮执行文档工具 1 次，累计变更=world_model", progress_text)
+            self.assertIn("卷资料审核 agent 提交审核结论：未通过", progress_text)
             self.assertEqual(
                 sorted(agent_call.call_args_list[0].kwargs["allowed_files"]),
                 sorted(adaptation_workflow.adaptation_review_allowed_files(paths)),

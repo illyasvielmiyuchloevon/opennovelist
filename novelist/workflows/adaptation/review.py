@@ -353,6 +353,29 @@ def run_adaptation_review_until_passed(
     current_response_id = previous_response_id
     last_review: AdaptationReviewPayload | None = None
 
+    def report_tool(application: Any) -> None:
+        if application.applied is None:
+            print_progress(f"卷资料审核 agent 工具调用未应用：{application.output}", error=True)
+            return
+        changed = ", ".join(application.applied.changed_keys) if application.applied.changed_keys else "无内容变化"
+        print_progress(f"卷资料审核 agent 工具已应用：{application.tool_name}，变更={changed}。")
+
+    def summarize_agent_applications(agent_result: Any) -> None:
+        applications = list(getattr(agent_result, "applications", []) or [])
+        if not applications:
+            print_progress("卷资料审核 agent 本轮未调用文档修复工具，直接提交审核结论。")
+            return
+        changed_keys: list[str] = []
+        for application in applications:
+            applied = getattr(application, "applied", None)
+            if applied is None:
+                continue
+            for key in getattr(applied, "changed_keys", []) or []:
+                if key not in changed_keys:
+                    changed_keys.append(str(key))
+        changed = ", ".join(changed_keys) if changed_keys else "无内容变化"
+        print_progress(f"卷资料审核 agent 本轮执行文档工具 {len(applications)} 次，累计变更={changed}。")
+
     for attempt in range(1, MAX_ADAPTATION_REVIEW_ATTEMPTS + 1):
         write_stage_status_snapshot(
             manifest,
@@ -400,6 +423,7 @@ def run_adaptation_review_until_passed(
             prompt_cache_key=prompt_cache_key,
             retries=DEFAULT_API_RETRIES,
             retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+            on_tool_result=report_tool,
         )
         current_response_id = agent_result.response_id
         workflow_payload = agent_result.submission
@@ -414,6 +438,12 @@ def run_adaptation_review_until_passed(
                 "资料审核 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
                 preview=workflow_payload.summary or workflow_payload.content_md,
             )
+        summarize_agent_applications(agent_result)
+        print_progress(
+            "卷资料审核 agent 提交审核结论："
+            f"{'通过' if review.passed else '未通过'}；"
+            f"返修目标={', '.join(review.rewrite_targets) if review.rewrite_targets else '无'}。"
+        )
         if current_response_id:
             response_ids.append(current_response_id)
         response_ids.extend(response_id for response_id in agent_result.response_ids if response_id not in response_ids)

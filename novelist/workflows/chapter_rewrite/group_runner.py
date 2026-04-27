@@ -191,6 +191,12 @@ def run_group_generation_workflow(
             )
             previous_response_id = agent_result.response_id
             response_ids.extend(response_id for response_id in agent_result.response_ids if response_id not in response_ids)
+            print_agent_application_summary(
+                agent_result,
+                agent_label="组生成 agent",
+                no_tool_message="组生成 agent 本轮未调用文档工具，直接提交阶段完成结果。",
+            )
+            print_agent_generation_submission_summary(agent_result, agent_label="组生成 agent")
             validate_group_generation_outputs(project_root, volume_number, chapter_numbers)
         except Exception as error:
             update_group_generation_state(

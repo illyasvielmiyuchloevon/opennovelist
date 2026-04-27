@@ -148,6 +148,71 @@ COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
 
 FIVE_CHAPTER_REVIEW_NAME = "组审查"
 
+
+def agent_changed_keys(agent_result: Any) -> list[str]:
+    changed_keys: list[str] = []
+    for application in list(getattr(agent_result, "applications", []) or []):
+        applied = getattr(application, "applied", None)
+        if applied is None:
+            continue
+        for key in getattr(applied, "changed_keys", []) or []:
+            key_text = str(key)
+            if key_text not in changed_keys:
+                changed_keys.append(key_text)
+    return changed_keys
+
+
+def print_agent_application_summary(
+    agent_result: Any,
+    *,
+    agent_label: str,
+    no_tool_message: str,
+) -> None:
+    applications = list(getattr(agent_result, "applications", []) or [])
+    if not applications:
+        print_progress(no_tool_message)
+        return
+    changed = ", ".join(agent_changed_keys(agent_result)) or "无内容变化"
+    print_progress(f"{agent_label} 本轮执行文档工具 {len(applications)} 次，累计变更={changed}。")
+
+
+def agent_submission_summary_text(submission: Any, *, limit: int = 120) -> str:
+    summary = str(
+        getattr(submission, "summary", "")
+        or getattr(submission, "content_md", "")
+        or getattr(submission, "error", "")
+        or ""
+    ).strip()
+    summary = " ".join(summary.split())
+    if not summary:
+        return "无"
+    if len(summary) <= limit:
+        return summary
+    return summary[: limit - 1].rstrip() + "..."
+
+
+def print_agent_generation_submission_summary(agent_result: Any, *, agent_label: str) -> None:
+    submission = getattr(agent_result, "submission", None)
+    generated_files = list(getattr(submission, "generated_files", []) or [])
+    generated = ", ".join(str(item) for item in generated_files) or "未声明"
+    print_progress(
+        f"{agent_label} 提交阶段结果：generated_files={generated}；"
+        f"摘要={agent_submission_summary_text(submission)}。"
+    )
+
+
+def print_agent_review_submission_summary(review: Any, *, agent_label: str) -> None:
+    chapters_to_revise = [str(item).zfill(4) for item in getattr(review, "chapters_to_revise", []) or [] if item]
+    rewrite_targets = [str(item) for item in getattr(review, "rewrite_targets", []) or [] if item]
+    blocking_issues = [str(item) for item in getattr(review, "blocking_issues", []) or [] if item]
+    print_progress(
+        f"{agent_label} 提交审核结论："
+        f"{'通过' if getattr(review, 'passed', None) else '未通过'}；"
+        f"返修章节={'、'.join(chapters_to_revise) if chapters_to_revise else '无'}；"
+        f"返修目标={', '.join(rewrite_targets) if rewrite_targets else '无'}；"
+        f"阻塞问题={len(blocking_issues)} 项。"
+    )
+
 GLOBAL_DOC_LABELS = {
     "world_model": "世界模型",
     "style_guide": "文笔写作风格",

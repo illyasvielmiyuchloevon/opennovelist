@@ -302,6 +302,12 @@ def run_five_chapter_review(
                     "组审查 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
                     preview=agent_result.submission.summary or agent_result.submission.content_md,
                 )
+            print_agent_application_summary(
+                agent_result,
+                agent_label=f"{FIVE_CHAPTER_REVIEW_NAME} agent",
+                no_tool_message=f"{FIVE_CHAPTER_REVIEW_NAME} agent 本轮未调用文档修复工具，直接提交审核结论。",
+            )
+            print_agent_review_submission_summary(review, agent_label=f"{FIVE_CHAPTER_REVIEW_NAME} agent")
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):
                 write_response_debug_snapshot(
@@ -539,6 +545,12 @@ def run_volume_review(
                     "卷级审核 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
                     preview=agent_result.submission.summary or agent_result.submission.content_md,
                 )
+            print_agent_application_summary(
+                agent_result,
+                agent_label="卷级审核 agent",
+                no_tool_message="卷级审核 agent 本轮未调用文档修复工具，直接提交审核结论。",
+            )
+            print_agent_review_submission_summary(volume_review, agent_label="卷级审核 agent")
             volume_review_changed = write_artifact(paths["volume_review"], volume_review.review_md)
             print_call_artifact_report(
                 "卷级审核调用",

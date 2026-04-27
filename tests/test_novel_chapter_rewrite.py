@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from novelist.core import novel_source as novel_source_module
 from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
+from novelist.workflows.chapter_rewrite import _shared as chapter_shared_module
 from novelist.workflows.chapter_rewrite import chapter_runner as chapter_runner_module
 from novelist.workflows.chapter_rewrite import group_runner as group_runner_module
 from novelist.workflows.chapter_rewrite import responses as chapter_responses_module
@@ -121,12 +122,21 @@ def _rewrite_agent_stage_result(
     payload: rewrite_workflow.WorkflowSubmissionPayload,
     response_id: str,
     response_ids: list[str] | None = None,
+    applications: list[Mock] | None = None,
 ) -> Mock:
     return Mock(
         submission=payload,
         response_id=response_id,
         response_ids=response_ids or [response_id],
-        applications=[],
+        applications=applications or [],
+    )
+
+
+def _agent_application(tool_name: str, changed_keys: list[str]) -> Mock:
+    return Mock(
+        tool_name=tool_name,
+        applied=Mock(changed_keys=changed_keys),
+        output="ok",
     )
 
 
@@ -579,6 +589,12 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                     ),
                     "resp_group_generation_submit",
                     ["resp_group_generation_write", "resp_group_generation_submit"],
+                    applications=[
+                        _agent_application(
+                            "submit_document_writes",
+                            ["group_outline", "0001_rewritten_chapter"],
+                        )
+                    ],
                 )
 
             with (
@@ -586,9 +602,15 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                 patch.object(
                     chapter_review_module,
                     "run_agent_stage",
-                    return_value=_rewrite_agent_stage_result(passed_review, "resp_group_review"),
+                    return_value=_rewrite_agent_stage_result(
+                        passed_review,
+                        "resp_group_review",
+                        applications=[_agent_application("submit_document_edits", ["group_outline"])],
+                    ),
                 ) as review_agent,
                 patch.object(rewrite_workflow, "print_request_context_summary") as context_summary,
+                patch.object(rewrite_workflow, "print_progress"),
+                patch.object(chapter_shared_module, "print_progress") as agent_progress,
             ):
                 completed_scope, next_target = rewrite_workflow.process_volume_workflow(
                     client=Mock(),
@@ -631,6 +653,11 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             self.assertIn("[volume] 卷级大纲", included_docs)
             self.assertIn("[volume] 卷级剧情进程", included_docs)
             self.assertIn("同卷其他章节正文当前不注入", "\n".join(group_summary_call.kwargs["source_summary_lines"]))
+            progress_lines = "\n".join(str(call.args[0]) for call in agent_progress.call_args_list if call.args)
+            self.assertIn("组生成 agent 本轮执行文档工具 1 次，累计变更=group_outline, 0001_rewritten_chapter。", progress_lines)
+            self.assertIn("组生成 agent 提交阶段结果：generated_files=group_outline", progress_lines)
+            self.assertIn("组审查 agent 本轮执行文档工具 1 次，累计变更=group_outline。", progress_lines)
+            self.assertIn("组审查 agent 提交审核结论：通过；返修章节=无；返修目标=无；阻塞问题=0 项。", progress_lines)
 
 
 class RevisionPlanTests(unittest.TestCase):
@@ -1247,6 +1274,12 @@ class ReviewFixLoopTests(unittest.TestCase):
                         failed_review,
                         "resp_volume_review_1",
                         ["resp_volume_fix", "resp_volume_review_1"],
+                        applications=[
+                            _agent_application(
+                                "submit_document_edits",
+                                ["0002_rewritten_chapter"],
+                            )
+                        ],
                     )
                 fake_volume_agent.call_count += 1
                 return _rewrite_agent_stage_result(passed_review, "resp_volume_review_2")
@@ -1260,6 +1293,8 @@ class ReviewFixLoopTests(unittest.TestCase):
                     side_effect=fake_volume_agent,
                 ) as agent_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
+                patch.object(rewrite_workflow, "print_progress"),
+                patch.object(chapter_shared_module, "print_progress") as agent_progress,
             ):
                 passed = rewrite_workflow.run_volume_review(
                     client=Mock(),
@@ -1285,6 +1320,23 @@ class ReviewFixLoopTests(unittest.TestCase):
             )
             self.assertIn("001", manifest["processed_volumes"])
             self.assertNotEqual(chapter_state.get("status"), "needs_revision")
+            progress_lines = "\n".join(str(call.args[0]) for call in agent_progress.call_args_list if call.args)
+            self.assertIn(
+                "卷级审核 agent 本轮执行文档工具 1 次，累计变更=0002_rewritten_chapter。",
+                progress_lines,
+            )
+            self.assertIn(
+                "卷级审核 agent 提交审核结论：未通过；返修章节=0002；返修目标=0002:chapter_text；阻塞问题=1 项。",
+                progress_lines,
+            )
+            self.assertIn(
+                "卷级审核 agent 本轮未调用文档修复工具，直接提交审核结论。",
+                progress_lines,
+            )
+            self.assertIn(
+                "卷级审核 agent 提交审核结论：通过；返修章节=无；返修目标=无；阻塞问题=0 项。",
+                progress_lines,
+            )
 
     def test_volume_review_resume_uses_persisted_response_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
