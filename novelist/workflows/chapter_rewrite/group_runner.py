@@ -123,7 +123,7 @@ def run_group_generation_workflow(
             volume_number=volume_number,
             chapter_numbers=chapter_numbers,
             status="in_progress",
-            note="开始五章组 agent 生成。",
+            note="开始当前组 agent 生成。",
             attempt=attempt,
             response_ids=response_ids,
         )
@@ -255,11 +255,11 @@ def run_group_generation_workflow(
             volume_number=volume_number,
             chapter_numbers=chapter_numbers,
             status="passed",
-            note="五章组生成已完成。",
+            note="当前组生成已完成。",
             attempt=attempt,
             response_ids=response_ids,
         )
-        print_progress(f"五章组生成已完成：{volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。")
+        print_progress(f"当前组生成已完成：{volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]}。")
         return True
 
     return False

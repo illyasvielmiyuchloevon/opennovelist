@@ -6,7 +6,7 @@ from ._shared import *  # noqa: F401,F403
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "基于 novel_adaptation 产出的工程目录，按五章组生成组纲、仿写章节、配套状态文档与审核文档，"
+            "基于 novel_adaptation 产出的工程目录，按最多五章一组生成组纲、仿写章节、配套状态文档与审核文档，"
             "使用 OpenAI Responses API 与 core 运行时。"
         )
     )
@@ -163,6 +163,29 @@ def print_volume_readiness_summary(readiness_map: dict[str, dict[str, Any]]) -> 
             for reason in info["missing"]:
                 print_progress(f"    - {reason}")
 
+
+def ensure_source_volumes_stable_for_rewrite(
+    *,
+    source_root: Path,
+    project_manifest: dict[str, Any],
+    target_volume: Path,
+    dry_run: bool,
+) -> None:
+    report = rebalance_source_volumes(
+        source_root,
+        start_volume=target_volume.name,
+        locked_volumes=set(project_manifest.get("processed_volumes", [])),
+        dry_run=True,
+    )
+    if report.needed or report.warnings:
+        for line in rebalance_summary_lines(report):
+            print_progress(line, error=bool(report.needed and report.changed and not dry_run))
+    if report.needed and report.changed and not dry_run:
+        fail(
+            "参考源当前卷或后续卷超过自适应分卷预算，章节工作流不会直接重排源卷。"
+            "请先运行 novel_adaptation，让卷资料适配阶段自动重分卷并重跑受影响卷资料。"
+        )
+
 def select_volume_to_process(
     volume_dirs: list[Path],
     manifest: dict[str, Any],
@@ -297,6 +320,7 @@ __all__ = [
     'resolve_run_mode',
     'assess_volume_readiness',
     'print_volume_readiness_summary',
+    'ensure_source_volumes_stable_for_rewrite',
     'select_volume_to_process',
     'prompt_next_chapter',
     'prompt_next_volume',

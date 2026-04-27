@@ -34,7 +34,7 @@ def process_volume_workflow(
 
         print_progress(
             f"准备处理第 {volume_material['volume_number']} 卷 "
-            f"{current_group[0]}-{current_group[-1]} 五章组。"
+            f"{current_group[0]}-{current_group[-1]} 组（{len(current_group)} 章）。"
         )
         run_group_generation_workflow(
             client=client,

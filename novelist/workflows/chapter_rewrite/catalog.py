@@ -49,6 +49,8 @@ def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | 
 
 def build_five_chapter_groups(volume_material: dict[str, Any]) -> list[list[str]]:
     chapter_numbers = [chapter["chapter_number"] for chapter in volume_material["chapters"]]
+    # Groups are strictly volume-local. The final group may contain fewer than
+    # five chapters after adaptive source splitting; never pull from next volume.
     return [
         chapter_numbers[index : index + FIVE_CHAPTER_REVIEW_SIZE]
         for index in range(0, len(chapter_numbers), FIVE_CHAPTER_REVIEW_SIZE)
@@ -103,7 +105,7 @@ def find_group_for_chapter(volume_material: dict[str, Any], chapter_number: str)
     for group in build_five_chapter_groups(volume_material):
         if normalized in group:
             return group
-    fail(f"未找到章节 {normalized} 对应的五章区间。")
+    fail(f"未找到章节 {normalized} 对应的当前组区间。")
 
 def build_chapter_session_key(manifest: dict[str, Any], volume_number: str, chapter_number: str) -> str:
     seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|{chapter_number}"
@@ -393,12 +395,13 @@ def build_five_chapter_generation_shared_prompt(
             "rewrite_output_root": manifest["rewrite_output_root"],
         },
         "workflow_rules": [
-            "当前任务是五章组生成阶段：组纲、五章正文和必要状态文档更新属于同一个 agent 阶段。",
+            "当前任务是最多五章一组的组生成阶段：组纲、当前组正文和必要状态文档更新属于同一个 agent 阶段。",
+            "当前组只包含本卷 generation_range 中列出的章节；如果这是当前卷最后短组，不得补入下一卷章节。",
             "组纲是本组唯一新规划产物；新运行不得创建独立章纲文件。",
             "需要单章规划时，从组纲内对应二级标题块读取或修订，而不是读取新的独立章纲目标。",
             "全局注入是每卷每组都要看的资料；卷级注入只限当前卷；旧单章章纲只作为只读兼容输入。",
             "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
-            "参考源当前五章提供情节功能映射、篇幅、叙事节奏、情节结构、对话密度、句长、段落分割与收尾方式的直接参照；除非审核意见明确要求，不得明显扩写。",
+            "参考源当前组章节提供情节功能映射、篇幅、叙事节奏、情节结构、对话密度、句长、段落分割与收尾方式的直接参照；除非审核意见明确要求，不得明显扩写。",
             "遇到旧审核意见或旧章纲时要吸收有效约束，但最终以组纲和当前目标文件为准。",
         ],
         "source_files": [
@@ -426,7 +429,7 @@ def build_five_chapter_generation_shared_prompt(
         "current_range_source_bundle": source_bundle,
     }
     return (
-        "## Five Chapter Generation Shared Context\n"
+        "## Group Generation Shared Context\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
         + "\n\n"
         + "## Dynamic Request\n"
@@ -454,7 +457,7 @@ def build_five_chapter_review_shared_prompt(
             "rewrite_output_root": manifest["rewrite_output_root"],
         },
         "workflow_rules": [
-            f"当前任务是{FIVE_CHAPTER_REVIEW_NAME}，只审查当前这一个五章区间。",
+            f"当前任务是{FIVE_CHAPTER_REVIEW_NAME}，只审查当前这一个组区间；当前卷最后短组不足五章时也按完整组审查。",
             "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅、剧情是否偏离参考源、卷纲与全书大纲。",
             "如果审核不通过，必须明确指出需要返工的章节编号。",
         ],
@@ -467,7 +470,7 @@ def build_five_chapter_review_shared_prompt(
         "rewritten_chapters": rewritten_chapters,
     }
     return (
-        "## Five Chapter Alignment Review Context\n"
+        "## Group Alignment Review Context\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
         + "\n\n"
         + "## Dynamic Request\n"

@@ -81,6 +81,16 @@ def main() -> int:
         migration_warnings = ensure_project_dirs(Path(manifest["project_root"]))
         for warning in migration_warnings:
             print_progress(warning, error=True)
+        volume_dirs = prepare_source_volumes_for_adaptation(
+            source_root=source_root,
+            manifest=manifest,
+            target_volume=first_target_volume,
+            dry_run=args.dry_run,
+        )
+        first_target_volume = select_volume_to_process(volume_dirs, manifest, requested_volume)
+        if first_target_volume is None:
+            print_progress("所有卷都已处理完成，没有新的卷需要生成。")
+            return 0
         if args.dry_run:
             print_progress(f"本次准备处理第 {first_target_volume.name} 卷。")
             volume_material = load_volume_material(first_target_volume)

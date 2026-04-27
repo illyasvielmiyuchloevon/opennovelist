@@ -58,12 +58,17 @@ def main() -> int:
 
         target_volume = select_volume_to_process(volume_dirs, rewrite_manifest, readiness_map, args.volume)
         target_chapter = args.chapter.zfill(4) if args.chapter else None
-        if args.dry_run:
-            render_dry_run_summary(rewrite_manifest, readiness_map, target_volume, target_chapter, run_mode)
-            return 0
-
         if target_volume is None:
             print_progress("当前没有可进入章节工作流的卷。")
+            return 0
+        ensure_source_volumes_stable_for_rewrite(
+            source_root=source_root,
+            project_manifest=project_manifest,
+            target_volume=target_volume,
+            dry_run=args.dry_run,
+        )
+        if args.dry_run:
+            render_dry_run_summary(rewrite_manifest, readiness_map, target_volume, target_chapter, run_mode)
             return 0
 
         print_progress(f"本次运行模式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
@@ -104,7 +109,7 @@ def main() -> int:
                 f"已扫描第 {current_volume.name} 卷："
                 f"{len(volume_material['chapters'])} 个章节文件，"
                 f"{len(volume_material['extras'])} 个补充文件；"
-                "组生成/组审时只读取当前五章参考源正文。"
+                "组生成/组审时只读取当前组参考源正文；当前卷最后不足五章也按一组处理。"
             )
             completed_scope, next_target = process_volume_workflow(
                 client=client,

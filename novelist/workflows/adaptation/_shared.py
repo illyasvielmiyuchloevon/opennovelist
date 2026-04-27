@@ -27,6 +27,12 @@ import novelist.core.document_ops as document_ops
 import novelist.core.openai_config as openai_config
 import novelist.core.responses_runtime as llm_runtime
 from novelist.core.workflow_tools import WORKFLOW_SUBMISSION_TOOL_NAME
+from novelist.workflows.split_novel import (
+    TARGET_VOLUME_SOURCE_CHARS,
+    RebalanceReport,
+    rebalance_source_volumes,
+    rebalance_summary_lines,
+)
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"

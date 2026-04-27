@@ -12,6 +12,7 @@ from novelist.workflows.chapter_rewrite import chapter_runner as chapter_runner_
 from novelist.workflows.chapter_rewrite import group_runner as group_runner_module
 from novelist.workflows.chapter_rewrite import responses as chapter_responses_module
 from novelist.workflows.chapter_rewrite import review as chapter_review_module
+from novelist.workflows.chapter_rewrite import volume_runner as volume_runner_module
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -545,6 +546,59 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
         self.assertEqual(payload["document_request"]["required_group_outline_file"], "0001_0005_group_outline.md")
         group_target = next(item for item in payload["update_target_files"] if item["file_key"] == "group_outline")
         self.assertEqual(group_target["required_structure"]["chapter_headings"], ["## 0001", "## 0002", "## 0003", "## 0004", "## 0005"])
+
+    def test_last_volume_group_can_be_short_without_crossing_volume(self) -> None:
+        chapter_numbers = [f"{index:04d}" for index in range(1, 49)]
+        volume_material = _volume_material(chapter_numbers)
+
+        groups = rewrite_workflow.build_five_chapter_groups(volume_material)
+
+        self.assertEqual(groups[-1], ["0046", "0047", "0048"])
+        self.assertEqual(len(groups[-1]), 3)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0046")
+            payload, _, _ = rewrite_workflow.build_group_generation_payload(
+                project_root=project_root,
+                volume_material=volume_material,
+                volume_number="001",
+                chapter_numbers=groups[-1],
+                catalog=catalog,
+            )
+
+        target_keys = [item["file_key"] for item in payload["update_target_files"]]
+        self.assertEqual(payload["document_request"]["chapter_numbers"], ["0046", "0047", "0048"])
+        self.assertEqual(payload["document_request"]["chapter_count"], 3)
+        self.assertIn("0046_rewritten_chapter", target_keys)
+        self.assertIn("0048_rewritten_chapter", target_keys)
+        self.assertNotIn("0049_rewritten_chapter", target_keys)
+        self.assertNotIn("0050_rewritten_chapter", target_keys)
+        self.assertIn("禁止补入下一卷章节", "\n".join(payload["requirements"]))
+
+    def test_process_volume_runs_short_final_group_as_one_group(self) -> None:
+        chapter_numbers = ["0001", "0002", "0003"]
+        volume_material = _volume_material(chapter_numbers)
+        manifest = _manifest(Path("F:/project"))
+
+        with (
+            patch.object(volume_runner_module, "run_group_generation_workflow") as generation,
+            patch.object(volume_runner_module, "run_five_chapter_review") as review,
+            patch.object(volume_runner_module, "print_progress"),
+        ):
+            completed_scope, next_target = volume_runner_module.process_volume_workflow(
+                client=Mock(),
+                model="test-model",
+                rewrite_manifest=manifest,
+                volume_material=volume_material,
+                run_mode=rewrite_workflow.RUN_MODE_GROUP,
+            )
+
+        self.assertEqual((completed_scope, next_target), ("group", None))
+        generation.assert_called_once()
+        review.assert_called_once()
+        self.assertEqual(generation.call_args.kwargs["chapter_numbers"], ["0001", "0002", "0003"])
+        self.assertEqual(review.call_args.kwargs["chapter_numbers"], ["0001", "0002", "0003"])
 
     def test_process_volume_runs_group_generation_then_group_review(self) -> None:
         chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]

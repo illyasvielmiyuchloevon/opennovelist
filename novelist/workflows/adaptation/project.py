@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 from ._shared import *  # noqa: F401,F403
 
 
@@ -379,6 +381,180 @@ def find_next_pending_volume_after(
         return volume_dir
     return None
 
+
+def _source_rebalance_volume_payload(volume: Any) -> dict[str, Any]:
+    chapters = list(getattr(volume, "chapters", []) or [])
+    return {
+        "volume_number": getattr(volume, "volume_number", ""),
+        "chapter_count": len(chapters),
+        "chapter_range": (
+            f"{chapters[0].chapter_number}-{chapters[-1].chapter_number}"
+            if chapters
+            else ""
+        ),
+        "source_char_count": getattr(volume, "source_char_count", 0),
+        "over_budget": bool(getattr(volume, "over_budget", False)),
+        "warning": getattr(volume, "warning", ""),
+    }
+
+
+def append_source_rebalance_history(
+    manifest: dict[str, Any],
+    report: RebalanceReport,
+    *,
+    project_backup_dir: Path | None = None,
+) -> None:
+    history = manifest.setdefault("source_rebalance_history", [])
+    history.append(
+        {
+            "timestamp": now_iso(),
+            "start_volume": report.start_volume,
+            "target_chars": TARGET_VOLUME_SOURCE_CHARS,
+            "affected_volumes": report.affected_volumes,
+            "locked_volumes": report.locked_volumes,
+            "source_backup_dir": str(report.backup_dir) if report.backup_dir is not None else "",
+            "project_backup_dir": str(project_backup_dir) if project_backup_dir is not None else "",
+            "old_volumes": [_source_rebalance_volume_payload(volume) for volume in report.old_volumes],
+            "new_volumes": [_source_rebalance_volume_payload(volume) for volume in report.new_volumes],
+            "warnings": report.warnings,
+        }
+    )
+
+
+def backup_project_outputs_for_source_rebalance(
+    manifest: dict[str, Any],
+    report: RebalanceReport,
+) -> Path | None:
+    project_root = Path(manifest["project_root"])
+    processed = {str(item).zfill(3) for item in manifest.get("processed_volumes", [])}
+    affected = [volume for volume in report.affected_volumes if volume not in processed]
+    if not affected:
+        return None
+
+    timestamp = now_iso().replace(":", "").replace("+", "_")
+    backup_root = project_root / "source_rebalance_backups" / timestamp
+    moved_any = False
+    for volume_number in affected:
+        candidates = [
+            project_root / VOLUME_ROOT_DIRNAME / f"{volume_number}{VOLUME_DIR_SUFFIX}",
+            project_root / "group_injection" / f"{volume_number}_group_injection",
+            project_root / "rewritten_novel" / volume_number,
+        ]
+        for source in candidates:
+            if not source.exists():
+                continue
+            target = backup_root / source.relative_to(project_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(target))
+            moved_any = True
+
+    return backup_root if moved_any else None
+
+
+def clear_unprocessed_manifest_state_after_rebalance(
+    manifest: dict[str, Any],
+    report: RebalanceReport,
+    *,
+    volume_count: int,
+) -> None:
+    affected = set(report.affected_volumes)
+    processed = [str(item).zfill(3) for item in manifest.get("processed_volumes", [])]
+    manifest["processed_volumes"] = sorted(volume for volume in processed if volume not in affected)
+    manifest["total_volumes"] = volume_count
+    if str(manifest.get("last_processed_volume") or "").zfill(3) in affected:
+        manifest["last_processed_volume"] = manifest["processed_volumes"][-1] if manifest["processed_volumes"] else None
+    clear_rewrite_manifest_after_source_rebalance(manifest, affected_volumes=affected, volume_count=volume_count)
+
+
+def clear_rewrite_manifest_after_source_rebalance(
+    manifest: dict[str, Any],
+    *,
+    affected_volumes: set[str],
+    volume_count: int,
+) -> None:
+    project_root = Path(manifest["project_root"])
+    rewrite_manifest_path = project_root / "00_chapter_rewrite_manifest.md"
+    if not rewrite_manifest_path.exists():
+        return
+    rewrite_manifest = extract_json_payload(rewrite_manifest_path.read_text(encoding="utf-8"))
+    for key in (
+        "chapter_states",
+        "volume_review_states",
+        "five_chapter_review_states",
+        "group_generation_states",
+    ):
+        value = rewrite_manifest.get(key)
+        if isinstance(value, dict):
+            for volume_number in affected_volumes:
+                value.pop(volume_number, None)
+    processed = [str(item).zfill(3) for item in rewrite_manifest.get("processed_volumes", [])]
+    rewrite_manifest["processed_volumes"] = sorted(volume for volume in processed if volume not in affected_volumes)
+    rewrite_manifest["total_volumes"] = volume_count
+    if str(rewrite_manifest.get("last_processed_volume") or "").zfill(3) in affected_volumes:
+        rewrite_manifest["last_processed_volume"] = (
+            rewrite_manifest["processed_volumes"][-1] if rewrite_manifest["processed_volumes"] else None
+        )
+    if str(rewrite_manifest.get("last_processed_chapter") or "").strip():
+        last_volume = str(rewrite_manifest.get("last_processed_volume") or "").zfill(3)
+        if last_volume in affected_volumes or not last_volume:
+            rewrite_manifest["last_processed_chapter"] = None
+    write_markdown_data(
+        rewrite_manifest_path,
+        title="Chapter Rewrite Manifest",
+        payload=rewrite_manifest,
+        summary_lines=[
+            f"new_book_title: {rewrite_manifest.get('new_book_title', '')}",
+            f"source_root: {rewrite_manifest.get('source_root', '')}",
+            f"rewrite_output_root: {rewrite_manifest.get('rewrite_output_root', '')}",
+            f"processed_volumes: {', '.join(rewrite_manifest.get('processed_volumes', [])) or 'none'}",
+            f"last_processed_volume: {rewrite_manifest.get('last_processed_volume') or 'none'}",
+            f"last_processed_chapter: {rewrite_manifest.get('last_processed_chapter') or 'none'}",
+        ],
+    )
+
+
+def prepare_source_volumes_for_adaptation(
+    *,
+    source_root: Path,
+    manifest: dict[str, Any],
+    target_volume: Path,
+    dry_run: bool,
+) -> list[Path]:
+    report = rebalance_source_volumes(
+        source_root,
+        start_volume=target_volume.name,
+        locked_volumes=set(manifest.get("processed_volumes", [])),
+        dry_run=dry_run,
+    )
+    if report.needed or report.warnings:
+        for line in rebalance_summary_lines(report):
+            print_progress(line, error=report.blocked)
+    if report.blocked and not dry_run:
+        fail("参考源自适应分卷被阻止，请按上方提示处理后再继续。")
+
+    if dry_run:
+        return discover_volume_dirs(source_root)
+
+    project_backup_dir: Path | None = None
+    if report.needed and report.changed:
+        project_backup_dir = backup_project_outputs_for_source_rebalance(manifest, report)
+        if project_backup_dir is not None:
+            print_progress(f"已备份受影响的未完成产物目录：{project_backup_dir}")
+        volume_dirs = discover_volume_dirs(source_root)
+        clear_unprocessed_manifest_state_after_rebalance(
+            manifest,
+            report,
+            volume_count=len(volume_dirs),
+        )
+        append_source_rebalance_history(manifest, report, project_backup_dir=project_backup_dir)
+        save_manifest(manifest)
+        return volume_dirs
+
+    volume_dirs = discover_volume_dirs(source_root)
+    manifest["total_volumes"] = len(volume_dirs)
+    save_manifest(manifest)
+    return volume_dirs
+
 def resolve_run_mode(args: argparse.Namespace) -> str:
     if args.run_mode:
         return args.run_mode
@@ -615,6 +791,11 @@ __all__ = [
     'init_or_load_project',
     'select_volume_to_process',
     'find_next_pending_volume_after',
+    'append_source_rebalance_history',
+    'backup_project_outputs_for_source_rebalance',
+    'clear_unprocessed_manifest_state_after_rebalance',
+    'clear_rewrite_manifest_after_source_rebalance',
+    'prepare_source_volumes_for_adaptation',
     'resolve_run_mode',
     'stage_paths',
     'write_source_inventory_snapshot',

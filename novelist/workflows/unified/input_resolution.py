@@ -244,7 +244,7 @@ def run_split_stage(source_file: Path) -> Path:
     intro, chapters = split_novel.split_chapters(text)
     output_root = split_novel.ensure_output_root(source_file)
     intro_path = split_novel.write_intro_file(intro, source_file, output_root)
-    volume_count = split_novel.write_chapters(chapters, source_file, output_root)
+    volume_count = split_novel.write_chapters(chapters, source_file, output_root, emit_summary=print_progress)
     print_progress(f"split_novel 已完成：源文件 {source_file}")
     print_progress(f"读取编码：{encoding}")
     print_progress(f"拆分章节数：{len(chapters)}")

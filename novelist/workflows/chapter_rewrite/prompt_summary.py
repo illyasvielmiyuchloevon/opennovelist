@@ -48,7 +48,7 @@ def group_generation_shared_prefix_summary_lines(
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前组："
             f"{chapter_numbers[0]}-{chapter_numbers[-1]}。"
         ),
-        "固定工作流规则：五章组生成规则 7 条。",
+        f"固定工作流规则：最多五章一组；当前组 {len(chapter_numbers)} 章，当前卷最后短组不得跨卷补章。",
         (
             f"固定参考源原文：当前组 source bundle，只包含本组 {len(chapter_numbers)} 章参考源与 "
             f"{len(volume_material['extras'])} 个补充文件，字符数约 {source_char_count}。"

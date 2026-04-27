@@ -37,6 +37,11 @@ from novelist.core.workflow_tools import (
 from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
 import novelist.core.openai_config as openai_config
 import novelist.core.responses_runtime as llm_runtime
+from novelist.workflows.split_novel import (
+    RebalanceReport,
+    rebalance_source_volumes,
+    rebalance_summary_lines,
+)
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"
@@ -122,13 +127,13 @@ LEGACY_GLOBAL_FILE_RENAMES = {
 COMMON_CHAPTER_STAGE_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
     "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
-    "组生成阶段可以多次调用 write/edit/patch 写入组纲、五章正文和状态文档，全部目标完成后必须调用 submit_workflow_result。"
+    "组生成阶段可以多次调用 write/edit/patch 写入组纲、当前组正文和状态文档，全部目标完成后必须调用 submit_workflow_result。"
     "组审和卷审阶段可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须调用 submit_workflow_result 提交审核结论。"
     "修订已有章节正文、组纲内某章细纲、状态文档、审核文档或修正 old_text / match_text 定位时，必须使用文档 write/edit/patch 工具。"
 )
 COMMON_CHAPTER_STAGE_TOOL_RULE = (
     "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
-    "章节仿写的新流程按五章组运行：生成阶段用同一个 agent 会话处理组纲、五章正文和状态文档，审核阶段只保留组审与卷审。"
+    "章节仿写的新流程按最多五章一组运行：生成阶段用同一个 agent 会话处理组纲、当前组正文和状态文档；当前卷最后一组不足五章时按短组处理，不得补入下一卷章节。"
     "组生成阶段需要先把文件落盘，最后用 submit_workflow_result 结束；审核阶段可先返修，再用 submit_workflow_result 提交 passed/review_md。"
     "新运行不得创建独立章纲或章级审核文件；旧章纲只作为只读兼容输入。"
 )
