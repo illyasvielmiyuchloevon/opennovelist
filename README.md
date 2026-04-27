@@ -4,7 +4,7 @@
 
 - 原始小说按章节/分卷拆分
 - 基于参考源逐卷生成改编规划文档
-- 基于规划文档逐章生成仿写正文、状态文档与审核文档
+- 基于规划文档按五章组生成组纲、仿写正文、状态文档与审核文档
 - 统一入口调度完整工作流，并支持断点续跑
 
 项目主要面向 Windows + PowerShell 使用场景，所有工作流入口都支持交互式运行。
@@ -21,13 +21,13 @@
   - 伏笔文档
   - 卷级大纲
 - [novelist/workflows/novel_chapter_rewrite.py](./novelist/workflows/novel_chapter_rewrite.py)
-  兼容入口；内部实现位于 `novelist/workflows/chapter_rewrite/`。读取改编工程目录，逐章生成：
-  - 章纲
-  - 仿写正文
+  兼容入口；内部实现位于 `novelist/workflows/chapter_rewrite/`。读取改编工程目录，按五章组生成：
+  - 组纲（一个文件内包含五章细纲）
+  - 五章仿写正文
   - 人物状态卡 / 人物关系链
   - 卷级剧情进程
   - 世界状态
-  - 章级审核 / 组审查 / 卷级审核
+  - 组审查 / 卷级审核
 - [novel_workflow.py](./novel_workflow.py)
 - 一键启动脚本：[start_workflow.bat](./start_workflow.bat)
   统一入口，自动识别输入类型并串联以上三步。
@@ -44,6 +44,7 @@
 世界观设定不再单独生成 `01_world_design.md`，由 `01_world_model.md` 统一承载，避免世界观与世界模型重复注入。
 `01_world_model.md` 是新书全书世界观、世界知识模型和设定的唯一来源，只写全书级世界知识和稳定设定；必须使用新书自己的命名、数值体系、等级体系、术语体系和话语体系，不能沿用参考源同名实体或同一套概念表达。
 `02_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；后续卷只读取与审核这份文风文档，不再更新它。
+agent 阶段按 OpenCode 风格维护本地 transcript：首轮发送阶段完整上下文，工具轮会把本阶段大上下文、已发生的工具调用和工具结果一起重新组装发送，不把 `previous_response_id` 当作唯一上下文来源。卷资料审核阶段会在同一个审核逻辑会话内压缩上下文：每轮审核都重新发送稳定前缀、当前卷参考源和最新落盘资料文档，但 provider 请求不沿用生成阶段或上一轮审核的旧 `previous_response_id`。
 资料适配阶段会硬性阻断参考源污染：生成任何规划文档时都禁止把参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系直接写入新书资料，只允许保留功能映射。
 
 ## 推荐用法
@@ -97,7 +98,7 @@ python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 
 1. `novelist.workflows.split_novel` 先拆分小说
 2. `novelist.workflows.novel_adaptation` 生成逐卷改编规划
-3. `novelist.workflows.novel_chapter_rewrite` 生成逐章正文与审核文档
+3. `novelist.workflows.novel_chapter_rewrite` 按五章组生成正文、组纲与审核文档
 
 ### 2. 从已拆分好的目录开始
 
@@ -191,21 +192,21 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 ├─ volume_injection/
 │  └─ 001_volume_injection/
 │     ├─ 001_volume_plot_progress.md
-│     ├─ 001_volume_review.md
-│     └─ 0001_chapter_outline/
-│        ├─ 0001_chapter_outline.md
-│        ├─ 0001_chapter_review.md
-│        └─ 00_stage_manifest.md
+│     └─ 001_volume_review.md
 ├─ group_injection/
 │  └─ 001_group_injection/
 │     └─ 0001_0005_group_injection/
-│        └─ 0001_0005_group_review.md
+│        ├─ 0001_0005_group_outline.md
+│        ├─ 0001_0005_group_review.md
+│        └─ 00_group_stage_manifest.md
 └─ rewritten_novel/
    └─ 001/
       ├─ 0001.txt
       ├─ 0002.txt
       └─ ...
 ```
+
+新流程不再新建独立 `0001_chapter_outline.md`。`0001_0005_group_outline.md` 的顶层标题为 `# 0001-0005 组纲`，内部用 `## 0001` 到 `## 0005` 分别承载每章细纲，细纲格式沿用旧单章章纲要求。
 
 ## 运行模式
 
@@ -219,11 +220,11 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 ### `novel_chapter_rewrite`
 
 - `chapter`
-  按章节推进
+  按指定章节所在五章组推进
 - `group`
-  按 5 章一组推进，并包含组审查
+  按 5 章一组推进，并包含组生成与组审查
 - `volume`
-  跑完整卷，包含章审、组审查、卷审查
+  跑完整卷，包含所有组生成、组审查、卷审查
 
 ### 统一入口
 

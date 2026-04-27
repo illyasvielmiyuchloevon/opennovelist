@@ -6,7 +6,7 @@ from ._shared import *  # noqa: F401,F403
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "基于 novel_adaptation 产出的工程目录，逐章生成仿写章节、配套状态文档与审核文档，"
+            "基于 novel_adaptation 产出的工程目录，按五章组生成组纲、仿写章节、配套状态文档与审核文档，"
             "使用 OpenAI Responses API 与 core 运行时。"
         )
     )

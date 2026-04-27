@@ -101,6 +101,126 @@ def print_request_context_summary(
     else:
         print_progress("  阶段会话：本阶段首次请求，将创建新的阶段会话。")
 
+def _payload_text(entry: Any) -> str:
+    if isinstance(entry, str):
+        return entry.strip()
+    if not isinstance(entry, dict):
+        return ""
+    for key in ("content", "current_content", "text"):
+        value = entry.get(key)
+        if isinstance(value, str):
+            return value.strip()
+    return ""
+
+def _payload_char_count(entry: Any) -> int:
+    text = _payload_text(entry)
+    if text:
+        return len(text)
+    if isinstance(entry, dict):
+        for key in ("char_count", "current_char_count", "source_char_count"):
+            value = entry.get(key)
+            if isinstance(value, int):
+                return value
+    return 0
+
+def _payload_file_line(section_label: str, key: str, entry: Any) -> str:
+    if isinstance(entry, dict):
+        label = str(entry.get("label") or adaptation_doc_label(key)).strip()
+        file_name = str(entry.get("file_name") or GLOBAL_FILE_NAMES.get(key, key)).strip()
+        file_path = str(entry.get("file_path") or "").strip()
+        location = f" -> {file_path}" if file_path else f"（{file_name}）"
+        preferred_mode = str(entry.get("preferred_mode") or "").strip()
+        mode_suffix = f"，建议工具={preferred_mode}" if preferred_mode else ""
+        return f"{section_label}：{label}{location}（字符数约 {_payload_char_count(entry)}{mode_suffix}）"
+
+    file_name = GLOBAL_FILE_NAMES.get(key, key)
+    return f"{section_label}：{adaptation_doc_label(key)}（{file_name}，字符数约 {_payload_char_count(entry)}）"
+
+def adaptation_payload_input_summary_lines(payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    existing_global_docs = payload.get("existing_global_docs")
+    if isinstance(existing_global_docs, dict):
+        for key, content in existing_global_docs.items():
+            lines.append(_payload_file_line("既有全局资料输入", str(key), content))
+
+    for field_name, section_label in (
+        ("target_files", "生成目标文件当前内容"),
+        ("adaptation_documents", "卷资料审核文档输入"),
+        ("update_target_files", "审核返修目标文件当前内容"),
+    ):
+        value = payload.get(field_name)
+        if not isinstance(value, list):
+            continue
+        for index, entry in enumerate(value, start=1):
+            key = str(entry.get("file_key") or index) if isinstance(entry, dict) else str(index)
+            lines.append(_payload_file_line(section_label, key, entry))
+
+    return lines
+
+def adaptation_source_file_summary_lines(
+    volume_material: dict[str, Any],
+    loaded_files: list[dict[str, Any]],
+    source_char_count: int,
+) -> list[str]:
+    file_text_total = sum(int(item.get("char_count") or 0) for item in loaded_files)
+    lines = [
+        f"参考源 source bundle 字符数约 {source_char_count}（包含文件标记和路径行）。",
+        f"参考源文件原文字符数合计约 {file_text_total}。",
+        f"参考源文件数量：章节 {len(volume_material['chapters'])} 个，补充文件 {len(volume_material['extras'])} 个。",
+    ]
+    extras = [item for item in loaded_files if item.get("type") == "extra"]
+    chapters = [item for item in loaded_files if item.get("type") == "chapter"]
+    for index, chunk in enumerate(chunk_text_items([str(item["file_name"]) for item in extras], 8), start=1):
+        lines.append(f"补充源文件[{index}]：{chunk}")
+    for index, chunk in enumerate(chunk_text_items([str(item["file_name"]) for item in chapters], 10), start=1):
+        lines.append(f"章节源文件[{index}]：{chunk}")
+    return lines
+
+def print_adaptation_request_context_summary(
+    *,
+    request_label: str,
+    volume_material: dict[str, Any],
+    loaded_files: list[dict[str, Any]],
+    source_char_count: int,
+    payload: dict[str, Any],
+    previous_response_id: str | None,
+    prompt_cache_key: str | None,
+    user_input_char_count: int,
+    allowed_files: dict[str, Path] | None = None,
+    session_status_line: str | None = None,
+) -> None:
+    print_progress(f"{request_label} 本次请求将携带以下内容：")
+    print_progress(f"  当前定位：第 {volume_material['volume_number']} 卷。")
+    if prompt_cache_key:
+        print_progress(f"  提示词缓存键：{prompt_cache_key}")
+    if session_status_line:
+        print_progress(f"  {session_status_line}")
+    elif previous_response_id:
+        print_progress(f"  会话：沿用 previous_response_id={previous_response_id}")
+    else:
+        print_progress("  会话：本轮首次请求，将创建新的会话。")
+    print_progress(f"  user_input 字符数约 {user_input_char_count}。")
+
+    print_progress("  参考源输入：")
+    for line in adaptation_source_file_summary_lines(volume_material, loaded_files, source_char_count):
+        print_progress(f"    - {line}")
+
+    print_progress("  payload 文档/文件输入：")
+    payload_lines = adaptation_payload_input_summary_lines(payload)
+    if payload_lines:
+        for line in payload_lines:
+            print_progress(f"    - {line}")
+    else:
+        print_progress("    - 无。")
+
+    if allowed_files is not None:
+        print_progress("  工具允许修改文件（执行权限清单，不额外注入正文）：")
+        for file_key, path in allowed_files.items():
+            current_content = read_text_if_exists(path).strip()
+            print_progress(
+                f"    - {adaptation_doc_label(file_key)} -> {path}（当前字符数约 {len(current_content)}）"
+            )
+
 def should_generate_style_guide(volume_number: str) -> bool:
     return volume_number == "001"
 
@@ -222,7 +342,7 @@ def build_stage_shared_prompt(
             "普通剧情事实、单章细节、阶段性成果、战绩、奖励、排名、过场信息和一次性设定不得写入全局资料。",
             "所有映射关系都写成功能映射，不要照抄参考源原文句子。",
             "严禁把参考源的人名、地名、势力名、事件名、专用术语、等级体系、称谓口吻或话语体系直接代入新书资料；必须转换为目标世界观下的新命名与新表达。",
-            "本阶段的每一次请求都会重新附带当前卷全部文件原文与文件清单。",
+            "本阶段以 agent 会话推进；会话初始输入会附带当前卷全部文件原文、文件清单和全部目标文件，后续可通过工具回传继续多轮处理。",
         ],
         "loaded_files": loaded_files,
         "source_char_count": source_char_count,
@@ -249,13 +369,98 @@ def latest_work_target(instruction: str) -> dict[str, Any]:
     return {
         "type": "latest_user_input",
         "instruction": instruction,
-        "forbidden_tool": ADAPTATION_REVIEW_TOOL_NAME,
+        "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
     }
 
 def document_output_path(paths: dict[str, Path], doc_key: str) -> Path:
     if doc_key in paths:
         return paths[doc_key]
     fail(f"未找到文档输出路径：{doc_key}")
+
+def adaptation_generation_target_inventory(
+    *,
+    paths: dict[str, Path],
+    document_plan: list[dict[str, Any]],
+    current_docs: dict[str, str],
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    for doc_spec in document_plan:
+        doc_key = str(doc_spec["key"])
+        output_path = document_output_path(paths, doc_key)
+        current_content = current_docs.get(doc_key, read_text_if_exists(output_path)).strip()
+        targets.append(
+            {
+                "file_key": doc_key,
+                "label": doc_spec["label"],
+                "scope": doc_spec["scope"],
+                "file_name": output_path.name,
+                "file_path": str(output_path),
+                "exists": output_path.exists(),
+                "current_char_count": len(current_content),
+                "current_content": current_content,
+                "preferred_mode": "edit_or_patch" if current_content else "write",
+                "document_request": build_document_request(doc_key),
+                "tool_selection_policy": (
+                    "按修改意图选择工具：已有正文局部修订、名称术语清理、替换已有段落用 edit；"
+                    "插入新段落、追加新条目、按 Markdown 标题补充或替换小节正文用 patch；"
+                    "文件为空或首次创建时才用 write。"
+                ),
+            }
+        )
+    return targets
+
+def build_adaptation_generation_agent_request(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    paths: dict[str, Path],
+    document_plan: list[dict[str, Any]],
+    current_docs: dict[str, str],
+) -> dict[str, Any]:
+    targets = adaptation_generation_target_inventory(
+        paths=paths,
+        document_plan=document_plan,
+        current_docs=current_docs,
+    )
+    target_doc_keys = {str(item["key"]) for item in document_plan}
+    return {
+        "document_request": {
+            "phase": "adaptation_generation_agent",
+            "role": "资料适配生成 agent",
+            "task": "在同一个资料生成 agent 会话内完成当前卷所有目标资料文档的生成或增量修订，然后提交阶段完成结果。",
+        },
+        "generation_scope": {
+            "new_book_title": manifest["new_book_title"],
+            "target_worldview": manifest["target_worldview"],
+            "current_volume": volume_material["volume_number"],
+            "target_file_count": len(targets),
+        },
+        "requirements": [
+            *source_contamination_guardrails(),
+            "这是一个 agent 生成阶段，不再由外层按单文档逐次请求。请自行安排处理顺序，可以多轮调用工具，但最终必须覆盖 target_files 中所有目标文件。",
+            "所有目标文件必须服务后续仿写；只写长期可复用的稳定设计、结构规则、功能映射和约束。",
+            "不要为了显得完整、填满结构或覆盖全部素材而硬塞内容；没有实际用途的信息不写。",
+            "参考源只能作为功能映射来源，不能把参考源人物、地点、势力、事件、术语、等级体系或话语体系直接写成新书主体。",
+            "世界模型只承载全书世界观和世界知识；全书大纲承载卷级方向；伏笔文档只承载合格伏笔设计索引；卷级大纲只承载当前卷仿写结构。",
+            "第 001 卷需要生成并定稿文笔写作风格文档；后续卷不应改写 style_guide。",
+            "每次调用 write/edit/patch 可以处理一个或多个目标文件。全部目标文件处理完成并确认存在正文后，必须调用 submit_workflow_result 结束生成阶段。",
+        ],
+        "target_files": targets,
+        "existing_global_docs": build_injected_global_docs(current_docs, exclude_keys=target_doc_keys),
+        "output_contract": {
+            "completion_tool": "submit_workflow_result",
+            "summary": "说明本次生成/修订了哪些文件，以及是否有文件无变化。",
+            "generated_files": "列出已处理的 file_key。",
+        },
+        "latest_work_target": {
+            "type": "latest_user_input",
+            "instruction": (
+                "这是本阶段 agent 会话的工作目标：完成当前卷所有资料文档。"
+                "先按需调用 write/edit/patch 写入 target_files，全部完成后调用 submit_workflow_result。"
+            ),
+            "required_final_tool": "submit_workflow_result",
+        },
+    }
 
 def build_target_file_context(
     *,
@@ -319,7 +524,7 @@ def generate_document_operation(
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订文笔写作风格文档。"
                     "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                    "不要调用 submit_adaptation_review。"
+                "不要调用 submit_workflow_result。"
                 ),
             },
         )
@@ -360,7 +565,7 @@ def generate_document_operation(
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订全书大纲文档。"
                     "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                    "不要调用 submit_adaptation_review。"
+                "不要调用 submit_workflow_result。"
                 ),
             },
         )
@@ -400,7 +605,7 @@ def generate_document_operation(
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订伏笔文档。"
                     "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                    "不要调用 submit_adaptation_review。"
+                "不要调用 submit_workflow_result。"
                 ),
             },
         )
@@ -446,7 +651,7 @@ def generate_document_operation(
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订世界模型文档。"
                     "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                    "不要调用 submit_adaptation_review。"
+                "不要调用 submit_workflow_result。"
                 ),
             },
         )
@@ -480,7 +685,7 @@ def generate_document_operation(
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订当前卷的卷级大纲文档。"
                     "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                    "不要调用 submit_adaptation_review。"
+                "不要调用 submit_workflow_result。"
                 ),
             },
         )
@@ -514,6 +719,9 @@ __all__ = [
     'source_contamination_guardrails',
     'source_material_boundary',
     'print_request_context_summary',
+    'adaptation_payload_input_summary_lines',
+    'adaptation_source_file_summary_lines',
+    'print_adaptation_request_context_summary',
     'should_generate_style_guide',
     'build_document_request',
     'build_document_plan',
@@ -522,6 +730,8 @@ __all__ = [
     'build_stage_shared_prompt',
     'build_payload_with_trailing_docs',
     'latest_work_target',
+    'adaptation_generation_target_inventory',
+    'build_adaptation_generation_agent_request',
     'document_output_path',
     'build_target_file_context',
     'generate_document_operation',

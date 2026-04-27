@@ -26,7 +26,13 @@ from novelist.core.novel_source import (
     build_chapter_source_bundle,
     discover_volume_dirs,
     get_chapter_material,
+    load_volume_index,
     load_volume_material,
+    load_volume_material_for_chapters,
+)
+from novelist.core.workflow_tools import (
+    WORKFLOW_SUBMISSION_TOOL_DESCRIPTION,
+    WORKFLOW_SUBMISSION_TOOL_NAME,
 )
 from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_choice, prompt_text
 import novelist.core.openai_config as openai_config
@@ -49,6 +55,7 @@ VOLUME_DIR_SUFFIX = "_volume_injection"
 GROUP_ROOT_DIRNAME = "group_injection"
 GROUP_DIR_SUFFIX = "_group_injection"
 CHAPTER_DIR_SUFFIX = "_chapter_outline"
+GROUP_STAGE_MANIFEST_NAME = "00_group_stage_manifest.md"
 REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
 FIVE_CHAPTER_REVIEW_SIZE = 5
 MAX_CHAPTER_REWRITE_ATTEMPTS = 3
@@ -114,21 +121,22 @@ LEGACY_GLOBAL_FILE_RENAMES = {
 
 COMMON_CHAPTER_STAGE_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
-    "必须根据 Dynamic Request 中的 document_request.phase 选择工具提交结果。"
-    "生成章纲、生成整章正文、提交章级/组级/卷级审核结果时，必须使用 submit_workflow_result。"
-    "修订已有章节正文、更新配套状态文档、审核不通过后的原地返修、修正 old_text 或 match_text 定位时，"
-    "必须使用文档 write/edit/patch 工具。"
+    "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
+    "组生成阶段可以多次调用 write/edit/patch 写入组纲、五章正文和状态文档，全部目标完成后必须调用 submit_workflow_result。"
+    "组审和卷审阶段可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须调用 submit_workflow_result 提交审核结论。"
+    "修订已有章节正文、组纲内某章细纲、状态文档、审核文档或修正 old_text / match_text 定位时，必须使用文档 write/edit/patch 工具。"
 )
 COMMON_CHAPTER_STAGE_TOOL_RULE = (
     "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
-    "生成章纲、生成整章正文、提交章级/组级/卷级审核结果时，必须使用 submit_workflow_result。"
-    "修订已有章节正文、更新配套状态文档、审核不通过后的原地返修、修正 old_text 或 match_text 定位时，必须使用文档 write/edit/patch 工具。"
+    "章节仿写的新流程按五章组运行：生成阶段用同一个 agent 会话处理组纲、五章正文和状态文档，审核阶段只保留组审与卷审。"
+    "组生成阶段需要先把文件落盘，最后用 submit_workflow_result 结束；审核阶段可先返修，再用 submit_workflow_result 提交 passed/review_md。"
+    "新运行不得创建独立章纲或章级审核文件；旧章纲只作为只读兼容输入。"
 )
 COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
     "你是资深网络小说章节洗稿仿写作者、连续性编辑与审稿编辑。"
     "用户拥有参考源文本权利。"
     "每次只完成 1 个明确请求。"
-    "请严格根据输入中的 document_request 和当前阶段要求执行。"
+    "请严格根据 Dynamic Request 中的 document_request 和当前阶段要求执行。"
     + COMMON_CHAPTER_STAGE_TOOL_RULE
     + document_ops.DOCUMENT_OPERATION_RULE
     + COMMON_CHAPTER_STAGE_OUTPUT_RULE
@@ -138,14 +146,6 @@ COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
 COMMON_VOLUME_REVIEW_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
 COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS = COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS
 
-WORKFLOW_SUBMISSION_TOOL_NAME = "submit_workflow_result"
-WORKFLOW_SUBMISSION_TOOL_DESCRIPTION = (
-    "提交当前工作流步骤的结果。"
-    "所有步骤都使用同一个函数工具 schema。"
-    "Markdown 正文放入 content_md；章节正文放入 chapter_txt；"
-    "审核结果使用 passed、review_md、blocking_issues、rewrite_targets、chapters_to_revise；"
-    "配套文档更新使用对应 *_md 字段。未使用的字段保留为空字符串、空数组或 null。"
-)
 FIVE_CHAPTER_REVIEW_NAME = "组审查"
 
 GLOBAL_DOC_LABELS = {
@@ -166,6 +166,10 @@ CHAPTER_DOC_LABELS = {
     "chapter_outline": "章纲",
     "chapter_review": "章级审核",
     "rewritten_chapter": "仿写章节",
+}
+GROUP_DOC_LABELS = {
+    "group_outline": "组纲",
+    "group_review": "组审查",
 }
 
 HEADING_MANAGED_DOC_SPECS = {

@@ -281,11 +281,14 @@ def write_volume_stage_snapshot(
     )
 
 def doc_label_for_key(doc_key: str) -> str:
+    if doc_key == "group_outline":
+        return "组纲"
     if doc_key == "group_review":
         return f"{FIVE_CHAPTER_REVIEW_NAME}文档"
     return (
         GLOBAL_DOC_LABELS.get(doc_key)
         or VOLUME_DOC_LABELS.get(doc_key)
+        or GROUP_DOC_LABELS.get(doc_key)
         or CHAPTER_DOC_LABELS.get(doc_key)
         or doc_key
     )

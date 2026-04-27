@@ -26,6 +26,7 @@ from novelist.core.ui import fail, pause_before_exit, print_progress, prompt_cho
 import novelist.core.document_ops as document_ops
 import novelist.core.openai_config as openai_config
 import novelist.core.responses_runtime as llm_runtime
+from novelist.core.workflow_tools import WORKFLOW_SUBMISSION_TOOL_NAME
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"
@@ -102,28 +103,22 @@ RUN_MODE_LABELS = {
     RUN_MODE_STAGE: "按阶段运行",
     RUN_MODE_BOOK: "按全书运行",
 }
-ADAPTATION_REVIEW_TOOL_NAME = "submit_adaptation_review"
-ADAPTATION_REVIEW_TOOL_DESCRIPTION = (
-    "提交每卷改编资料审核结果。必须判断当前卷资料文档是否已经满足后续仿写需要，"
-    "并在不通过时给出阻塞问题与可原地修复的目标文件 key。"
-)
-
-
 COMMON_STAGE_TOOL_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
-    "本卷资料适配阶段固定提供 write/edit/patch 文档工具和 submit_adaptation_review 审核工具。"
+    "本卷资料适配阶段固定提供 submit_workflow_result 与 write/edit/patch 文档工具。"
     "生成资料文档、审核不通过后的原地返修、修正 old_text/match_text 定位时，必须使用 write/edit/patch 文档工具提交结果。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_volume_review 时，"
-    "必须使用 submit_adaptation_review 提交 passed/review_md/blocking_issues/rewrite_targets，"
-    "不要调用 write/edit/patch 文档工具。"
+    "可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须使用 submit_workflow_result 提交 passed/review_md/blocking_issues/rewrite_targets。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_review_fix 或 adaptation_review_fix_locator_repair 时，"
-    "必须使用 write/edit/patch 文档工具，不要调用 submit_adaptation_review。"
+    "必须使用 write/edit/patch 文档工具，不要调用 submit_workflow_result。"
+    "当 Dynamic Request 中的 document_request.phase=adaptation_generation_agent 时，"
+    "可以多次调用 write/edit/patch 写入所有目标文件，全部完成后必须调用 submit_workflow_result 结束阶段。"
 )
 COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"
     "用户拥有参考源文本权利。"
-    "当前任务每次只处理 1 份目标文档。"
-    "请严格根据输入中的 document_request 执行。"
+    "当前任务以 agent 阶段为单位工作：一次输入可能包含多个目标文件，请自行安排处理顺序。"
+    "请严格根据输入中的 document_request 和目标文件清单执行。"
     "所有内容都必须按真实需要编写：只有后续章节生成、审核或资料维护会反复使用的信息才写入目标文档；"
     "没有必要的信息可以不写、不新增，不要为了显得完整、填满结构或覆盖全部素材而硬塞内容。"
     "严禁把参考源的人名、地名、姓氏、势力名、事件名、专用术语、等级体系、称谓口吻或话语体系直接写入新书资料；"

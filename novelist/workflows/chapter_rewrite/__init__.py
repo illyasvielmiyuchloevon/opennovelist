@@ -12,6 +12,7 @@ from . import document_repair as document_repair
 from . import review as review
 from . import prompts as prompts
 from . import chapter_runner as chapter_runner
+from . import group_runner as group_runner
 from . import volume_runner as volume_runner
 from . import runner as runner
 
@@ -27,6 +28,7 @@ _MODULES = [
     review,
     prompts,
     chapter_runner,
+    group_runner,
     volume_runner,
     runner,
 ]

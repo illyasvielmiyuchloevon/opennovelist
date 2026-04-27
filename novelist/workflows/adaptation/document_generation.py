@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
 from .models import adaptation_stage_tool_specs
+from novelist.core.workflow_tools import WORKFLOW_SUBMISSION_TOOL_NAME
+from novelist.core.agent_runtime import run_agent_stage
 
 
 def call_document_operation_response(
@@ -64,9 +66,9 @@ def document_operation_result_from_stage_tool_result(
             raw_json=result.raw_json,
             patch_payload=document_ops.DocumentPatchPayload.model_validate(result.parsed),
         )
-    if result.tool_name == ADAPTATION_REVIEW_TOOL_NAME:
+    if result.tool_name == WORKFLOW_SUBMISSION_TOOL_NAME:
         raise llm_runtime.ModelOutputError(
-            "当前资料生成/修复步骤必须调用文档 write/edit/patch 工具，不能调用 submit_adaptation_review。",
+            "当前资料生成/修复步骤必须调用文档 write/edit/patch 工具，不能调用 submit_workflow_result。",
             preview=result.preview,
             raw_body_text=result.raw_body_text,
         )
@@ -256,6 +258,102 @@ def load_document_generation_resume_state(
         "resume_source": resume_source if verified_completed_keys else None,
     }
 
+def adaptation_generation_allowed_files(
+    paths: dict[str, Path],
+    document_plan: list[dict[str, Any]],
+) -> dict[str, Path]:
+    return {str(item["key"]): document_output_path(paths, str(item["key"])) for item in document_plan}
+
+def run_adaptation_generation_agent(
+    *,
+    client: OpenAI,
+    model: str,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    paths: dict[str, Path],
+    document_plan: list[dict[str, Any]],
+    current_docs: dict[str, str],
+    stage_shared_prompt: str,
+    previous_response_id: str | None,
+    prompt_cache_key: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    request_payload = build_adaptation_generation_agent_request(
+        manifest=manifest,
+        volume_material=volume_material,
+        paths=paths,
+        document_plan=document_plan,
+        current_docs=current_docs,
+    )
+    allowed_files = adaptation_generation_allowed_files(paths, document_plan)
+    loaded_files = build_loaded_file_inventory(volume_material)
+    _, source_char_count = build_volume_source_bundle(volume_material)
+    request_json = json.dumps(request_payload, ensure_ascii=False, indent=2)
+    user_input = stage_shared_prompt + request_json
+    print_adaptation_request_context_summary(
+        request_label="资料生成 agent 会话",
+        volume_material=volume_material,
+        loaded_files=loaded_files,
+        source_char_count=source_char_count,
+        payload=request_payload,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+        user_input_char_count=len(user_input),
+        allowed_files=allowed_files,
+        session_status_line=(
+            "会话：OpenCode 风格本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+            "不依赖 provider previous_response_id。"
+        ),
+    )
+
+    def report_tool(application: Any) -> None:
+        if application.applied is None:
+            print_progress(f"资料生成工具调用未应用：{application.output}", error=True)
+            return
+        changed = ", ".join(application.applied.changed_keys) if application.applied.changed_keys else "无内容变化"
+        print_progress(f"资料生成工具已应用：{application.tool_name}，变更={changed}。")
+
+    result = run_agent_stage(
+        client,
+        model=model,
+        instructions=COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+        user_input=user_input,
+        allowed_files=allowed_files,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+        retries=DEFAULT_API_RETRIES,
+        retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+        on_tool_result=report_tool,
+    )
+
+    missing = [
+        key
+        for key, path in allowed_files.items()
+        if not read_text_if_exists(path).strip()
+    ]
+    if missing:
+        raise llm_runtime.ModelOutputError(
+            "资料生成 agent 阶段结束，但以下目标文件仍为空或不存在：" + ", ".join(missing),
+            preview=result.submission.summary or result.submission.content_md,
+        )
+
+    generated_documents: list[dict[str, Any]] = []
+    changed_keys = set(result.changed_keys)
+    for index, doc_spec in enumerate(document_plan, start=1):
+        doc_key = str(doc_spec["key"])
+        generated_documents.append(
+            {
+                "index": index,
+                "key": doc_key,
+                "label": doc_spec["label"],
+                "response_id": result.response_id,
+                "response_ids": result.response_ids,
+                "output_path": str(allowed_files[doc_key]),
+                "operation_mode": "agent",
+                "changed": doc_key in changed_keys,
+            }
+        )
+    return generated_documents, result.response_id
+
 def write_stage_status_snapshot(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
@@ -391,9 +489,9 @@ def build_document_operation_repair_payload(
             "instruction": (
                 "这是本次请求的最新工作目标：修正上一轮无法定位的 old_text 或 match_text。"
                 "必须调用 write/edit/patch 文档工具重新提交可应用的局部编辑，"
-                "不要调用 submit_adaptation_review。"
+                "不要调用 submit_workflow_result。"
             ),
-            "forbidden_tool": ADAPTATION_REVIEW_TOOL_NAME,
+            "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
         },
     }
 
@@ -498,6 +596,8 @@ __all__ = [
     'previous_processed_stage_mtime',
     'infer_completed_document_keys_from_file_prefix',
     'load_document_generation_resume_state',
+    'adaptation_generation_allowed_files',
+    'run_adaptation_generation_agent',
     'write_stage_status_snapshot',
     'write_response_debug_snapshot',
     'document_operation_payload',

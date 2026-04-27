@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -9,7 +11,10 @@ import httpx
 import openai
 from pydantic import BaseModel
 
+from novelist.core import agent_runtime
+from novelist.core import document_ops
 from novelist.core import responses_runtime as llm_runtime
+from novelist.core import workflow_tools
 
 
 class _CompatToolPayload(BaseModel):
@@ -984,6 +989,176 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
 
         self.assertEqual(failing.call_count, 2)
         self.assertIn("已停止继续重试", str(context.exception))
+
+    def test_context_window_error_aborts_retries_immediately(self) -> None:
+        error = RuntimeError("Your input exceeds the context window of this model.")
+
+        self.assertTrue(
+            llm_runtime.should_abort_transport_retries(
+                error,
+                protocol=llm_runtime.PROTOCOL_RESPONSES,
+                request_chars=200000,
+                attempt=1,
+            )
+        )
+        self.assertIn(
+            "上下文窗口超限",
+            llm_runtime.format_transport_error_message(
+                error,
+                protocol=llm_runtime.PROTOCOL_RESPONSES,
+                request_chars=200000,
+                abort_retries=True,
+            ),
+        )
+
+    def test_request_char_estimate_counts_responses_input_items(self) -> None:
+        estimate = llm_runtime.estimate_request_text_chars(
+            "instructions",
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "完整阶段上下文"}],
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_doc",
+                    "output": "工具结果",
+                },
+            ],
+        )
+
+        self.assertGreaterEqual(estimate, len("instructions完整阶段上下文工具结果"))
+
+    def test_agent_stage_continues_responses_with_local_transcript_tool_call_and_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "target.md"
+            tool_arguments = json.dumps(
+                {
+                    "files": [
+                        {
+                            "file_key": "target",
+                            "content": "工具写入正文。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            tool_result = llm_runtime.MultiFunctionToolResult(
+                tool_name=document_ops.DOCUMENT_WRITE_TOOL_NAME,
+                parsed=document_ops.DocumentWritePayload(
+                    files=[
+                        document_ops.DocumentWriteFile(
+                            file_key="target",
+                            content="工具写入正文。",
+                        )
+                    ]
+                ),
+                response_id="resp_tool",
+                status="completed",
+                output_types=["function_call"],
+                preview="tool",
+                raw_body_text="",
+                raw_json={
+                    "id": "resp_tool",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_tool",
+                            "summary": [],
+                            "status": "completed",
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "fc_tool",
+                            "call_id": "call_doc",
+                            "name": document_ops.DOCUMENT_WRITE_TOOL_NAME,
+                            "arguments": tool_arguments,
+                            "parsed_arguments": {
+                                "files": [
+                                    {
+                                        "file_key": "target",
+                                        "content": "工具写入正文。",
+                                    }
+                                ]
+                            },
+                            "status": "completed",
+                        }
+                    ],
+                },
+                call_id="call_doc",
+                raw_arguments=tool_arguments,
+            )
+            submit_result = llm_runtime.MultiFunctionToolResult(
+                tool_name=workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME,
+                parsed=workflow_tools.WorkflowSubmissionPayload(
+                    summary="完成。",
+                    generated_files=["target"],
+                ),
+                response_id="resp_submit",
+                status="completed",
+                output_types=["function_call"],
+                preview="submit",
+                raw_body_text="",
+                raw_json={},
+                call_id="call_submit",
+                raw_arguments="{}",
+            )
+            calls: list[dict[str, object]] = []
+
+            def fake_call_function_tools(*args, **kwargs):
+                calls.append(dict(kwargs))
+                if len(calls) == 1:
+                    return tool_result
+                return submit_result
+
+            client = SimpleNamespace(_codex_protocol=llm_runtime.PROTOCOL_RESPONSES)
+            with patch.object(agent_runtime.llm_runtime, "call_function_tools", side_effect=fake_call_function_tools):
+                result = agent_runtime.run_agent_stage(
+                    client,  # type: ignore[arg-type]
+                    model="test-model",
+                    instructions="instructions",
+                    user_input="initial request",
+                    allowed_files={"target": target},
+                    retries=1,
+                )
+
+            self.assertEqual(result.response_id, "resp_submit")
+            self.assertEqual(target.read_text(encoding="utf-8").strip(), "工具写入正文。")
+            self.assertEqual(len(calls), 2)
+            self.assertIsInstance(calls[0]["user_input"], list)
+            self.assertIsNone(calls[0]["previous_response_id"])
+            self.assertFalse(calls[0]["store"])
+            self.assertIsInstance(calls[1]["user_input"], list)
+            self.assertIsNone(calls[1]["previous_response_id"])
+            self.assertFalse(calls[1]["store"])
+            followup_input = calls[1]["user_input"]
+            assert isinstance(followup_input, list)
+            self.assertIn("initial request", json.dumps(followup_input, ensure_ascii=False))
+            self.assertFalse(
+                any("parsed_arguments" in item for item in followup_input if isinstance(item, dict))
+            )
+            self.assertFalse(any(item.get("type") == "reasoning" for item in followup_input if isinstance(item, dict)))
+            self.assertTrue(
+                any(
+                    item.get("type") == "function_call"
+                    and item.get("call_id") == "call_doc"
+                    and item.get("name") == document_ops.DOCUMENT_WRITE_TOOL_NAME
+                    and item.get("arguments") == tool_arguments
+                    for item in followup_input
+                    if isinstance(item, dict)
+                )
+            )
+            self.assertTrue(
+                any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call_doc"
+                    and '"ok": true' in str(item.get("output") or "")
+                    and '"file_key": "target"' in str(item.get("output") or "")
+                    for item in followup_input
+                    if isinstance(item, dict)
+                )
+            )
 
     def test_compatible_database_internal_server_error_aborts_immediately(self) -> None:
         request = httpx.Request("POST", "https://example.com/v1/chat/completions")

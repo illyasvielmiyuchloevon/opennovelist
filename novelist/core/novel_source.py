@@ -79,6 +79,87 @@ def load_volume_material(volume_dir: Path) -> dict[str, Any]:
         "extras": extras,
     }
 
+def load_volume_index(volume_dir: Path) -> dict[str, Any]:
+    chapter_files, extra_files = discover_volume_files(volume_dir)
+    if not chapter_files:
+        fail(f"卷目录中未找到章节文件：{volume_dir}")
+
+    chapters = [
+        {
+            "chapter_number": chapter_file.stem,
+            "file_name": chapter_file.name,
+            "file_path": str(chapter_file),
+            "source_title": chapter_file.stem,
+            "text": "",
+        }
+        for chapter_file in chapter_files
+    ]
+
+    extras: list[dict[str, Any]] = []
+    for extra_file in extra_files:
+        text = read_text(extra_file)
+        extras.append(
+            {
+                "file_name": extra_file.name,
+                "file_path": str(extra_file),
+                "label": extra_file.stem,
+                "text": text.strip(),
+            }
+        )
+
+    return {
+        "volume_number": volume_dir.name,
+        "volume_dir": str(volume_dir),
+        "chapters": chapters,
+        "extras": extras,
+    }
+
+
+def load_volume_material_for_chapters(volume_dir: Path, chapter_numbers: list[str]) -> dict[str, Any]:
+    requested = {chapter_number.zfill(4) for chapter_number in chapter_numbers}
+    chapter_files, extra_files = discover_volume_files(volume_dir)
+    if not chapter_files:
+        fail(f"卷目录中未找到章节文件：{volume_dir}")
+
+    chapters: list[dict[str, Any]] = []
+    for chapter_file in chapter_files:
+        if chapter_file.stem not in requested:
+            continue
+        text = read_text(chapter_file)
+        chapters.append(
+            {
+                "chapter_number": chapter_file.stem,
+                "file_name": chapter_file.name,
+                "file_path": str(chapter_file),
+                "source_title": first_non_empty_line(text) or chapter_file.stem,
+                "text": text.strip(),
+            }
+        )
+
+    loaded = {chapter["chapter_number"] for chapter in chapters}
+    missing = sorted(requested - loaded)
+    if missing:
+        fail(f"卷目录中未找到指定章节文件：{', '.join(missing)}")
+
+    extras: list[dict[str, Any]] = []
+    for extra_file in extra_files:
+        text = read_text(extra_file)
+        extras.append(
+            {
+                "file_name": extra_file.name,
+                "file_path": str(extra_file),
+                "label": extra_file.stem,
+                "text": text.strip(),
+            }
+        )
+
+    return {
+        "volume_number": volume_dir.name,
+        "volume_dir": str(volume_dir),
+        "chapters": chapters,
+        "extras": extras,
+    }
+
 
 def build_loaded_file_inventory(volume_material: dict[str, Any]) -> list[dict[str, Any]]:
     inventory: list[dict[str, Any]] = []

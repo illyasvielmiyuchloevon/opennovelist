@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from novelist.core.workflow_tools import WorkflowSubmissionPayload, workflow_submission_tool_spec
 
 
 class AdaptationReviewTarget(BaseModel):
@@ -33,16 +34,13 @@ class AdaptationReviewResult(BaseModel):
 def adaptation_stage_tool_specs() -> list[llm_runtime.FunctionToolSpec[Any]]:
     return [
         *document_ops.document_tool_specs(),
-        llm_runtime.FunctionToolSpec(
-            model=AdaptationReviewPayload,
-            name=ADAPTATION_REVIEW_TOOL_NAME,
-            description=ADAPTATION_REVIEW_TOOL_DESCRIPTION,
-        ),
+        workflow_submission_tool_spec(),
     ]
 
 __all__ = [
     'AdaptationReviewTarget',
     'AdaptationReviewPayload',
     'AdaptationReviewResult',
+    'WorkflowSubmissionPayload',
     'adaptation_stage_tool_specs',
 ]

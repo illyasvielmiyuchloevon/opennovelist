@@ -11,7 +11,7 @@
 2. `novelist.workflows.novel_adaptation`
    基于参考源逐卷生成改编规划文档。
 3. `novelist.workflows.novel_chapter_rewrite`
-   基于规划文档逐章生成仿写正文和配套审核文档。
+   基于规划文档按五章组生成组纲、仿写正文和配套审核文档。
 
 如果你不想手动串联，可以直接使用：
 
@@ -180,14 +180,15 @@ python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 - 伏笔文档
 - 卷级大纲
 
-#### 第三步：逐章重写
+agent 阶段按 OpenCode 风格维护本地 transcript：首轮发送阶段完整上下文，工具轮会把本阶段大上下文、已发生的工具调用和工具结果一起重新组装发送，不把 `previous_response_id` 当作唯一上下文来源。卷资料审核会在同一个审核逻辑会话内压缩模型上下文：重新组装最新落盘文档，稳定前缀和当前卷参考源仍会随请求发送，但 provider 请求不会沿用生成阶段或上一轮审核的旧 `previous_response_id`。
+
+#### 第三步：五章组重写
 
 统一入口会调用 `novelist.workflows.novel_chapter_rewrite`，生成：
 
-- 章纲
-- 仿写正文
+- 组纲（一个文件内包含五章细纲）
+- 五章仿写正文
 - 状态类文档
-- 章级审核
 - 组审查
 - 卷级审核
 
@@ -370,23 +371,23 @@ volume_injection/
    ├─ 001_volume_plot_progress.md
    ├─ 001_volume_review.md
    ├─ 00_source_digest.md
-   ├─ 00_stage_manifest.md
-   └─ 0001_chapter_outline/
-      ├─ 0001_chapter_outline.md
-      ├─ 0001_chapter_review.md
-      └─ 00_stage_manifest.md
+   └─ 00_stage_manifest.md
 ```
 
 ### 9.5 `group_injection`
 
-每 5 章一组的组审查文档：
+每 5 章一组的组纲、组生成断点和组审查文档：
 
 ```text
 group_injection/
 └─ 001_group_injection/
    └─ 0001_0005_group_injection/
-      └─ 0001_0005_group_review.md
+      ├─ 0001_0005_group_outline.md
+      ├─ 0001_0005_group_review.md
+      └─ 00_group_stage_manifest.md
 ```
+
+`0001_0005_group_outline.md` 是新流程唯一新规划产物。顶层标题形如 `# 0001-0005 组纲`，内部每章一个二级标题，例如 `## 0001`、`## 0002`；每个二级标题下沿用旧单章章纲的细纲粒度和功能映射要求。旧的独立章纲文件只作为兼容输入，不会在新运行中继续生成。
 
 ### 9.6 `rewritten_novel`
 

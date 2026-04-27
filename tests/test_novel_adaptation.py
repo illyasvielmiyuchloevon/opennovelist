@@ -51,6 +51,19 @@ def _seed_adaptation_docs(project_root: Path, volume_number: str = "001") -> dic
     return paths
 
 
+def _agent_stage_result(
+    payload: adaptation_workflow.WorkflowSubmissionPayload,
+    response_id: str,
+    response_ids: list[str] | None = None,
+) -> Mock:
+    return Mock(
+        submission=payload,
+        response_id=response_id,
+        response_ids=response_ids or [response_id],
+        applications=[],
+    )
+
+
 class AdaptationDocumentPlanTests(unittest.TestCase):
     def test_first_volume_plan_uses_new_generation_order(self) -> None:
         plan = adaptation_workflow.build_document_plan("001")
@@ -80,6 +93,104 @@ class AdaptationDocumentPlanTests(unittest.TestCase):
         )
 
 
+class AdaptationContextSummaryTests(unittest.TestCase):
+    def test_generation_payload_does_not_duplicate_target_global_docs_as_existing_docs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = adaptation_workflow.stage_paths(project_root, "007")
+            current_docs = {
+                "world_model": "世界模型正文",
+                "style_guide": "文风正文",
+                "book_outline": "全书大纲正文",
+                "foreshadowing": "伏笔正文",
+            }
+            payload = adaptation_workflow.build_adaptation_generation_agent_request(
+                manifest=_manifest(project_root),  # type: ignore[arg-type]
+                volume_material=_volume_material("007"),  # type: ignore[arg-type]
+                paths=paths,
+                document_plan=adaptation_workflow.build_document_plan("007"),
+                current_docs=current_docs,
+            )
+
+        self.assertEqual(payload["existing_global_docs"], {"style_guide": "文风正文"})
+        target_contents = {
+            item["file_key"]: item["current_content"]
+            for item in payload["target_files"]
+        }
+        self.assertEqual(target_contents["world_model"], "世界模型正文")
+        self.assertEqual(target_contents["book_outline"], "全书大纲正文")
+        self.assertEqual(target_contents["foreshadowing"], "伏笔正文")
+
+    def test_payload_input_summary_uses_actual_payload_content_lengths(self) -> None:
+        payload = {
+            "existing_global_docs": {
+                "world_model": "世界模型正文",
+            },
+            "target_files": [
+                {
+                    "file_key": "world_model",
+                    "label": "世界模型文档",
+                    "file_name": "01_world_model.md",
+                    "file_path": "F:/project/global_injection/01_world_model.md",
+                    "current_content": "已有世界模型",
+                    "current_char_count": 999,
+                    "preferred_mode": "edit_or_patch",
+                }
+            ],
+            "adaptation_documents": [
+                {
+                    "file_key": "volume_outline",
+                    "label": "卷级大纲",
+                    "file_name": "001_volume_outline.md",
+                    "file_path": "F:/project/volume_injection/001_volume_outline.md",
+                    "current_content": "卷纲正文",
+                    "current_char_count": 888,
+                }
+            ],
+        }
+
+        lines = adaptation_workflow.adaptation_payload_input_summary_lines(payload)
+        joined = "\n".join(lines)
+
+        self.assertIn("既有全局资料输入：世界模型", joined)
+        self.assertIn("字符数约 6", joined)
+        self.assertIn("生成目标文件当前内容：世界模型文档", joined)
+        self.assertIn("字符数约 6，建议工具=edit_or_patch", joined)
+        self.assertIn("卷资料审核文档输入：卷级大纲", joined)
+        self.assertIn("字符数约 4", joined)
+        self.assertNotIn("字符数约 999", joined)
+        self.assertNotIn("字符数约 888", joined)
+
+    def test_source_summary_groups_files_and_keeps_volume_char_count(self) -> None:
+        volume_material = {
+            "volume_number": "001",
+            "chapters": [
+                {"chapter_number": "0001", "file_name": "0001.txt", "file_path": "F:/source/001/0001.txt", "source_title": "第一章", "text": "章节正文"},
+            ],
+            "extras": [
+                {"file_name": "intro.md", "file_path": "F:/source/001/intro.md", "label": "intro", "text": "序言"},
+            ],
+        }
+        loaded_files = [
+            {"type": "extra", "file_name": "intro.md", "file_path": "F:/source/001/intro.md", "char_count": 2},
+            {"type": "chapter", "file_name": "0001.txt", "file_path": "F:/source/001/0001.txt", "chapter_number": "0001", "source_title": "第一章", "char_count": 4},
+        ]
+
+        lines = adaptation_workflow.adaptation_source_file_summary_lines(
+            volume_material,  # type: ignore[arg-type]
+            loaded_files,  # type: ignore[arg-type]
+            source_char_count=42,
+        )
+        joined = "\n".join(lines)
+
+        self.assertIn("source bundle 字符数约 42", joined)
+        self.assertIn("参考源文件原文字符数合计约 6", joined)
+        self.assertIn("补充源文件[1]：intro.md", joined)
+        self.assertIn("章节源文件[1]：0001.txt", joined)
+        self.assertNotIn("F:/source/001/0001.txt", joined)
+        self.assertNotIn("标题：第一章", joined)
+
+
 class SourceContaminationGuardrailTests(unittest.TestCase):
     def test_common_stage_instructions_forbid_source_names_and_discourse_system(self) -> None:
         instructions = adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS
@@ -97,15 +208,15 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
 
         self.assertEqual(review_instructions, document_instructions)
         self.assertEqual(fix_instructions, document_instructions)
-        self.assertIn(adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME, review_instructions)
+        self.assertIn(adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME, review_instructions)
         self.assertIn("Dynamic Request", review_instructions)
         self.assertIn("adaptation_volume_review", review_instructions)
         self.assertIn("write/edit/patch", review_instructions)
 
-    def test_adaptation_review_appends_review_tool_after_document_tools(self) -> None:
+    def test_adaptation_review_appends_workflow_tool_after_document_tools(self) -> None:
         result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
-            tool_name=adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
-            parsed=adaptation_workflow.AdaptationReviewPayload(passed=True, review_md="通过。"),
+            tool_name=adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
+            parsed=adaptation_workflow.WorkflowSubmissionPayload(passed=True, review_md="通过。"),
             response_id="resp_review",
             status="completed",
             output_types=["function_call"],
@@ -131,7 +242,7 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
                 adaptation_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME,
                 adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
                 adaptation_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME,
-                adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+                adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
             ],
         )
         self.assertTrue(review.passed)
@@ -139,7 +250,7 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
         self.assertEqual(call_tools.call_args.kwargs["previous_response_id"], "resp_docs")
         self.assertEqual(
             call_tools.call_args.kwargs["tool_choice"],
-            {"type": "function", "name": adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME},
+            {"type": "function", "name": adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME},
         )
 
     def test_document_generation_uses_same_stage_tool_prefix(self) -> None:
@@ -180,10 +291,24 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
                 adaptation_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME,
                 adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
                 adaptation_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME,
-                adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+                adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
             ],
         )
         self.assertEqual(call_tools.call_args.kwargs["tool_choice"], "auto")
+
+    def test_adaptation_stage_exposes_only_unified_four_tools(self) -> None:
+        tool_names = [spec.name for spec in adaptation_workflow.adaptation_stage_tool_specs()]
+
+        self.assertEqual(
+            tool_names,
+            [
+                adaptation_workflow.document_ops.DOCUMENT_WRITE_TOOL_NAME,
+                adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
+                adaptation_workflow.document_ops.DOCUMENT_PATCH_TOOL_NAME,
+                adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
+            ],
+        )
+        self.assertNotIn("submit_adaptation_review", tool_names)
 
     def test_stage_shared_prompt_contains_source_contamination_guardrails(self) -> None:
         prompt = adaptation_workflow.build_stage_shared_prompt(
@@ -276,11 +401,11 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
                 self.assertEqual(list(payload.keys())[-1], "latest_work_target")
                 self.assertEqual(
                     payload["latest_work_target"]["forbidden_tool"],
-                    adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME,
+                    adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
                 )
                 self.assertIn("最新工作目标", payload["latest_work_target"]["instruction"])
                 self.assertIn("write/edit/patch", payload["latest_work_target"]["instruction"])
-                self.assertIn("不要调用 submit_adaptation_review", payload["latest_work_target"]["instruction"])
+                self.assertIn("不要调用 submit_workflow_result", payload["latest_work_target"]["instruction"])
                 self.assertIn("参考源只提供", boundary_text)
                 self.assertIn("不是新书资料正文", boundary_text)
                 self.assertIn("参考源功能 -> 新书设计", boundary_text)
@@ -935,15 +1060,15 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             )
 
         self.assertEqual(list(review_request.keys())[-1], "latest_work_target")
-        self.assertEqual(review_request["latest_work_target"]["required_tool"], adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME)
-        self.assertIn("必须调用 submit_adaptation_review", review_request["latest_work_target"]["instruction"])
+        self.assertEqual(review_request["latest_work_target"]["required_tool"], adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
+        self.assertIn("调用 submit_workflow_result", review_request["latest_work_target"]["instruction"])
 
         self.assertEqual(list(fix_request.keys())[-1], "latest_work_target")
-        self.assertEqual(fix_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME)
+        self.assertEqual(fix_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
         self.assertIn("必须调用 write/edit/patch", fix_request["latest_work_target"]["instruction"])
 
         self.assertEqual(list(repair_request.keys())[-1], "latest_work_target")
-        self.assertEqual(repair_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.ADAPTATION_REVIEW_TOOL_NAME)
+        self.assertEqual(repair_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
         self.assertIn("最新工作目标", repair_request["latest_work_target"]["instruction"])
 
     def test_review_payload_protects_chapter_runtime_foreshadowing_records(self) -> None:
@@ -1027,50 +1152,33 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             manifest = _manifest(project_root)
             volume_material = _volume_material("001")
             paths = _seed_adaptation_docs(project_root, "001")
-            failed_review = adaptation_workflow.AdaptationReviewPayload(
+            failed_review = adaptation_workflow.WorkflowSubmissionPayload(
                 passed=False,
                 review_md="不通过，世界模型还残留参考源人物名。",
                 blocking_issues=["世界模型残留参考源人物名"],
                 rewrite_targets=["world_model"],
             )
-            passed_review = adaptation_workflow.AdaptationReviewPayload(
+            passed_review = adaptation_workflow.WorkflowSubmissionPayload(
                 passed=True,
                 review_md="审核通过。",
             )
-            fix_payload = adaptation_workflow.document_ops.DocumentEditPayload(
-                files=[
-                    adaptation_workflow.document_ops.DocumentEditFile(
-                        file_key="world_model",
-                        edits=[
-                            adaptation_workflow.document_ops.DocumentEditEdit(
-                                old_text="源人物名仍残留",
-                                new_text="新书主角名已替换",
-                            )
-                        ],
-                    )
-                ]
-            )
-            fix_result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
-                tool_name=adaptation_workflow.document_ops.DOCUMENT_EDIT_TOOL_NAME,
-                parsed=fix_payload,
-                response_id="resp_fix",
-                status="completed",
-                output_types=["function_call"],
-                preview="fix",
-                raw_body_text="",
-                raw_json={},
-            )
+
+            def fake_run_agent_stage(*args, **kwargs):
+                if fake_run_agent_stage.call_count == 0:
+                    _write_text(paths["world_model"], "世界模型：新书主角名已替换。\n")
+                    fake_run_agent_stage.call_count += 1
+                    return _agent_stage_result(failed_review, "resp_review_1", ["resp_fix_1", "resp_review_1"])
+                fake_run_agent_stage.call_count += 1
+                return _agent_stage_result(passed_review, "resp_review_2")
+
+            fake_run_agent_stage.call_count = 0
 
             with (
                 patch.object(
                     adaptation_review_module,
-                    "call_adaptation_review_response",
-                    side_effect=[
-                        (failed_review, "resp_review_1", Mock(response_id="resp_review_1")),
-                        (passed_review, "resp_review_2", Mock(response_id="resp_review_2")),
-                    ],
-                ) as review_call,
-                patch.object(adaptation_review_module.llm_runtime, "call_function_tools", return_value=fix_result) as fix_call,
+                    "run_agent_stage",
+                    side_effect=fake_run_agent_stage,
+                ) as agent_call,
             ):
                 result, response_id = adaptation_review_module.run_adaptation_review_until_passed(
                     client=Mock(),
@@ -1084,17 +1192,15 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
 
             self.assertTrue(result.payload.passed)
             self.assertEqual(response_id, "resp_review_2")
-            self.assertEqual(review_call.call_count, 2)
-            self.assertEqual(review_call.call_args_list[0].args[2], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
-            self.assertEqual(review_call.call_args_list[1].args[2], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
-            self.assertEqual(review_call.call_args_list[0].kwargs["previous_response_id"], "resp_docs")
-            self.assertEqual(review_call.call_args_list[1].kwargs["previous_response_id"], "resp_fix")
-            fix_call.assert_called_once()
-            self.assertEqual(fix_call.call_args.kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
-            self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_review_1")
+            self.assertEqual(agent_call.call_count, 2)
+            self.assertEqual(agent_call.call_args_list[0].kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
+            self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
+            self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
+            self.assertIsNone(agent_call.call_args_list[1].kwargs["previous_response_id"])
+            self.assertIn("新书主角名已替换", agent_call.call_args_list[1].kwargs["user_input"])
             self.assertEqual(
-                [spec.name for spec in fix_call.call_args.kwargs["tool_specs"]],
-                [spec.name for spec in adaptation_workflow.adaptation_stage_tool_specs()],
+                sorted(agent_call.call_args_list[0].kwargs["allowed_files"]),
+                sorted(adaptation_workflow.adaptation_review_allowed_files(paths)),
             )
             self.assertEqual(manifest["processed_volumes"], [])
             self.assertIn("新书主角名已替换", paths["world_model"].read_text(encoding="utf-8"))
@@ -1106,44 +1212,23 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             manifest = _manifest(project_root)
             volume_material = _volume_material("001")
             paths = _seed_adaptation_docs(project_root, "001")
-            failed_review = adaptation_workflow.AdaptationReviewPayload(
+            failed_review = adaptation_workflow.WorkflowSubmissionPayload(
                 passed=False,
                 review_md="仍不通过。",
                 blocking_issues=["世界模型残留参考源话语体系"],
                 rewrite_targets=["world_model"],
-            )
-            applied_fix = adaptation_workflow.document_ops.AppliedDocumentOperation(
-                mode="edit",
-                files=[
-                    adaptation_workflow.document_ops.AppliedDocumentFile(
-                        file_key="world_model",
-                        path=paths["world_model"],
-                        mode="edit",
-                        emitted=True,
-                        changed=True,
-                        edit_count=1,
-                    )
-                ],
             )
 
             with (
                 self.assertRaises(adaptation_workflow.llm_runtime.ModelOutputError),
                 patch.object(
                     adaptation_review_module,
-                    "call_adaptation_review_response",
+                    "run_agent_stage",
                     side_effect=[
-                        (failed_review, f"resp_review_{index}", Mock(response_id=f"resp_review_{index}"))
+                        _agent_stage_result(failed_review, f"resp_review_{index}")
                         for index in range(1, 6)
                     ],
-                ) as review_call,
-                patch.object(
-                    adaptation_review_module,
-                    "apply_adaptation_review_fix_with_repair",
-                    side_effect=[
-                        (applied_fix, f"resp_fix_{index}", [f"resp_fix_{index}"])
-                        for index in range(1, 5)
-                    ],
-                ) as fix_call,
+                ) as agent_call,
             ):
                 adaptation_review_module.run_adaptation_review_until_passed(
                     client=Mock(),
@@ -1157,10 +1242,26 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
 
             self.assertEqual(adaptation_workflow.MAX_ADAPTATION_REVIEW_ATTEMPTS, 5)
             self.assertEqual(adaptation_workflow.MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS, 4)
-            self.assertEqual(review_call.call_count, 5)
-            self.assertEqual(fix_call.call_count, 4)
-            self.assertEqual(review_call.call_args_list[0].kwargs["previous_response_id"], "resp_docs")
-            self.assertEqual(review_call.call_args_list[4].kwargs["previous_response_id"], "resp_fix_4")
+            self.assertEqual(agent_call.call_count, 5)
+            self.assertTrue(
+                all(call.kwargs["previous_response_id"] is None for call in agent_call.call_args_list)
+            )
+
+    def test_adaptation_review_context_compaction_drops_previous_response_id(self) -> None:
+        self.assertIsNone(
+            adaptation_workflow.compact_adaptation_review_previous_response_id("resp_docs")
+        )
+        self.assertIsNone(
+            adaptation_workflow.compact_adaptation_review_previous_response_id(None)
+        )
+        self.assertIn(
+            "沿用卷资料审核逻辑会话",
+            adaptation_workflow.adaptation_review_compaction_session_status("resp_docs"),
+        )
+        self.assertIn(
+            "不沿用 previous_response_id=resp_docs",
+            adaptation_workflow.adaptation_review_compaction_session_status("resp_docs"),
+        )
 
     def test_reviewing_snapshot_preserves_document_session_chain(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

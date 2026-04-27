@@ -54,6 +54,23 @@ def build_five_chapter_groups(volume_material: dict[str, Any]) -> list[list[str]
         for index in range(0, len(chapter_numbers), FIVE_CHAPTER_REVIEW_SIZE)
     ]
 
+def group_source_material(volume_material: dict[str, Any], chapter_numbers: list[str]) -> dict[str, Any]:
+    selected_chapters = [get_chapter_material(volume_material, chapter_number) for chapter_number in chapter_numbers]
+    if all(str(chapter.get("text", "")).strip() for chapter in selected_chapters):
+        return {
+            **volume_material,
+            "chapters": selected_chapters,
+        }
+
+    volume_dir = str(volume_material.get("volume_dir", "")).strip()
+    if volume_dir:
+        return load_volume_material_for_chapters(Path(volume_dir), chapter_numbers)
+
+    return {
+        **volume_material,
+        "chapters": selected_chapters,
+    }
+
 def five_chapter_batch_id(chapter_numbers: list[str]) -> str:
     if not chapter_numbers:
         fail("组审查区间不能为空。")
@@ -70,6 +87,17 @@ def five_chapter_review_path(project_root: Path, volume_number: str, chapter_num
     group_dir = group_injection_dir(project_root, volume_number, chapter_numbers)
     return group_dir / f"{five_chapter_batch_id(chapter_numbers)}_group_review.md"
 
+def group_outline_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
+    group_dir = group_injection_dir(project_root, volume_number, chapter_numbers)
+    return group_dir / f"{five_chapter_batch_id(chapter_numbers)}_group_outline.md"
+
+def group_stage_manifest_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
+    return group_injection_dir(project_root, volume_number, chapter_numbers) / GROUP_STAGE_MANIFEST_NAME
+
+def group_response_debug_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
+    group_dir = group_injection_dir(project_root, volume_number, chapter_numbers)
+    return group_dir / f"{five_chapter_batch_id(chapter_numbers)}_group_generation_debug.md"
+
 def find_group_for_chapter(volume_material: dict[str, Any], chapter_number: str) -> list[str]:
     normalized = chapter_number.zfill(4)
     for group in build_five_chapter_groups(volume_material):
@@ -81,6 +109,11 @@ def build_chapter_session_key(manifest: dict[str, Any], volume_number: str, chap
     seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|{chapter_number}"
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
     return f"chapter-rewrite-{digest}"
+
+def build_group_generation_session_key(manifest: dict[str, Any], volume_number: str, chapter_numbers: list[str]) -> str:
+    seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|{five_chapter_batch_id(chapter_numbers)}|group-generation"
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+    return f"group-generation-{digest}"
 
 def build_volume_review_session_key(manifest: dict[str, Any], volume_number: str) -> str:
     seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|volume-review"
@@ -342,6 +375,63 @@ def build_five_chapter_source_bundle(
     source_bundle = "\n\n".join(blocks)
     return source_bundle, len(source_bundle)
 
+def build_five_chapter_generation_shared_prompt(
+    *,
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    chapter_numbers: list[str],
+    source_bundle: str,
+    source_char_count: int,
+) -> str:
+    selected = {item.zfill(4) for item in chapter_numbers}
+    payload = {
+        "project": {
+            "new_book_title": manifest["new_book_title"],
+            "target_worldview": manifest.get("target_worldview", ""),
+            "current_volume": volume_material["volume_number"],
+            "generation_range": chapter_numbers,
+            "rewrite_output_root": manifest["rewrite_output_root"],
+        },
+        "workflow_rules": [
+            "当前任务是五章组生成阶段：组纲、五章正文和必要状态文档更新属于同一个 agent 阶段。",
+            "组纲是本组唯一新规划产物；新运行不得创建独立章纲文件。",
+            "需要单章规划时，从组纲内对应二级标题块读取或修订，而不是读取新的独立章纲目标。",
+            "全局注入是每卷每组都要看的资料；卷级注入只限当前卷；旧单章章纲只作为只读兼容输入。",
+            "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
+            "参考源当前五章提供情节功能映射、篇幅、叙事节奏、情节结构、对话密度、句长、段落分割与收尾方式的直接参照；除非审核意见明确要求，不得明显扩写。",
+            "遇到旧审核意见或旧章纲时要吸收有效约束，但最终以组纲和当前目标文件为准。",
+        ],
+        "source_files": [
+            {
+                "type": "extra",
+                "file_name": extra["file_name"],
+                "file_path": extra["file_path"],
+                "char_count": len(extra["text"]),
+            }
+            for extra in volume_material["extras"]
+        ]
+        + [
+            {
+                "type": "chapter",
+                "file_name": chapter["file_name"],
+                "file_path": chapter["file_path"],
+                "chapter_number": chapter["chapter_number"],
+                "source_title": chapter["source_title"],
+                "char_count": len(chapter["text"]),
+            }
+            for chapter in volume_material["chapters"]
+            if chapter["chapter_number"] in selected
+        ],
+        "source_char_count": source_char_count,
+        "current_range_source_bundle": source_bundle,
+    }
+    return (
+        "## Five Chapter Generation Shared Context\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n\n"
+        + "## Dynamic Request\n"
+    )
+
 def build_five_chapter_review_shared_prompt(
     *,
     manifest: dict[str, Any],
@@ -350,6 +440,11 @@ def build_five_chapter_review_shared_prompt(
     source_bundle: str,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> str:
+    current_group_outline_path = group_outline_path(
+        Path(manifest["project_root"]),
+        volume_material["volume_number"],
+        chapter_numbers,
+    )
     payload = {
         "project": {
             "new_book_title": manifest["new_book_title"],
@@ -364,6 +459,11 @@ def build_five_chapter_review_shared_prompt(
             "如果审核不通过，必须明确指出需要返工的章节编号。",
         ],
         "current_range_source_bundle": source_bundle,
+        "current_group_outline": {
+            "file_name": current_group_outline_path.name,
+            "file_path": str(current_group_outline_path),
+            "content": read_text_if_exists(current_group_outline_path).strip(),
+        },
         "rewritten_chapters": rewritten_chapters,
     }
     return (
@@ -424,12 +524,17 @@ def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
 __all__ = [
     'rewrite_paths',
     'build_five_chapter_groups',
+    'group_source_material',
     'five_chapter_batch_id',
     'group_injection_root',
     'group_injection_dir',
     'five_chapter_review_path',
+    'group_outline_path',
+    'group_stage_manifest_path',
+    'group_response_debug_path',
     'find_group_for_chapter',
     'build_chapter_session_key',
+    'build_group_generation_session_key',
     'build_volume_review_session_key',
     'read_doc_catalog',
     'serialize_doc_for_prompt',
@@ -441,6 +546,7 @@ __all__ = [
     'build_chapter_shared_prompt',
     'build_volume_review_shared_prompt',
     'build_five_chapter_source_bundle',
+    'build_five_chapter_generation_shared_prompt',
     'build_five_chapter_review_shared_prompt',
     'load_relevant_five_chapter_review_docs',
     'build_rewritten_chapters_payload',

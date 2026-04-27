@@ -3,6 +3,8 @@ from __future__ import annotations
 from ._shared import *  # noqa: F401,F403
 from .document_generation import document_operation_result_from_stage_tool_result
 from .models import AdaptationReviewPayload, adaptation_stage_tool_specs
+from novelist.core.workflow_tools import WORKFLOW_SUBMISSION_TOOL_NAME, WorkflowSubmissionPayload
+from novelist.core.agent_runtime import run_agent_stage
 
 
 def call_adaptation_review_response(
@@ -28,11 +30,17 @@ def call_adaptation_review_response(
         prompt_cache_key=prompt_cache_key,
         retries=DEFAULT_API_RETRIES,
         retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
-        tool_choice={"type": "function", "name": ADAPTATION_REVIEW_TOOL_NAME},
+        tool_choice={"type": "function", "name": WORKFLOW_SUBMISSION_TOOL_NAME},
     )
-    if result.tool_name != ADAPTATION_REVIEW_TOOL_NAME:
-        raise llm_runtime.ModelOutputError(f"模型调用了意外工具：{result.tool_name}，期望工具：{ADAPTATION_REVIEW_TOOL_NAME}")
-    payload = AdaptationReviewPayload.model_validate(result.parsed)
+    if result.tool_name != WORKFLOW_SUBMISSION_TOOL_NAME:
+        raise llm_runtime.ModelOutputError(f"模型调用了意外工具：{result.tool_name}，期望工具：{WORKFLOW_SUBMISSION_TOOL_NAME}")
+    workflow_payload = WorkflowSubmissionPayload.model_validate(result.parsed)
+    payload = AdaptationReviewPayload(
+        passed=workflow_payload.passed,
+        review_md=workflow_payload.review_md or workflow_payload.content_md,
+        blocking_issues=workflow_payload.blocking_issues,
+        rewrite_targets=workflow_payload.rewrite_targets,
+    )
     if payload.passed is None or not payload.review_md.strip():
         raise llm_runtime.ModelOutputError(
             "模型未通过卷资料审核工具返回完整的 passed / review_md 字段。",
@@ -130,9 +138,11 @@ def build_adaptation_review_request(
             "检查伏笔文档中由资料适配新增或修改的部分是否是全书级/卷级伏笔设计索引，是否保留参考源功能映射、新书伏笔设计、埋设意图、后续呼应方向与命名映射；如果文件中已有章节工作流写入的运行时记录，应视为受保护内容，不得要求删除或改写，也不得仅因其存在判定资料适配不通过。",
             "检查伏笔文档是否严格执行伏笔准入门槛；普通剧情细节、阶段性战绩、考试排名、榜单变化、奖励记录、资源获得、治疗进度、一次性物件、已完成小冲突、普通关系进展、场景气氛和过场信息不得被当成全书/卷级伏笔。",
             "检查每条资料适配伏笔是否能说明未来触发、反转、兑现或呼应方向；如果只能说明已经发生的剧情事实，就不应写入伏笔文档。",
-            "检查全局资料之间是否重复承载同一信息；世界规则应在世界模型，卷内推进应在卷级剧情进程，章节细节应在章纲或审核文档。",
+            "检查全局资料之间是否重复承载同一信息；世界规则应在世界模型，卷内推进应在卷级剧情进程，章节细节应在组纲或审核文档。",
             "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容；文风文档只在第 001 卷生成和定稿，后续卷只能读取与审核，不得把 style_guide 写入 rewrite_targets。",
             "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_model、book_outline、volume_outline。",
+            "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
+            "如果问题不可安全修复，最终 submit_workflow_result 必须 passed=false，并列出 blocking_issues 与 rewrite_targets。",
         ],
         "adaptation_documents": adaptation_review_target_snapshot(allowed_files),
         "output_contract": {
@@ -145,12 +155,22 @@ def build_adaptation_review_request(
             "type": "latest_user_input",
             "instruction": (
                 "这是本次请求的最新工作目标：执行 adaptation_volume_review 卷资料审核。"
-                "必须调用 submit_adaptation_review 提交结构化审核结果，"
-                "不要调用 write/edit/patch 文档写入工具。"
+                "可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须调用 submit_workflow_result 提交结构化审核结果。"
             ),
-            "required_tool": ADAPTATION_REVIEW_TOOL_NAME,
+            "required_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
         },
     }
+
+def compact_adaptation_review_previous_response_id(_previous_response_id: str | None) -> None:
+    return None
+
+def adaptation_review_compaction_session_status(previous_response_id: str | None) -> str:
+    if previous_response_id:
+        return (
+            "会话：沿用卷资料审核逻辑会话；已压缩为新的 OpenCode 风格本地 transcript，"
+            f"本次 provider 请求不沿用 previous_response_id={previous_response_id}。"
+        )
+    return "会话：卷资料审核逻辑会话；本次以压缩后的最新资料上下文发起本地 agent transcript。"
 
 def write_adaptation_review_report(
     path: Path,
@@ -216,10 +236,10 @@ def build_adaptation_review_fix_request(
             "type": "latest_user_input",
             "instruction": (
                 "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修资料文档。"
-                "必须调用 write/edit/patch 文档工具提交修改，不要调用 submit_adaptation_review，"
+                "必须调用 write/edit/patch 文档工具提交修改，不要调用 submit_workflow_result，"
                 "不要重新生成整卷资料阶段。"
             ),
-            "forbidden_tool": ADAPTATION_REVIEW_TOOL_NAME,
+            "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
         },
     }
 
@@ -342,21 +362,61 @@ def run_adaptation_review_until_passed(
             previous_response_id=current_response_id,
         )
         print_progress(f"卷资料审核第 {attempt}/{MAX_ADAPTATION_REVIEW_ATTEMPTS} 次调用：审核第 {volume_material['volume_number']} 卷资料。")
+        request_previous_response_id = compact_adaptation_review_previous_response_id(current_response_id)
+        if current_response_id and request_previous_response_id is None:
+            print_progress(
+                "卷资料审核上下文压缩：保留同一个审核逻辑会话，"
+                f"但本次 provider 请求不沿用 previous_response_id={current_response_id}；"
+                "重新发送稳定前缀、参考源和最新资料文档。"
+            )
         review_payload = build_adaptation_review_request(
             manifest=manifest,
             volume_material=volume_material,
             allowed_files=review_files,
         )
-        review, current_response_id, _ = call_adaptation_review_response(
-            client,
-            model,
-            COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
-            stage_shared_prompt + json.dumps(review_payload, ensure_ascii=False, indent=2),
-            previous_response_id=current_response_id,
+        loaded_files = build_loaded_file_inventory(volume_material)
+        _, source_char_count = build_volume_source_bundle(volume_material)
+        request_json = json.dumps(review_payload, ensure_ascii=False, indent=2)
+        user_input = stage_shared_prompt + request_json
+        print_adaptation_request_context_summary(
+            request_label=f"卷资料审核（第 {attempt} 次）",
+            volume_material=volume_material,
+            loaded_files=loaded_files,
+            source_char_count=source_char_count,
+            payload=review_payload,
+            previous_response_id=request_previous_response_id,
             prompt_cache_key=prompt_cache_key,
+            user_input_char_count=len(user_input),
+            allowed_files=allowed_files,
+            session_status_line=adaptation_review_compaction_session_status(current_response_id),
         )
+        agent_result = run_agent_stage(
+            client,
+            model=model,
+            instructions=COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
+            user_input=user_input,
+            allowed_files=allowed_files,
+            previous_response_id=request_previous_response_id,
+            prompt_cache_key=prompt_cache_key,
+            retries=DEFAULT_API_RETRIES,
+            retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+        )
+        current_response_id = agent_result.response_id
+        workflow_payload = agent_result.submission
+        review = AdaptationReviewPayload(
+            passed=workflow_payload.passed,
+            review_md=workflow_payload.review_md or workflow_payload.content_md or workflow_payload.summary,
+            blocking_issues=workflow_payload.blocking_issues,
+            rewrite_targets=workflow_payload.rewrite_targets,
+        )
+        if review.passed is None or not review.review_md.strip():
+            raise llm_runtime.ModelOutputError(
+                "资料审核 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
+                preview=workflow_payload.summary or workflow_payload.content_md,
+            )
         if current_response_id:
             response_ids.append(current_response_id)
+        response_ids.extend(response_id for response_id in agent_result.response_ids if response_id not in response_ids)
         last_review = review
         write_adaptation_review_report(
             paths["adaptation_review"],
@@ -401,24 +461,8 @@ def run_adaptation_review_until_passed(
             raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
 
         print_progress(
-            "卷资料审核未通过，进入当前审核阶段原地返修；"
+            "卷资料审核未通过，将再次进入 agent 审核/返修循环；"
             f"目标：{', '.join(review.rewrite_targets) if review.rewrite_targets else '未返回'}。"
-        )
-        applied_fix, current_response_id, fix_response_ids = apply_adaptation_review_fix_with_repair(
-            client=client,
-            model=model,
-            shared_prompt=stage_shared_prompt,
-            review=review,
-            allowed_files=allowed_files,
-            previous_response_id=current_response_id,
-            prompt_cache_key=prompt_cache_key,
-            manifest=manifest,
-            volume_material=volume_material,
-        )
-        response_ids.extend(fix_response_ids)
-        print_progress(
-            "卷资料审核返修已应用："
-            f"模式={applied_fix.mode}，文件={', '.join(applied_fix.changed_keys)}。"
         )
 
     error_message = "卷资料审核流程异常结束。"
@@ -430,6 +474,8 @@ __all__ = [
     'adaptation_review_allowed_files',
     'adaptation_review_target_snapshot',
     'build_adaptation_review_request',
+    'compact_adaptation_review_previous_response_id',
+    'adaptation_review_compaction_session_status',
     'write_adaptation_review_report',
     'build_adaptation_review_fix_request',
     'apply_adaptation_review_fix_with_repair',

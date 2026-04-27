@@ -21,8 +21,8 @@ def render_dry_run_summary(
     print(f"补充资料数：{len(volume_material['extras'])}")
     print(f"总字符数：{source_char_count}")
     print(
-        f"请求模式：逐文档函数工具调用生成 {len(plan)} 次，随后至少 1 次卷资料审核；"
-        "每次调用都会携带当前卷全部文件原文，并沿用同一卷 previous_response_id 会话链。"
+        f"请求模式：资料生成 agent 会话覆盖 {len(plan)} 个目标文档，随后进入卷资料审核；"
+        "生成和审核阶段都使用 OpenCode 风格本地 transcript，多轮工具调用会重发本阶段上下文与工具历史。"
     )
     print(f"运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
     print("本次 dry-run 不调用 API，也不会生成文档正文。")
@@ -136,14 +136,14 @@ def main() -> int:
             write_source_inventory_snapshot(
                 manifest,
                 volume_material,
-                note="已完成当前卷全部源文件扫描，本阶段后续每一次请求都会携带当前卷全部文件原文与文件清单。",
+                note="已完成当前卷全部源文件扫描，资料生成 agent 会话会携带当前卷全部文件原文与文件清单。",
                 total_batches=planned_calls,
             )
             write_stage_status_snapshot(
                 manifest,
                 volume_material,
                 status="stage_session_started",
-                note="已读取当前卷全部文件，准备按单文档顺序生成；本阶段每次请求都会重新附带整卷内容。",
+                note="已读取当前卷全部文件，准备进入资料生成 agent 会话；本阶段会话会附带整卷内容与全部目标文档清单。",
                 total_batches=planned_calls,
                 current_batch=1,
                 current_batch_range=document_plan[0]["key"],
@@ -170,8 +170,8 @@ def main() -> int:
                 f"总字符数约 {source_char_count}。"
             )
             print_progress(
-                f"本阶段将使用 {planned_calls} 次 API 调用逐份生成函数工具文档，"
-                f"每次调用都会携带当前卷全部文件原文，共加载 {len(loaded_files)} 个文件。"
+                f"本阶段将使用 agent 生成模式：一个会话覆盖 {planned_calls} 个目标资料文档，"
+                f"会话会携带当前卷全部文件原文，共加载 {len(loaded_files)} 个文件；AI 可多轮调用工具完成落盘。"
             )
             print_progress("本阶段已启用稳定共享前缀，提示词缓存将复用：项目上下文、阶段规则、文件清单与整卷原文。")
             existing_docs = read_existing_global_docs(Path(manifest["project_root"]))
@@ -185,95 +185,41 @@ def main() -> int:
                 source_char_count=source_char_count,
             )
 
-            for index, doc_spec in enumerate(document_plan, start=1):
-                doc_key = str(doc_spec["key"])
-                doc_label = str(doc_spec["label"])
-                output_path = document_output_path(paths, doc_key)
-                if doc_key in resumed_completed_keys:
-                    current_docs[doc_key] = (
-                        read_text(output_path)
-                        if output_path.exists()
-                        else current_docs.get(doc_key, "")
-                    )
-                    print_progress(f"第 {index}/{planned_calls} 次调用：跳过已完成的{doc_label}。")
-                    continue
-                write_stage_status_snapshot(
-                    manifest,
-                    volume_material,
-                    status="generating_document",
-                    note=f"正在生成 {doc_label}；本次请求将重新附带当前卷全部文件原文。",
-                    total_batches=planned_calls,
-                    current_batch=index,
-                    current_batch_range=doc_key,
-                    generated_documents=generated_documents,
-                    previous_response_id=previous_response_id,
-                )
-                print_progress(f"第 {index}/{planned_calls} 次调用：生成{doc_label}。")
-                print_request_context_summary(
-                    doc_label=doc_label,
-                    current_doc_key=doc_key,
-                    volume_material=volume_material,
-                    current_docs=current_docs,
-                    loaded_files=loaded_files,
-                    source_char_count=source_char_count,
-                    previous_response_id=previous_response_id,
-                )
-                operation_result, previous_response_id = generate_document_operation(
-                    client,
-                    openai_settings["model"],
-                    manifest,
-                    volume_material,
-                    current_docs,
-                    doc_key=doc_key,
-                    output_path=output_path,
-                    stage_shared_prompt=stage_shared_prompt,
-                    previous_response_id=previous_response_id,
-                    prompt_cache_key=prompt_cache_key,
-                )
-                print_progress(f"{doc_label} 已返回，开始写入文件。")
-                applied, previous_response_id, repair_response_ids = apply_document_operation_with_repair(
-                    client=client,
-                    model=openai_settings["model"],
-                    instructions=COMMON_STAGE_DOCUMENT_INSTRUCTIONS,
-                    shared_prompt=stage_shared_prompt,
-                    operation=operation_result,
-                    allowed_files={doc_key: output_path},
-                    previous_response_id=previous_response_id,
-                    prompt_cache_key=prompt_cache_key,
-                    manifest=manifest,
-                    volume_material=volume_material,
-                    repair_phase_key="adaptation_stage_document_locator_repair",
-                    repair_role="资深网络小说改编规划编辑",
-                    repair_task=f"修正上一次{doc_label}工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
-                )
-                current_docs[doc_key] = read_text(output_path) if output_path.exists() else ""
-                generated_documents.append(
-                    {
-                        "index": index,
-                        "key": doc_key,
-                        "label": doc_label,
-                        "response_id": previous_response_id,
-                        "repair_response_ids": repair_response_ids,
-                        "output_path": str(output_path),
-                        "operation_mode": applied.mode,
-                        "changed": bool(applied.changed_keys),
-                    }
-                )
-                print_progress(
-                    f"{doc_label} 已处理：{output_path}，模式={applied.mode}，"
-                    f"{'已更新' if applied.changed_keys else '内容无变化'}。"
-                )
-                write_stage_status_snapshot(
-                    manifest,
-                    volume_material,
-                    status="document_generated",
-                    note=f"{doc_label} 已生成，断点已保存。",
-                    total_batches=planned_calls,
-                    current_batch=index,
-                    current_batch_range=doc_key,
-                    generated_documents=generated_documents,
-                    previous_response_id=previous_response_id,
-                )
+            write_stage_status_snapshot(
+                manifest,
+                volume_material,
+                status="generating_document",
+                note="正在以 agent 模式生成当前卷全部资料文档。",
+                total_batches=1,
+                current_batch=1,
+                current_batch_range="adaptation_generation_agent",
+                generated_documents=generated_documents,
+                previous_response_id=previous_response_id,
+            )
+            print_progress("资料生成 agent 会话：处理当前卷全部目标资料文档，允许多轮工具调用。")
+            generated_documents, previous_response_id = run_adaptation_generation_agent(
+                client=client,
+                model=openai_settings["model"],
+                manifest=manifest,
+                volume_material=volume_material,
+                paths=paths,
+                document_plan=document_plan,
+                current_docs=current_docs,
+                stage_shared_prompt=stage_shared_prompt,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=prompt_cache_key,
+            )
+            write_stage_status_snapshot(
+                manifest,
+                volume_material,
+                status="document_generated",
+                note="资料生成 agent 已完成全部目标文档，断点已保存。",
+                total_batches=1,
+                current_batch=1,
+                current_batch_range="adaptation_generation_agent",
+                generated_documents=generated_documents,
+                previous_response_id=previous_response_id,
+            )
 
             print_progress("本阶段文档生成完成，开始更新阶段索引文件并进入卷资料审核。")
             paths = write_stage_outputs(

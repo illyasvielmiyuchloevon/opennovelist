@@ -69,12 +69,11 @@
 
 ### 2.3 `novelist.workflows.novel_chapter_rewrite`
 
-负责逐章重写与审核，包括：
+负责按五章组重写与审核，包括：
 
-- 章纲
-- 正文
+- 组纲（一个文件内包含五章细纲）
+- 五章正文
 - 状态文档更新
-- 章级审核
 - 组审查
 - 卷级审核
 
@@ -157,23 +156,22 @@ LLM 运行时：
 
 ### 4.1 `submit_workflow_result`
 
-这是 `novel_chapter_rewrite` 主工作流使用的统一函数工具。
+这是两个主工作流共同使用的统一阶段提交工具。
 
 用途：
 
-- 提交章纲 Markdown
-- 提交章节正文
-- 提交审核结果
+- 生成阶段结束时提交完成摘要和已处理文件清单
+- 审核阶段结束时提交审核结果
 - 提交结构化审核字段
 
 对应代码：
 
-- [novelist/workflows/novel_chapter_rewrite.py](../novelist/workflows/novel_chapter_rewrite.py)
-  - `WORKFLOW_SUBMISSION_TOOL_NAME = "submit_workflow_result"`
+- [novelist/core/workflow_tools.py](../novelist/core/workflow_tools.py)
+  - `WORKFLOW_SUBMISSION_TOOL_NAME`
   - `WorkflowSubmissionPayload`
 
 它不是“说明工具”，而是：
-**章节工作流主线使用的统一结果提交工具。**
+**agent 阶段完成时使用的统一结果提交工具。**
 
 ### 4.2 `submit_document_writes`
 
@@ -213,41 +211,29 @@ LLM 运行时：
 
 - [novelist/core/document_ops.py](../novelist/core/document_ops.py)
 
-## 5. 两条工具链
+## 5. 统一工具系统
 
-当前仓库实际上有两条模型工具链：
-
-### 5.1 主工作流工具链
-
-使用：
+当前两个工作流阶段统一暴露同一组 4 个工具：
 
 - `submit_workflow_result`
-
-主要被 `novel_chapter_rewrite` 的这些步骤使用：
-
-- 章纲
-- 正文
-- 章审
-- 组审查
-- 卷审查
-
-### 5.2 目标文件操作工具链
-
-使用：
-
 - `submit_document_writes`
 - `submit_document_edits`
 - `submit_document_patches`
 
-主要用于所有“已有目标文件需要局部更新”的场景，包括章节正文 `.txt` 修订和长期状态文档更新。
+文档工具主要用于所有“需要落盘目标文件”的场景，包括新建、局部编辑、追加、按标题替换小节。
 
-主要被：
+主要包括：
 
-- `novel_adaptation`
-- `novel_chapter_rewrite` 的正文修订阶段
-- `novel_chapter_rewrite` 的状态文档更新阶段
+- `novel_adaptation` 生成阶段：同一个 agent 会话覆盖当前卷所有规划目标，可多轮调用工具落盘
+- `novel_adaptation` 审核阶段：允许先返修再提交审核结论
+- `novel_chapter_rewrite` 组生成阶段：同一个 agent 会话覆盖组纲、五章正文和状态文档，可多轮调用工具落盘
+- 组审 / 卷审阶段：允许先返修组纲、章节正文、状态文档、审核文档，再提交审核结论
 
-使用。
+agent 运行时按 OpenCode 风格维护本地 transcript：首轮发送阶段完整上下文，工具轮会把本阶段大上下文、已发生的工具调用和工具结果一起重新组装发送；`previous_response_id` 只作为历史记录保存，不作为 agent 工具轮的唯一上下文来源。
+
+`novel_adaptation` 的卷资料审核阶段会在同一个审核逻辑会话内做上下文压缩：每次审核请求都重新发送稳定前缀、当前卷参考源和最新落盘资料文档，但 provider 请求不沿用生成阶段或上一轮审核的旧 `previous_response_id`。这对应 OpenCode 在同一个 session 中用压缩后的消息历史继续运行：逻辑会话不断，发给模型的旧版卷资料和旧工具历史被替换掉。
+
+运行时由 `novelist/core/agent_runtime.py` 统一循环处理文档工具调用，并在最终收到 `submit_workflow_result` 后结束阶段。
 
 ## 6. Prompt 结构总览
 
@@ -275,9 +261,9 @@ LLM 运行时：
 
 这是共享前缀层，主要为缓存服务。
 
-章节工作流：
+组生成：
 
-- `build_chapter_shared_prompt()`
+- `build_five_chapter_generation_shared_prompt()`
 
 组审查：
 
@@ -290,7 +276,7 @@ LLM 运行时：
 共享前缀中通常放：
 
 - 项目上下文
-- 当前卷/当前章/当前组定位
+- 当前卷/当前组定位
 - 固定 workflow rules
 - 当前 source bundle 或章节清单
 
@@ -322,7 +308,7 @@ LLM 运行时：
 
 - `stable_injected_global_docs`
 - `stable_injected_volume_docs`
-- `stable_injected_chapter_docs`
+- 旧单章章纲只作为兼容输入，不再作为新目标注入
 
 这部分尽量稳定，放在动态 payload 的前段。
 
@@ -334,7 +320,7 @@ LLM 运行时：
   - `phase`
   - `role`
   - `task`
-  - `required_file`
+  - `required_file` / `required_group_outline_file`
 - `reference_chapter_metrics`
 - `requirements`
 
@@ -346,8 +332,8 @@ LLM 运行时：
 
 - `rolling_injected_global_docs`
 - `rolling_injected_volume_docs`
-- `rolling_injected_chapter_docs`
 - `rolling_injected_group_docs`
+- `current_group_outline`
 - `review_skill_reference`
 - `update_target_files`
 - `current_generated_chapter`
@@ -359,7 +345,6 @@ LLM 运行时：
 
 `skill/chapter_review/SKILL.md` 现在只注入到：
 
-- 章级审核
 - 组审查
 - 卷级审核
 
@@ -378,14 +363,15 @@ LLM 运行时：
 - 再把 skill 当作附加审核准则放到后面
 - 这样更利于提示词缓存命中
 
-`skill/chapter_writing/SKILL.md` 只注入到：
+`skill/chapter_writing/SKILL.md` 主要注入到：
 
-- `phase2_chapter_text`
+- `group_generation`
+- 旧兼容路径中的 `phase2_chapter_text`
 
 并且它当前的位置是：
 
 - 不放进 `instructions`
-- 不放进章节共享前缀 `shared_prompt`
+- 不放进组共享前缀 `shared_prompt`
 - 放在 `request_fields`
 - 也就是正文仿写阶段原本的主写作规则位置
 
@@ -393,15 +379,16 @@ LLM 运行时：
 
 - 它不是审核补充资料，而是正文生成阶段的核心写作约束
 - 它需要和 `document_request`、`reference_chapter_metrics`、`requirements` 一起定义“这一阶段怎么写”
-- 它只在正文仿写阶段按需加载，不会进入审核或状态更新阶段
+- 它只在正文仿写 / 组生成阶段按需加载，不会进入审核阶段
 
 ## 9. `submit_workflow_result` 的设计目的
 
 这个工具的设计目标是：
 
-- 让章纲 / 正文 / 审核统一走一条主工具链
+- 让组生成 / 审核统一走一条 agent 工具链
+- 让文件写入统一交给 write/edit/patch，而阶段完成统一交给 `submit_workflow_result`
 - 降低不同阶段之间工具名过多造成的兼容问题
-- 让运行时只维护一套章节主流程的工具提取逻辑
+- 让运行时只维护一套工具提取与文档落盘循环
 
 它当前承载的字段较多，因此运行时还额外做了：
 
@@ -410,10 +397,7 @@ LLM 运行时：
 - `chapters_to_revise` 提取
 - 审核 Markdown 固定骨架重建
 
-如果未来要进一步提升稳定性，最可能的方向是：
-
-- 保留统一主工具思想
-- 但把章审 / 组审查 / 卷审查拆成更小的 schema
+新流程不再新建章级审核；旧章纲 / 章审文件只作为兼容遗留文件存在。
 
 ## 10. 统一工作流如何调度
 

@@ -70,6 +70,173 @@ def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, An
         )
     return inventory
 
+def group_generation_target_paths(
+    project_root: Path,
+    volume_number: str,
+    chapter_numbers: list[str],
+) -> dict[str, Path]:
+    first_paths = rewrite_paths(project_root, volume_number, chapter_numbers[0])
+    targets = {
+        "group_outline": group_outline_path(project_root, volume_number, chapter_numbers),
+        **{
+            f"{chapter_number}_rewritten_chapter": rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]
+            for chapter_number in chapter_numbers
+        },
+        **support_update_target_paths(first_paths),
+    }
+    return targets
+
+def group_generation_target_inventory(
+    project_root: Path,
+    volume_number: str,
+    chapter_numbers: list[str],
+) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    targets = group_generation_target_paths(project_root, volume_number, chapter_numbers)
+    for file_key, path in targets.items():
+        current_content = read_text_if_exists(path).strip()
+        if file_key == "group_outline":
+            inventory.append(
+                {
+                    "file_key": file_key,
+                    "label": "组纲",
+                    "file_name": path.name,
+                    "file_path": str(path),
+                    "exists": path.exists(),
+                    "preferred_mode": "edit_or_patch" if current_content else "write",
+                    "current_content": current_content,
+                    "required_structure": {
+                        "title": f"# {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲",
+                        "chapter_headings": [f"## {chapter_number}" for chapter_number in chapter_numbers],
+                        "chapter_outline_policy": "每个二级标题下的细纲格式、粒度和功能映射要求沿用旧单章章纲。",
+                    },
+                    "tool_selection_policy": (
+                        "文件为空或需要首次汇总旧章纲时可用 write；已有组纲只修局部章节细纲时优先 edit；"
+                        "新增某章细纲或按标题替换某章细纲正文时使用 patch。"
+                    ),
+                }
+            )
+            continue
+        label = "仿写章节正文" if file_key.endswith("_rewritten_chapter") else doc_label_for_key(file_key)
+        inventory.append(
+            {
+                "file_key": file_key,
+                "label": label,
+                "file_name": path.name,
+                "file_path": str(path),
+                "exists": path.exists(),
+                "preferred_mode": "edit_or_patch" if current_content else "write",
+                "current_content": current_content,
+                "tool_selection_policy": (
+                    "文件为空时可用 write；修改已有正文或状态记录用 edit；插入新段落、追加记录或按标题补充小节用 patch。"
+                ),
+            }
+        )
+    return inventory
+
+def legacy_chapter_outline_docs(
+    project_root: Path,
+    volume_number: str,
+    chapter_numbers: list[str],
+) -> list[dict[str, Any]]:
+    docs: list[dict[str, Any]] = []
+    for chapter_number in chapter_numbers:
+        path = rewrite_paths(project_root, volume_number, chapter_number)["chapter_outline"]
+        content = read_text_if_exists(path).strip()
+        if not content:
+            continue
+        docs.append(
+            {
+                "chapter_number": chapter_number,
+                "file_name": path.name,
+                "file_path": str(path),
+                "content": content,
+            }
+        )
+    return docs
+
+def build_group_generation_payload(
+    *,
+    project_root: Path,
+    volume_material: dict[str, Any],
+    volume_number: str,
+    chapter_numbers: list[str],
+    catalog: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    writing_skill = load_chapter_writing_skill_reference()
+    stable_global_docs, rolling_global_docs, included_globals, omitted_globals = prepare_cache_ordered_injected_docs(
+        catalog,
+        [
+            "book_outline",
+            "style_guide",
+            "foreshadowing",
+            "character_status_cards",
+            "character_relationship_graph",
+            "world_model",
+            "world_state",
+        ],
+        category="global",
+    )
+    stable_volume_docs, rolling_volume_docs, included_volumes, omitted_volumes = prepare_cache_ordered_injected_docs(
+        catalog,
+        ["volume_outline", "volume_plot_progress", "volume_review"],
+        category="volume",
+    )
+    source_chapters = [get_chapter_material(volume_material, chapter_number) for chapter_number in chapter_numbers]
+    chapter_metrics = []
+    for chapter in source_chapters:
+        reference_char_count = len(chapter["text"])
+        min_target_chars = max(1, int(reference_char_count * 0.8))
+        max_target_chars = max(min_target_chars, int(reference_char_count * 1.2))
+        chapter_metrics.append(
+            {
+                "chapter_number": chapter["chapter_number"],
+                "source_title": chapter["source_title"],
+                "source_char_count": reference_char_count,
+                "target_char_count_range": [min_target_chars, max_target_chars],
+            }
+        )
+    payload = build_payload_with_cache_layers(
+        shared_prefix_fields={
+            "stable_injected_global_docs": stable_global_docs,
+            "stable_injected_volume_docs": stable_volume_docs,
+        },
+        request_fields={
+            "document_request": {
+                "phase": "group_generation",
+                "role": "五章组仿写生成 agent",
+                "task": "在同一个五章组生成 agent 会话内完成当前组的组纲、五章仿写正文和必要状态文档更新。",
+                "required_group_outline_file": group_outline_path(project_root, volume_number, chapter_numbers).name,
+                "chapter_numbers": chapter_numbers,
+            },
+            "reference_chapter_metrics": chapter_metrics,
+            "writing_skill_reference": writing_skill,
+            "requirements": [
+                "组纲是本组唯一新规划产物，不再新建独立章纲文件。",
+                f"组纲顶层标题必须是：# {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲。",
+                "组纲中每章必须有一个二级标题，例如 ## 0001；每个二级标题下的细纲格式、粒度、功能映射要求与旧单章章纲一致。",
+                "每章细纲必须体现与对应参考源章节的功能映射关系，但不能照搬原名词、标题、人名、地名、宗门、术语、数值体系。",
+                "五章正文必须分别写入对应 rewritten_chapter 目标文件，篇幅与对应参考源章节接近，除非审核意见明确要求不得明显扩写。",
+                "正文必须承接组纲中对应章节细纲、卷纲、全局大纲、世界模型和当前状态文档。",
+                "状态文档只更新当前五章真实造成变化且后续会复用的信息；无变化文档不要为了统一措辞重写。",
+                "全部目标文件处理完成后必须调用 submit_workflow_result，并在 generated_files 中列出已处理 file_key。",
+            ],
+        },
+        trailing_doc_fields={
+            "rolling_injected_global_docs": rolling_global_docs,
+            "rolling_injected_volume_docs": rolling_volume_docs,
+            "legacy_chapter_outlines": legacy_chapter_outline_docs(project_root, volume_number, chapter_numbers),
+            "update_target_files": group_generation_target_inventory(project_root, volume_number, chapter_numbers),
+            "latest_work_target": latest_work_target(
+                f"这是本次请求的最新工作目标：生成或修订 {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲、五章正文和必要状态文档。必须先用 write/edit/patch 落盘，最后调用 submit_workflow_result。",
+                required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+            ),
+        },
+    )
+    included_docs = [*included_globals, *included_volumes]
+    omitted_docs = [*omitted_globals, *omitted_volumes]
+    return payload, included_docs, omitted_docs
+
 def latest_work_target(
     instruction: str,
     *,
@@ -413,6 +580,26 @@ def build_volume_review_payload(
         ["volume_outline", "volume_plot_progress", "volume_review"],
         category="volume",
     )
+    group_outline_docs: list[dict[str, Any]] = []
+    included_group_outlines: list[str] = []
+    omitted_group_outlines: list[str] = []
+    for group in build_five_chapter_groups(volume_material):
+        path = group_outline_path(project_root, volume_number, group)
+        content = read_text_if_exists(path).strip()
+        label = f"[group] 组纲（{group[0]}-{group[-1]}）"
+        if content:
+            group_outline_docs.append(
+                {
+                    "label": f"组纲（{group[0]}-{group[-1]}）",
+                    "file_name": path.name,
+                    "file_path": str(path),
+                    "chapter_numbers": group,
+                    "content": content,
+                }
+            )
+            included_group_outlines.append(f"{label} -> {path}（字符数约 {len(content)}）")
+        else:
+            omitted_group_outlines.append(f"{label}：当前无组纲文档。")
 
     payload = build_payload_with_cache_layers(
         shared_prefix_fields={
@@ -431,22 +618,24 @@ def build_volume_review_payload(
                 "需要检查与卷级大纲、世界模型、文风规范和全书大纲是否一致。",
                 "需要检查卷内章节的文风是否稳定符合文笔写作风格文档，尤其是爽点铺垫、剧情转折、叙事节奏、情节结构、段落分割、对话密度、句长与收尾方式是否持续一致。",
                 "如果不通过，chapters_to_revise 必须列出需要返工的章节编号。",
+                "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
                 *review_output_contract_lines("volume"),
             ],
         },
         trailing_doc_fields={
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
+            "group_outlines": group_outline_docs,
             "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
-                "这是本次请求的最新工作目标：审核当前卷所有已生成章节与卷级文档。必须调用 submit_workflow_result 提交卷级审核结果，不要调用 write/edit/patch 文档工具。",
+                "这是本次请求的最新工作目标：审核当前卷所有已生成章节与卷级文档。可以先调用 write/edit/patch 原地修复允许目标，最终必须调用 submit_workflow_result 提交卷级审核结果。",
                 required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
             ),
         },
     )
-    included_docs = [*included_globals, *included_volumes]
-    omitted_docs = [*omitted_globals, *omitted_volumes]
+    included_docs = [*included_globals, *included_volumes, *included_group_outlines]
+    omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_group_outlines]
     return payload, included_docs, omitted_docs
 
 def build_five_chapter_review_payload(
@@ -462,6 +651,8 @@ def build_five_chapter_review_payload(
     current_batch_doc_name = f"{current_batch_id}_group_review.md"
     current_review_path = five_chapter_review_path(project_root, volume_material["volume_number"], chapter_numbers)
     current_review_content = read_text_if_exists(current_review_path).strip()
+    current_group_outline_path = group_outline_path(project_root, volume_material["volume_number"], chapter_numbers)
+    current_group_outline_content = read_text_if_exists(current_group_outline_path).strip()
     if current_review_content:
         five_chapter_review_docs = [
             {
@@ -517,6 +708,7 @@ def build_five_chapter_review_payload(
                 "重点检查最近这组章节之间是否前后矛盾、逻辑是否通畅。",
                 "重点检查剧情是否和参考源发生重大偏移，是否和卷纲、全书大纲、世界模型发生重大偏移。",
                 "如果不通过，chapters_to_revise 必须只列当前区间内需要返工的章节编号。",
+                "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
                 *review_output_contract_lines("group"),
             ],
         },
@@ -524,16 +716,33 @@ def build_five_chapter_review_payload(
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
             "rolling_injected_group_docs": five_chapter_review_docs,
+            "current_group_outline": {
+                "label": f"组纲（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
+                "file_name": current_group_outline_path.name,
+                "file_path": str(current_group_outline_path),
+                "chapter_numbers": chapter_numbers,
+                "content": current_group_outline_content,
+            },
             "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
-                f"这是本次请求的最新工作目标：审核当前五章区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。必须调用 submit_workflow_result 提交组审查结果，不要调用 write/edit/patch 文档工具。",
+                f"这是本次请求的最新工作目标：审核当前五章区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。可以先调用 write/edit/patch 原地修复允许目标，最终必须调用 submit_workflow_result 提交组审查结果。",
                 required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
             ),
         },
     )
-    included_docs = [*included_globals, *included_volumes, *included_five_reviews]
-    omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_five_reviews]
+    included_group_outline = (
+        [f"[group] 组纲（{chapter_numbers[0]}-{chapter_numbers[-1]}） -> {current_group_outline_path}（字符数约 {len(current_group_outline_content)}）"]
+        if current_group_outline_content
+        else []
+    )
+    omitted_group_outline = (
+        []
+        if current_group_outline_content
+        else [f"[group] 组纲（{chapter_numbers[0]}-{chapter_numbers[-1]}）：当前无组纲文档。"]
+    )
+    included_docs = [*included_globals, *included_volumes, *included_five_reviews, *included_group_outline]
+    omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_five_reviews, *omitted_group_outline]
     return payload, included_docs, omitted_docs
 
 __all__ = [
@@ -541,6 +750,10 @@ __all__ = [
     'support_update_general_rules',
     'support_update_doc_rules',
     'support_update_target_inventory',
+    'group_generation_target_paths',
+    'group_generation_target_inventory',
+    'legacy_chapter_outline_docs',
+    'build_group_generation_payload',
     'latest_work_target',
     'print_call_artifact_report',
     'build_phase_request_payload',

@@ -83,12 +83,18 @@ def _print_retry_notice(
     )
 
 
-def estimate_request_text_chars(*parts: str | None) -> int:
-    total = 0
-    for part in parts:
-        if isinstance(part, str):
-            total += len(part)
-    return total
+def _estimate_text_chars(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_estimate_text_chars(item) for item in value)
+    if isinstance(value, dict):
+        return sum(_estimate_text_chars(item) for item in value.values())
+    return 0
+
+
+def estimate_request_text_chars(*parts: Any) -> int:
+    return sum(_estimate_text_chars(part) for part in parts)
 
 
 def should_abort_transport_retries(
@@ -98,6 +104,10 @@ def should_abort_transport_retries(
     request_chars: int,
     attempt: int,
 ) -> bool:
+    error_text = str(error).lower()
+    if "context window" in error_text or "input exceeds" in error_text:
+        return True
+
     if isinstance(
         error,
         (
@@ -111,8 +121,8 @@ def should_abort_transport_retries(
         return True
 
     if isinstance(error, openai.InternalServerError):
-        error_text = str(error)
-        if "Database error" in error_text or "please contact the administrator" in error_text:
+        original_error_text = str(error)
+        if "Database error" in original_error_text or "please contact the administrator" in original_error_text:
             return True
         if protocol == PROTOCOL_OPENAI_COMPATIBLE:
             return attempt >= 2
@@ -135,6 +145,9 @@ def format_transport_error_message(
     abort_retries: bool,
 ) -> str:
     message = f"接口请求失败（{type(error).__name__}，发生在 SDK 预处理或发送阶段）：{error}"
+    context_limit_error = "context window" in str(error).lower() or "input exceeds" in str(error).lower()
+    if context_limit_error:
+        message += " 这是上下文窗口超限的确定性错误，已停止继续重试。"
     if protocol == PROTOCOL_OPENAI_COMPATIBLE:
         message += f" 当前协议=openai_compatible，请求文本约 {request_chars} 字符。"
         if isinstance(error, openai.BadRequestError):
@@ -1241,6 +1254,8 @@ class MultiFunctionToolResult:
     raw_body_text: str
     raw_json: Any
     token_usage: TokenUsage = field(default_factory=empty_token_usage)
+    call_id: str = ""
+    raw_arguments: str = ""
 
 
 def _coerce_function_tool_arguments(
@@ -1343,7 +1358,7 @@ def _coerce_any_function_tool_arguments(
     *,
     raw_body_text: str = "",
     raw_json: Any = None,
-) -> tuple[BaseModel | None, str, str]:
+) -> tuple[BaseModel | None, str, str, str, str]:
     output = to_plain_data(getattr(response, "output", None)) or []
     if isinstance(output, list):
         for item in output:
@@ -1357,12 +1372,13 @@ def _coerce_any_function_tool_arguments(
             spec = tool_specs_by_name.get(item_name)
             if spec is None:
                 continue
+            call_id = str(item.get("call_id") or item.get("id") or "")
             parsed_arguments = item.get("parsed_arguments")
             if isinstance(parsed_arguments, spec.model):
-                return parsed_arguments, item_name, "function_call.parsed_arguments"
+                return parsed_arguments, item_name, "function_call.parsed_arguments", call_id, ""
             if parsed_arguments is not None:
                 try:
-                    return spec.model.model_validate(parsed_arguments), item_name, "function_call.parsed_arguments"
+                    return spec.model.model_validate(parsed_arguments), item_name, "function_call.parsed_arguments", call_id, json.dumps(parsed_arguments, ensure_ascii=False)
                 except Exception:
                     pass
             arguments = item.get("arguments")
@@ -1370,7 +1386,7 @@ def _coerce_any_function_tool_arguments(
                 loaded = safe_json_loads(arguments)
                 if isinstance(loaded, dict):
                     try:
-                        return spec.model.model_validate(loaded), item_name, "function_call.arguments"
+                        return spec.model.model_validate(loaded), item_name, "function_call.arguments", call_id, arguments
                     except Exception:
                         pass
 
@@ -1389,12 +1405,13 @@ def _coerce_any_function_tool_arguments(
                 spec = tool_specs_by_name.get(item_name)
                 if spec is None:
                     continue
+                call_id = str(item.get("call_id") or item.get("id") or "")
                 arguments = item.get("arguments")
                 if isinstance(arguments, str):
                     loaded = safe_json_loads(arguments)
                     if isinstance(loaded, dict):
                         try:
-                            return spec.model.model_validate(loaded), item_name, "raw_json.output.function_call.arguments"
+                            return spec.model.model_validate(loaded), item_name, "raw_json.output.function_call.arguments", call_id, arguments
                         except Exception:
                             pass
 
@@ -1421,16 +1438,17 @@ def _coerce_any_function_tool_arguments(
                     spec = tool_specs_by_name.get(item_name)
                     if spec is None:
                         continue
+                    call_id = str(tool_call.get("id") or "")
                     arguments = function.get("arguments")
                     if isinstance(arguments, str):
                         loaded = safe_json_loads(arguments)
                         if isinstance(loaded, dict):
                             try:
-                                return spec.model.model_validate(loaded), item_name, "raw_json.choices.message.tool_calls.arguments"
+                                return spec.model.model_validate(loaded), item_name, "raw_json.choices.message.tool_calls.arguments", call_id, arguments
                             except Exception:
                                 pass
 
-    return None, "", ""
+    return None, "", "", "", ""
 
 
 def _coerce_parsed_payload(
@@ -1640,13 +1658,15 @@ def call_function_tools(
     *,
     model: str,
     instructions: str,
-    user_input: str,
+    user_input: Any,
     tool_specs: list[FunctionToolSpec[Any]],
     previous_response_id: str | None = None,
     prompt_cache_key: str | None = None,
     retries: int = DEFAULT_API_RETRIES,
     retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
     tool_choice: Any = "auto",
+    chat_messages: list[dict[str, Any]] | None = None,
+    store: bool = True,
 ) -> MultiFunctionToolResult:
     last_error: Exception | None = None
     if not tool_specs:
@@ -1666,7 +1686,9 @@ def call_function_tools(
             if protocol == PROTOCOL_OPENAI_COMPATIBLE:
                 base_request_params = {
                     "model": model,
-                    "messages": [
+                    "messages": chat_messages
+                    if chat_messages is not None
+                    else [
                         {"role": "system", "content": instructions},
                         {"role": "user", "content": user_input},
                     ],
@@ -1709,7 +1731,7 @@ def call_function_tools(
                     "tools": build_responses_function_tools(tool_specs),
                     "tool_choice": tool_choice,
                     "parallel_tool_calls": False,
-                    "store": True,
+                    "store": store,
                 }
                 if previous_response_id:
                     request_params["previous_response_id"] = previous_response_id
@@ -1775,7 +1797,7 @@ def call_function_tools(
             output_types = response_output_types(response, raw_json)
             preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
         token_usage = extract_token_usage(raw_json)
-        parsed_payload, parsed_tool_name, extraction_source = _coerce_any_function_tool_arguments(
+        parsed_payload, parsed_tool_name, extraction_source, call_id, raw_arguments = _coerce_any_function_tool_arguments(
             response,
             tool_specs_by_name,
             raw_body_text=raw_body_text,
@@ -1799,6 +1821,8 @@ def call_function_tools(
                 preview=preview,
                 raw_body_text=raw_body_text,
                 raw_json=raw_json,
+                call_id=call_id,
+                raw_arguments=raw_arguments,
             )
 
         last_error = ModelOutputError(

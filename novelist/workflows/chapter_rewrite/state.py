@@ -52,6 +52,7 @@ def init_or_load_rewrite_manifest(
     if existing is not None:
         existing["total_volumes"] = len(volume_dirs)
         existing["rewrite_output_root"] = str(project_root / REWRITTEN_ROOT_DIRNAME)
+        existing.setdefault("group_generation_states", {})
         save_rewrite_manifest(existing)
         return existing
 
@@ -69,6 +70,7 @@ def init_or_load_rewrite_manifest(
         "last_processed_volume": None,
         "last_processed_chapter": None,
         "chapter_states": {},
+        "group_generation_states": {},
         "volume_review_states": {},
         "five_chapter_review_states": {},
     }
@@ -291,6 +293,51 @@ def update_volume_review_state(
     save_rewrite_manifest(manifest)
     return state
 
+def get_group_generation_state(
+    manifest: dict[str, Any],
+    volume_number: str,
+    batch_id: str,
+    chapter_numbers: list[str],
+) -> dict[str, Any]:
+    generation_states = manifest.setdefault("group_generation_states", {})
+    volume_states = generation_states.setdefault(volume_number, {})
+    return volume_states.setdefault(
+        batch_id,
+        {
+            "status": "pending",
+            "attempts": 0,
+            "chapter_numbers": list(chapter_numbers),
+            "group_outline_path": "",
+            "updated_at": None,
+            "response_ids": [],
+            "last_response_id": None,
+            "blocking_issues": [],
+        },
+    )
+
+def update_group_generation_state(
+    manifest: dict[str, Any],
+    volume_number: str,
+    batch_id: str,
+    chapter_numbers: list[str],
+    **updates: Any,
+) -> dict[str, Any]:
+    state = get_group_generation_state(manifest, volume_number, batch_id, chapter_numbers)
+    state.update({key: value for key, value in updates.items() if value is not None})
+    state["chapter_numbers"] = list(chapter_numbers)
+    state["updated_at"] = now_iso()
+    save_rewrite_manifest(manifest)
+    return state
+
+def group_generation_passed(
+    manifest: dict[str, Any],
+    volume_number: str,
+    chapter_numbers: list[str],
+) -> bool:
+    batch_id = five_chapter_batch_id(chapter_numbers)
+    state = get_group_generation_state(manifest, volume_number, batch_id, chapter_numbers)
+    return state.get("status") == "passed"
+
 def get_five_chapter_review_state(
     manifest: dict[str, Any],
     volume_number: str,
@@ -372,7 +419,7 @@ def current_due_group_review(
     group = next_pending_group(volume_material, manifest)
     if group is None:
         return None
-    if not all_group_chapters_passed(manifest, volume_material, group):
+    if not group_generation_passed(manifest, volume_material["volume_number"], group):
         return None
     return group
 
@@ -468,6 +515,9 @@ __all__ = [
     'chapter_pending_phase_plan',
     'get_volume_review_state',
     'update_volume_review_state',
+    'get_group_generation_state',
+    'update_group_generation_state',
+    'group_generation_passed',
     'get_five_chapter_review_state',
     'update_five_chapter_review_state',
     'mark_five_chapter_group_pending_for_chapter',

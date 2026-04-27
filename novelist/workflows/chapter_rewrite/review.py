@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
 from .models import chapter_rewrite_stage_tool_specs, document_operation_result_from_stage_tool_result
+from novelist.core.agent_runtime import run_agent_stage
 
 
 def review_fix_instructions(review_kind: str) -> str:
@@ -47,13 +48,17 @@ def multi_chapter_review_fix_target_paths(
         volume_paths = rewrite_paths(project_root, volume_number)
         targets["volume_outline"] = volume_paths["volume_outline"]
         targets["volume_review"] = volume_paths["volume_review"]
+        for current_group in [chapter_numbers[index : index + FIVE_CHAPTER_REVIEW_SIZE] for index in range(0, len(chapter_numbers), FIVE_CHAPTER_REVIEW_SIZE)]:
+            batch_id = five_chapter_batch_id(current_group)
+            targets[f"{batch_id}_group_outline"] = group_outline_path(project_root, volume_number, current_group)
+            targets[f"{batch_id}_group_review"] = five_chapter_review_path(project_root, volume_number, current_group)
+    else:
+        targets["group_outline"] = group_outline_path(project_root, volume_number, chapter_numbers)
     if group_review_path is not None:
         targets["group_review"] = group_review_path
     for chapter_number in chapter_numbers:
         chapter_paths = rewrite_paths(project_root, volume_number, chapter_number)
         targets[f"{chapter_number}_rewritten_chapter"] = chapter_paths["rewritten_chapter"]
-        targets[f"{chapter_number}_chapter_outline"] = chapter_paths["chapter_outline"]
-        targets[f"{chapter_number}_chapter_review"] = chapter_paths["chapter_review"]
     return targets
 
 def build_review_fix_payload(
@@ -188,11 +193,12 @@ def run_five_chapter_review(
     batch_id = five_chapter_batch_id(chapter_numbers)
     review_path = five_chapter_review_path(project_root, volume_number, chapter_numbers)
     rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
-    source_bundle, source_char_count = build_five_chapter_source_bundle(volume_material, chapter_numbers)
+    source_volume_material = group_source_material(volume_material, chapter_numbers)
+    source_bundle, source_char_count = build_five_chapter_source_bundle(source_volume_material, chapter_numbers)
     prompt_cache_key = f"{build_volume_review_session_key(rewrite_manifest, volume_number)}-{batch_id}"
     shared_prompt = build_five_chapter_review_shared_prompt(
         manifest=rewrite_manifest,
-        volume_material=volume_material,
+        volume_material=source_volume_material,
         chapter_numbers=chapter_numbers,
         source_bundle=source_bundle,
         rewritten_chapters=rewritten_chapters,
@@ -201,6 +207,13 @@ def run_five_chapter_review(
     previous_response_id = str(review_state.get("last_response_id") or "").strip() or None
     stored_response_ids = review_state.get("response_ids")
     response_ids = [str(item) for item in stored_response_ids if str(item or "").strip()] if isinstance(stored_response_ids, list) else []
+
+    def report_tool(application: Any) -> None:
+        if application.applied is None:
+            print_progress(f"{FIVE_CHAPTER_REVIEW_NAME} agent 工具调用未应用：{application.output}", error=True)
+            return
+        changed = ", ".join(application.applied.changed_keys) if application.applied.changed_keys else "无内容变化"
+        print_progress(f"{FIVE_CHAPTER_REVIEW_NAME} agent 工具已应用：{application.tool_name}，变更={changed}。")
 
     for attempt in range(1, MAX_GROUP_REVIEW_ATTEMPTS + 1):
         rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
@@ -234,7 +247,7 @@ def run_five_chapter_review(
             chapter_number=None,
             location_label=f"第 {volume_number} 卷，第 {chapter_numbers[0]}-{chapter_numbers[-1]} 组审查。",
             source_summary_lines=five_chapter_review_source_summary_lines(
-                volume_material,
+                source_volume_material,
                 chapter_numbers,
                 source_char_count,
                 rewritten_chapters,
@@ -246,7 +259,7 @@ def run_five_chapter_review(
             shared_prefix_lines=[
                 *group_review_shared_prefix_summary_lines(
                     rewrite_manifest,
-                    volume_material,
+                    source_volume_material,
                     chapter_numbers,
                     source_char_count,
                     rewritten_chapters,
@@ -254,20 +267,41 @@ def run_five_chapter_review(
                 *payload_prefix_doc_summary_lines(payload),
             ],
             dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+            payload=payload,
+            user_input_char_count=len(shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+            session_status_line=(
+                "会话：OpenCode 风格本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                "不依赖 provider previous_response_id。"
+            ),
         )
         try:
-            review, response_id, _ = call_five_chapter_review_response(
+            agent_result = run_agent_stage(
                 client,
-                model,
-                COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
-                shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-                allowed_chapters=chapter_numbers,
+                model=model,
+                instructions=COMMON_FIVE_CHAPTER_REVIEW_INSTRUCTIONS,
+                user_input=shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                allowed_files=multi_chapter_review_fix_target_paths(
+                    project_root,
+                    volume_number,
+                    chapter_numbers,
+                    group_review_path=review_path,
+                ),
                 previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
+                on_tool_result=report_tool,
             )
-            previous_response_id = response_id
-            if response_id:
-                response_ids.append(str(response_id))
+            previous_response_id = agent_result.response_id
+            response_ids.extend(response_id for response_id in agent_result.response_ids if response_id not in response_ids)
+            review = finalize_review_payload(
+                agent_result.submission,
+                review_kind="group",
+                allowed_chapters=chapter_numbers,
+            )
+            if review.passed is None or not review.review_md.strip():
+                raise llm_runtime.ModelOutputError(
+                    "组审查 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
+                    preview=agent_result.submission.summary or agent_result.submission.content_md,
+                )
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):
                 write_response_debug_snapshot(
@@ -345,64 +379,8 @@ def run_five_chapter_review(
             last_response_id=previous_response_id,
         )
         print_progress(
-            f"{FIVE_CHAPTER_REVIEW_NAME} 未通过，将在当前审核阶段直接修复。"
+            f"{FIVE_CHAPTER_REVIEW_NAME} 未通过，将再次进入同一 agent 审核/返修循环。"
             f" 目标章节：{'、'.join(chapters_to_revise) or '未明确'}。"
-        )
-        try:
-            applied_fix, previous_response_id, fix_response_ids = apply_review_fix_with_repair(
-                client=client,
-                model=model,
-                review_kind="group",
-                shared_prompt=shared_prompt,
-                review=review,
-                allowed_files=multi_chapter_review_fix_target_paths(
-                    project_root,
-                    volume_number,
-                    chapter_numbers,
-                    group_review_path=review_path,
-                ),
-                previous_response_id=previous_response_id,
-                prompt_cache_key=prompt_cache_key,
-                debug_path=review_path.with_name(f"{batch_id}_group_review_debug.md"),
-            )
-        except Exception as error:
-            if isinstance(error, llm_runtime.ModelOutputError):
-                write_response_debug_snapshot(
-                    review_path.with_name(f"{batch_id}_group_review_debug.md"),
-                    error_message=str(error),
-                    preview=error.preview,
-                    raw_body_text=getattr(error, "raw_body_text", ""),
-                )
-            update_five_chapter_review_state(
-                rewrite_manifest,
-                volume_number,
-                batch_id,
-                chapter_numbers,
-                status="failed",
-                attempts=attempt,
-                chapters_to_revise=chapters_to_revise,
-                blocking_issues=review.blocking_issues,
-                response_ids=response_ids,
-                last_response_id=previous_response_id,
-            )
-            raise
-        response_ids.extend(str(item) for item in fix_response_ids if item)
-        update_five_chapter_review_state(
-            rewrite_manifest,
-            volume_number,
-            batch_id,
-            chapter_numbers,
-            status="in_review_fix",
-            attempts=attempt,
-            chapters_to_revise=chapters_to_revise,
-            blocking_issues=review.blocking_issues,
-            response_ids=response_ids,
-            last_response_id=previous_response_id,
-        )
-        print_call_artifact_report(
-            f"{FIVE_CHAPTER_REVIEW_NAME}原地返修调用",
-            [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
-            applied_fix.changed_keys,
         )
 
     fail(f"第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} 连续审查失败。")
@@ -465,6 +443,13 @@ def run_volume_review(
     stored_response_ids = review_state.get("response_ids")
     response_ids = [str(item) for item in stored_response_ids if str(item or "").strip()] if isinstance(stored_response_ids, list) else []
 
+    def report_tool(application: Any) -> None:
+        if application.applied is None:
+            print_progress(f"卷级审核 agent 工具调用未应用：{application.output}", error=True)
+            return
+        changed = ", ".join(application.applied.changed_keys) if application.applied.changed_keys else "无内容变化"
+        print_progress(f"卷级审核 agent 工具已应用：{application.tool_name}，变更={changed}。")
+
     for attempt in range(1, MAX_VOLUME_REVIEW_ATTEMPTS + 1):
         update_volume_review_state(
             rewrite_manifest,
@@ -520,19 +505,40 @@ def run_volume_review(
                     *payload_prefix_doc_summary_lines(payload),
                 ],
                 dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+                payload=payload,
+                user_input_char_count=len(shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                session_status_line=(
+                    "会话：OpenCode 风格本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                    "不依赖 provider previous_response_id。"
+                ),
             )
-            volume_review, response_id, review_result = call_volume_review_response(
+            agent_result = run_agent_stage(
                 client,
-                model,
-                COMMON_VOLUME_REVIEW_INSTRUCTIONS,
-                shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-                allowed_chapters=list(rewritten_chapters.keys()),
+                model=model,
+                instructions=COMMON_VOLUME_REVIEW_INSTRUCTIONS,
+                user_input=shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                allowed_files=multi_chapter_review_fix_target_paths(
+                    project_root,
+                    volume_material["volume_number"],
+                    chapter_numbers,
+                    include_volume_docs=True,
+                ),
                 previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
+                on_tool_result=report_tool,
             )
-            previous_response_id = response_id
-            if response_id:
-                response_ids.append(str(response_id))
+            previous_response_id = agent_result.response_id
+            response_ids.extend(response_id for response_id in agent_result.response_ids if response_id not in response_ids)
+            volume_review = finalize_review_payload(
+                agent_result.submission,
+                review_kind="volume",
+                allowed_chapters=list(rewritten_chapters.keys()),
+            )
+            if volume_review.passed is None or not volume_review.review_md.strip():
+                raise llm_runtime.ModelOutputError(
+                    "卷级审核 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
+                    preview=agent_result.submission.summary or agent_result.submission.content_md,
+                )
             volume_review_changed = write_artifact(paths["volume_review"], volume_review.review_md)
             print_call_artifact_report(
                 "卷级审核调用",
@@ -545,7 +551,7 @@ def run_volume_review(
                 status="completed",
                 note="卷级审核已完成。",
                 attempt=attempt,
-                response_id=response_id,
+                response_id=previous_response_id,
             )
 
             if volume_review.passed:
@@ -596,40 +602,8 @@ def run_volume_review(
                 last_response_id=previous_response_id,
             )
             print_progress(
-                f"第 {volume_material['volume_number']} 卷卷级审核未通过，将在审核阶段直接修复。"
+                f"第 {volume_material['volume_number']} 卷卷级审核未通过，将再次进入同一 agent 审核/返修循环。"
                 f" 目标章节：{'、'.join(chapters_to_revise) or '未明确'}。"
-            )
-            applied_fix, previous_response_id, fix_response_ids = apply_review_fix_with_repair(
-                client=client,
-                model=model,
-                review_kind="volume",
-                shared_prompt=shared_prompt,
-                review=volume_review,
-                allowed_files=multi_chapter_review_fix_target_paths(
-                    project_root,
-                    volume_material["volume_number"],
-                    chapter_numbers,
-                    include_volume_docs=True,
-                ),
-                previous_response_id=previous_response_id,
-                prompt_cache_key=prompt_cache_key,
-                debug_path=paths["volume_response_debug"],
-            )
-            response_ids.extend(str(item) for item in fix_response_ids if item)
-            update_volume_review_state(
-                rewrite_manifest,
-                volume_material["volume_number"],
-                status="in_review_fix",
-                attempts=attempt,
-                chapters_to_revise=chapters_to_revise,
-                blocking_issues=volume_review.blocking_issues,
-                response_ids=response_ids,
-                last_response_id=previous_response_id,
-            )
-            print_call_artifact_report(
-                "卷级审核原地返修调用",
-                [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
-                applied_fix.changed_keys,
             )
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):

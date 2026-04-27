@@ -101,6 +101,8 @@ def run_chapter_workflow(
                         *payload_prefix_doc_summary_lines(payload),
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+                    payload=payload,
+                    user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                 )
                 outline_md, previous_response_id, outline_result = call_markdown_tool_response(
                     client,
@@ -177,6 +179,8 @@ def run_chapter_workflow(
                         *payload_prefix_doc_summary_lines(payload),
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+                    payload=payload,
+                    user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                 )
                 if chapter_text_revision_mode:
                     chapter_text_update, previous_response_id, chapter_text_result = call_chapter_text_revision_response(
@@ -281,6 +285,8 @@ def run_chapter_workflow(
                         *payload_prefix_doc_summary_lines(payload),
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+                    payload=payload,
+                    user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                 )
                 support_updates, previous_response_id, support_result = call_support_updates_response(
                     client,
@@ -378,6 +384,8 @@ def run_chapter_workflow(
                             *payload_prefix_doc_summary_lines(payload),
                         ],
                         dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
+                        payload=payload,
+                        user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                     )
                     chapter_review, previous_response_id, review_result = call_chapter_review_response(
                         client,
