@@ -77,7 +77,6 @@ def group_generation_target_paths(
 ) -> dict[str, Path]:
     first_paths = rewrite_paths(project_root, volume_number, chapter_numbers[0])
     targets = {
-        "group_outline": group_outline_path(project_root, volume_number, chapter_numbers),
         **{
             f"{chapter_number}_rewritten_chapter": rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]
             for chapter_number in chapter_numbers
@@ -95,28 +94,6 @@ def group_generation_target_inventory(
     targets = group_generation_target_paths(project_root, volume_number, chapter_numbers)
     for file_key, path in targets.items():
         current_content = read_text_if_exists(path).strip()
-        if file_key == "group_outline":
-            inventory.append(
-                {
-                    "file_key": file_key,
-                    "label": "组纲",
-                    "file_name": path.name,
-                    "file_path": str(path),
-                    "exists": path.exists(),
-                    "preferred_mode": "edit_or_patch" if current_content else "write",
-                    "current_content": current_content,
-                    "required_structure": {
-                        "title": f"# {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲",
-                        "chapter_headings": [f"## {chapter_number}" for chapter_number in chapter_numbers],
-                        "chapter_outline_policy": "每个二级标题下的细纲格式、粒度和功能映射要求沿用旧单章章纲。",
-                    },
-                    "tool_selection_policy": (
-                        "文件为空或需要首次汇总旧章纲时可用 write；已有组纲只修局部章节细纲时优先 edit；"
-                        "新增某章细纲或按标题替换某章细纲正文时使用 patch。"
-                    ),
-                }
-            )
-            continue
         label = "仿写章节正文" if file_key.endswith("_rewritten_chapter") else doc_label_for_key(file_key)
         inventory.append(
             {
@@ -182,20 +159,10 @@ def build_group_generation_payload(
         ["volume_outline", "volume_plot_progress", "volume_review"],
         category="volume",
     )
-    source_chapters = [get_chapter_material(volume_material, chapter_number) for chapter_number in chapter_numbers]
-    chapter_metrics = []
-    for chapter in source_chapters:
-        reference_char_count = len(chapter["text"])
-        min_target_chars = max(1, int(reference_char_count * 0.8))
-        max_target_chars = max(min_target_chars, int(reference_char_count * 1.2))
-        chapter_metrics.append(
-            {
-                "chapter_number": chapter["chapter_number"],
-                "source_title": chapter["source_title"],
-                "source_char_count": reference_char_count,
-                "target_char_count_range": [min_target_chars, max_target_chars],
-            }
-        )
+    current_group_outline_path = group_outline_path(project_root, volume_number, chapter_numbers)
+    current_group_outline_content = read_text_if_exists(current_group_outline_path).strip()
+    if not current_group_outline_content:
+        fail(f"缺少已审核组纲，不能生成正文：{current_group_outline_path}")
     payload = build_payload_with_cache_layers(
         shared_prefix_fields={
             "stable_injected_global_docs": stable_global_docs,
@@ -204,33 +171,37 @@ def build_group_generation_payload(
         request_fields={
             "document_request": {
                 "phase": "group_generation",
-                "role": "当前组仿写生成 agent",
-                "task": "在同一个组生成 agent 会话内完成当前组的组纲、当前组仿写正文和必要状态文档更新。",
-                "required_group_outline_file": group_outline_path(project_root, volume_number, chapter_numbers).name,
+                "role": "当前组正文生成 agent",
+                "task": "在同一个组生成 agent 会话内，根据已审核组纲完成当前组仿写正文和必要状态文档更新。",
+                "required_group_outline_file": current_group_outline_path.name,
                 "chapter_numbers": chapter_numbers,
                 "chapter_count": len(chapter_numbers),
             },
-            "reference_chapter_metrics": chapter_metrics,
             "writing_skill_reference": writing_skill,
             "requirements": [
-                "组纲是本组唯一新规划产物，不再新建独立章纲文件。",
-                f"组纲顶层标题必须是：# {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲。",
-                "组纲中每章必须有一个二级标题，例如 ## 0001；每个二级标题下的细纲格式、粒度、功能映射要求与旧单章章纲一致。",
-                "每章细纲必须体现与对应参考源章节的功能映射关系，但不能照搬原名词、标题、人名、地名、宗门、术语、数值体系。",
-                f"当前组只包含 {len(chapter_numbers)} 章：{', '.join(chapter_numbers)}；如果不足五章，说明这是当前卷最后短组，禁止补入下一卷章节。",
-                "当前组正文必须分别写入对应 rewritten_chapter 目标文件，篇幅与对应参考源章节接近，除非审核意见明确要求不得明显扩写。",
-                "正文必须承接组纲中对应章节细纲、卷纲、全局大纲、世界模型和当前状态文档。",
+                "组纲已经由卷资料适配阶段生成并审核通过；本阶段不得重写组纲，不得新建独立章纲文件。",
+                f"当前组只包含 {len(chapter_numbers)} 章：{', '.join(chapter_numbers)}；章节组来自组纲计划，不得补入计划外章节。",
+                "当前组正文必须分别写入对应 rewritten_chapter 目标文件。",
+                "正文必须承接 current_group_outline 中对应章节细纲、卷纲、全局大纲、世界模型和当前状态文档。",
+                "正文篇幅、节奏、情节结构、对话密度、收尾方式和功能映射依据来自组纲，不再读取参考源章节正文。",
+                "不得要求或假设本阶段能查看参考源章节原文；如果组纲未写清，就按组纲已提供的信息保守生成，不自行照搬参考源。",
                 "状态文档只更新当前组真实造成变化且后续会复用的信息；无变化文档不要为了统一措辞重写。",
-                "全部目标文件处理完成后必须调用 submit_workflow_result，并在 generated_files 中列出已处理 file_key。",
+                "全部正文和必要状态文档处理完成后必须调用 submit_workflow_result，并在 generated_files 中列出已处理 file_key。",
             ],
         },
         trailing_doc_fields={
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
-            "legacy_chapter_outlines": legacy_chapter_outline_docs(project_root, volume_number, chapter_numbers),
+            "current_group_outline": {
+                "label": f"组纲（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
+                "file_name": current_group_outline_path.name,
+                "file_path": str(current_group_outline_path),
+                "chapter_numbers": chapter_numbers,
+                "content": current_group_outline_content,
+            },
             "update_target_files": group_generation_target_inventory(project_root, volume_number, chapter_numbers),
             "latest_work_target": latest_work_target(
-                f"这是本次请求的最新工作目标：生成或修订 {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲、当前组 {len(chapter_numbers)} 章正文和必要状态文档。必须先用 write/edit/patch 落盘，最后调用 submit_workflow_result。",
+                f"这是本次请求的最新工作目标：根据已审核组纲生成或修订 {chapter_numbers[0]}-{chapter_numbers[-1]} 当前组 {len(chapter_numbers)} 章正文和必要状态文档。必须先用 write/edit/patch 落盘，最后调用 submit_workflow_result。",
                 required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
             ),
         },
@@ -585,9 +556,10 @@ def build_volume_review_payload(
     group_outline_docs: list[dict[str, Any]] = []
     included_group_outlines: list[str] = []
     omitted_group_outlines: list[str] = []
-    for group in build_five_chapter_groups(volume_material):
-        path = group_outline_path(project_root, volume_number, group)
-        content = read_text_if_exists(path).strip()
+    for doc in group_outline_docs_from_plan(project_root, volume_number, require_passed=True):
+        group = list(doc["chapter_numbers"])
+        path = Path(str(doc["file_path"]))
+        content = str(doc.get("content") or "").strip()
         label = f"[group] 组纲（{group[0]}-{group[-1]}）"
         if content:
             group_outline_docs.append(
@@ -619,6 +591,8 @@ def build_volume_review_payload(
                 "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                 "需要检查与卷级大纲、世界模型、文风规范和全书大纲是否一致。",
                 "需要检查卷内章节的文风是否稳定符合文笔写作风格文档，尤其是爽点铺垫、剧情转折、叙事节奏、情节结构、段落分割、对话密度、句长与收尾方式是否持续一致。",
+                "本阶段不读取参考源章节正文；正文篇幅、节奏和源功能映射只以已审核组纲计划、卷纲和全局注入为准。",
+                "已审核组纲在章节阶段只读冻结；如发现组纲本身有问题，只能阻断并提示回到卷资料适配的组纲审核阶段修正，不得改写组纲。",
                 "如果不通过，chapters_to_revise 必须列出需要返工的章节编号。",
                 "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
                 *review_output_contract_lines("volume"),
@@ -708,7 +682,9 @@ def build_five_chapter_review_payload(
             "requirements": [
                 "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                 "重点检查最近这组章节之间是否前后矛盾、逻辑是否通畅。",
-                "重点检查剧情是否和参考源发生重大偏移，是否和卷纲、全书大纲、世界模型发生重大偏移。",
+                "重点检查剧情是否和已审核组纲、卷纲、全书大纲、世界模型发生重大偏移。",
+                "本阶段不读取参考源章节正文，不得以未注入的参考源细节作为审核依据；组纲是参考源功能转换后的审核基准。",
+                "已审核组纲在章节阶段只读冻结；如发现组纲本身有问题，只能在审核结论中阻断并提示回到卷资料适配的组纲审核阶段修正，不得改写组纲。",
                 "如果不通过，chapters_to_revise 必须只列当前区间内需要返工的章节编号。",
                 "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
                 *review_output_contract_lines("group"),

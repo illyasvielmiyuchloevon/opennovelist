@@ -95,14 +95,10 @@ def run_group_generation_workflow(
     previous_response_id = str(state.get("last_response_id") or "").strip() or None
     stored_response_ids = state.get("response_ids")
     response_ids = [str(item) for item in stored_response_ids if str(item or "").strip()] if isinstance(stored_response_ids, list) else []
-    source_volume_material = group_source_material(volume_material, chapter_numbers)
-    source_bundle, source_char_count = build_five_chapter_source_bundle(source_volume_material, chapter_numbers)
     shared_prompt = build_five_chapter_generation_shared_prompt(
         manifest=rewrite_manifest,
-        volume_material=source_volume_material,
+        volume_material=volume_material,
         chapter_numbers=chapter_numbers,
-        source_bundle=source_bundle,
-        source_char_count=source_char_count,
     )
 
     for attempt in range(1, MAX_CHAPTER_REWRITE_ATTEMPTS + 1):
@@ -130,14 +126,14 @@ def run_group_generation_workflow(
         catalog = read_doc_catalog(project_root, volume_number, chapter_numbers[0])
         payload, included_docs, omitted_docs = build_group_generation_payload(
             project_root=project_root,
-            volume_material=source_volume_material,
+            volume_material=volume_material,
             volume_number=volume_number,
             chapter_numbers=chapter_numbers,
             catalog=catalog,
         )
         print_progress(
             f"组生成第 {attempt}/{MAX_CHAPTER_REWRITE_ATTEMPTS} 次调用："
-            f"生成第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} 组纲、正文与状态文档。"
+            f"根据已审核组纲生成第 {volume_number} 卷 {chapter_numbers[0]}-{chapter_numbers[-1]} 正文与状态文档。"
         )
         print_request_context_summary(
             request_label=f"组生成（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
@@ -145,9 +141,7 @@ def run_group_generation_workflow(
             chapter_number=None,
             location_label=f"第 {volume_number} 卷，第 {chapter_numbers[0]}-{chapter_numbers[-1]} 组生成。",
             source_summary_lines=group_generation_source_summary_lines(
-                source_volume_material,
                 chapter_numbers,
-                source_char_count,
             ),
             included_docs=included_docs,
             omitted_docs=omitted_docs,
@@ -156,9 +150,7 @@ def run_group_generation_workflow(
             shared_prefix_lines=[
                 *group_generation_shared_prefix_summary_lines(
                     rewrite_manifest,
-                    source_volume_material,
                     chapter_numbers,
-                    source_char_count,
                 ),
                 *payload_prefix_doc_summary_lines(payload),
             ],

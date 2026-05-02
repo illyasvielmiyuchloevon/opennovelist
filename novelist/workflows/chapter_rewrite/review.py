@@ -48,12 +48,9 @@ def multi_chapter_review_fix_target_paths(
         volume_paths = rewrite_paths(project_root, volume_number)
         targets["volume_outline"] = volume_paths["volume_outline"]
         targets["volume_review"] = volume_paths["volume_review"]
-        for current_group in [chapter_numbers[index : index + FIVE_CHAPTER_REVIEW_SIZE] for index in range(0, len(chapter_numbers), FIVE_CHAPTER_REVIEW_SIZE)]:
+        for current_group in group_plan_groups(project_root, volume_number, require_passed=True):
             batch_id = five_chapter_batch_id(current_group)
-            targets[f"{batch_id}_group_outline"] = group_outline_path(project_root, volume_number, current_group)
             targets[f"{batch_id}_group_review"] = five_chapter_review_path(project_root, volume_number, current_group)
-    else:
-        targets["group_outline"] = group_outline_path(project_root, volume_number, chapter_numbers)
     if group_review_path is not None:
         targets["group_review"] = group_review_path
     for chapter_number in chapter_numbers:
@@ -88,6 +85,7 @@ def build_review_fix_payload(
             "替换、改写、删减已有章节正文或状态文档内容时优先使用 edit；插入新段落、追加新记录或按标题补充小节时使用 patch。",
             "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
             "如果问题只涉及章节正文，只修改对应章节 txt；如果问题只涉及状态或进度文档，只修改对应文档。",
+            "已审核组纲是章节阶段的只读规划输入，不得在章节组审或卷级审核返修中改写组纲；组纲问题必须回到卷资料适配的组纲审核阶段修正。",
             "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
             "不要把审核失败降级为重新跑章纲、正文生成或配套文档生成阶段。",
             "修复后仍必须符合原审核阶段的风格、连续性、反 AI 痕迹和参考源转换要求。",
@@ -193,14 +191,11 @@ def run_five_chapter_review(
     batch_id = five_chapter_batch_id(chapter_numbers)
     review_path = five_chapter_review_path(project_root, volume_number, chapter_numbers)
     rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
-    source_volume_material = group_source_material(volume_material, chapter_numbers)
-    source_bundle, source_char_count = build_five_chapter_source_bundle(source_volume_material, chapter_numbers)
     prompt_cache_key = f"{build_volume_review_session_key(rewrite_manifest, volume_number)}-{batch_id}"
     shared_prompt = build_five_chapter_review_shared_prompt(
         manifest=rewrite_manifest,
-        volume_material=source_volume_material,
+        volume_material=volume_material,
         chapter_numbers=chapter_numbers,
-        source_bundle=source_bundle,
         rewritten_chapters=rewritten_chapters,
     )
     review_state = get_five_chapter_review_state(rewrite_manifest, volume_number, batch_id, chapter_numbers)
@@ -247,9 +242,7 @@ def run_five_chapter_review(
             chapter_number=None,
             location_label=f"第 {volume_number} 卷，第 {chapter_numbers[0]}-{chapter_numbers[-1]} 组审查。",
             source_summary_lines=five_chapter_review_source_summary_lines(
-                source_volume_material,
                 chapter_numbers,
-                source_char_count,
                 rewritten_chapters,
             ),
             included_docs=included_docs,
@@ -259,9 +252,7 @@ def run_five_chapter_review(
             shared_prefix_lines=[
                 *group_review_shared_prefix_summary_lines(
                     rewrite_manifest,
-                    source_volume_material,
                     chapter_numbers,
-                    source_char_count,
                     rewritten_chapters,
                 ),
                 *payload_prefix_doc_summary_lines(payload),

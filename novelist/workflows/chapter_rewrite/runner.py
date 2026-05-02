@@ -109,7 +109,7 @@ def main() -> int:
                 f"已扫描第 {current_volume.name} 卷："
                 f"{len(volume_material['chapters'])} 个章节文件，"
                 f"{len(volume_material['extras'])} 个补充文件；"
-                "组生成/组审时只读取当前组参考源正文；当前卷最后不足五章也按一组处理。"
+                "章节组来自已审核组纲计划；组生成/组审不再读取参考源章节正文。"
             )
             completed_scope, next_target = process_volume_workflow(
                 client=client,

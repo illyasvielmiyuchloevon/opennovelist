@@ -21,6 +21,26 @@ from novelist.core.files import (
     write_markdown_data,
     write_text_if_changed,
 )
+from novelist.core.group_outline_plan import (
+    GROUP_DIR_SUFFIX,
+    GROUP_OUTLINE_PLAN_MANIFEST_NAME,
+    GROUP_ROOT_DIRNAME,
+    GROUP_STAGE_MANIFEST_NAME,
+    group_batch_id,
+    group_injection_dir as planned_group_injection_dir,
+    group_injection_root as planned_group_injection_root,
+    group_outline_docs_from_plan,
+    group_outline_path as planned_group_outline_path,
+    group_outline_plan_path,
+    group_outline_plan_review_path,
+    group_plan_groups,
+    group_response_debug_path as planned_group_response_debug_path,
+    group_review_path as planned_group_review_path,
+    group_stage_manifest_path as planned_group_stage_manifest_path,
+    load_group_outline_plan,
+    validate_group_outline_files as validate_planned_group_outline_files,
+    write_group_outline_plan_manifest,
+)
 import novelist.core.document_ops as document_ops
 from novelist.core.novel_source import (
     build_chapter_source_bundle,
@@ -57,10 +77,7 @@ CHAPTER_WRITING_SKILL_PATH = REPO_ROOT / "skill" / "chapter_writing" / "SKILL.md
 GLOBAL_DIRNAME = "global_injection"
 VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
-GROUP_ROOT_DIRNAME = "group_injection"
-GROUP_DIR_SUFFIX = "_group_injection"
 CHAPTER_DIR_SUFFIX = "_chapter_outline"
-GROUP_STAGE_MANIFEST_NAME = "00_group_stage_manifest.md"
 REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
 FIVE_CHAPTER_REVIEW_SIZE = 5
 MAX_CHAPTER_REWRITE_ATTEMPTS = 3
@@ -127,13 +144,14 @@ LEGACY_GLOBAL_FILE_RENAMES = {
 COMMON_CHAPTER_STAGE_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
     "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
-    "组生成阶段可以多次调用 write/edit/patch 写入组纲、当前组正文和状态文档，全部目标完成后必须调用 submit_workflow_result。"
+    "组生成阶段可以多次调用 write/edit/patch 写入当前组正文和状态文档，全部目标完成后必须调用 submit_workflow_result。"
     "组审和卷审阶段可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须调用 submit_workflow_result 提交审核结论。"
-    "修订已有章节正文、组纲内某章细纲、状态文档、审核文档或修正 old_text / match_text 定位时，必须使用文档 write/edit/patch 工具。"
+    "修订已有章节正文、状态文档、审核文档或修正 old_text / match_text 定位时，必须使用文档 write/edit/patch 工具。"
 )
 COMMON_CHAPTER_STAGE_TOOL_RULE = (
     "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
-    "章节仿写的新流程按最多五章一组运行：生成阶段用同一个 agent 会话处理组纲、当前组正文和状态文档；当前卷最后一组不足五章时按短组处理，不得补入下一卷章节。"
+    "章节仿写的新流程按已审核组纲计划运行：每个动态章节组用同一个 agent 会话处理当前组正文和状态文档。"
+    "组纲由卷资料适配阶段生成并审核通过；章节正文阶段只读取组纲，不重新生成组纲，也不读取参考源章节正文。"
     "组生成阶段需要先把文件落盘，最后用 submit_workflow_result 结束；审核阶段可先返修，再用 submit_workflow_result 提交 passed/review_md。"
     "新运行不得创建独立章纲或章级审核文件；旧章纲只作为只读兼容输入。"
 )

@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from novelist.workflows import novel_adaptation as adaptation_workflow
 from novelist.workflows.adaptation import document_generation as adaptation_document_generation_module
+from novelist.workflows.adaptation import group_outlines as adaptation_group_outlines_module
 from novelist.workflows.adaptation import review as adaptation_review_module
 
 ORIGINAL_ADAPTATION_CALL_DOCUMENT_OPERATION_RESPONSE = adaptation_document_generation_module.call_document_operation_response
@@ -983,11 +984,181 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                 review_result=review_result,
             )
 
+            self.assertEqual(manifest["processed_volumes"], [])
+            stage_manifest = paths["stage_manifest"].read_text(encoding="utf-8")
+            self.assertIn('"status": "group_outline_pending"', stage_manifest)
+
+            group = ["0001"]
+            adaptation_workflow.write_group_outline_plan_manifest(
+                project_root,
+                "001",
+                status="passed",
+                groups=[{"chapter_count": 1, "source_chapter_range": "01", "group_title": "测试组", "guidance": "测试。"}],
+                review={"status": "passed", "passed": True},
+            )
+            group_outline = adaptation_workflow.group_outline_path(project_root, "001", group)
+            _write_text(group_outline, "# 0001-0001 组纲\n\n## 0001\n- 写作目标：测试。\n")
+            group_result = adaptation_workflow.GroupOutlineStageResult(
+                payload=adaptation_workflow.WorkflowSubmissionPayload(passed=True, review_md="组纲审核通过。"),
+                response_ids=["resp_group_review"],
+                review_path=str(paths["group_outline_review"]),
+                fix_attempts=0,
+            )
+            adaptation_workflow.mark_volume_processed_after_group_outline_review(
+                manifest,  # type: ignore[arg-type]
+                volume_material,  # type: ignore[arg-type]
+                generated_documents=[{"key": "world_model", "label": "世界模型文档"}],
+                source_char_count=123,
+                loaded_file_count=1,
+                review_result=review_result,
+                group_outline_result=group_result,
+            )
+
             self.assertEqual(manifest["processed_volumes"], ["001"])
             self.assertEqual(manifest["last_processed_volume"], "001")
             stage_manifest = paths["stage_manifest"].read_text(encoding="utf-8")
             self.assertIn('"status": "completed"', stage_manifest)
             self.assertIn('"status": "passed"', stage_manifest)
+            self.assertIn('"group_outline_status": "passed"', stage_manifest)
+
+    def test_group_outline_generation_writes_dynamic_group_outlines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+            adaptation_workflow.write_group_outline_plan_manifest(
+                project_root,
+                "001",
+                status="planned",
+                groups=[
+                    {
+                        "chapter_count": 6,
+                        "source_chapter_range": "01-06",
+                        "group_title": "武会后段",
+                        "guidance": "连续强敌与决赛铺垫。",
+                    },
+                    {
+                        "chapter_count": 8,
+                        "source_chapter_range": "07-14",
+                        "group_title": "决赛爆发",
+                        "guidance": "夺冠与各方震动。",
+                    },
+                ],
+            )
+
+            def fake_run_agent_stage(*args, **kwargs):
+                allowed_files = kwargs["allowed_files"]
+                for file_key, path in allowed_files.items():
+                    if file_key == "0001_0006_group_outline":
+                        _write_text(
+                            path,
+                            "# 0001-0006 组纲\n\n"
+                            + "\n\n".join(f"## {index:04d}\n- 写作目标：第 {index:04d} 章。" for index in range(1, 7)),
+                        )
+                    if file_key == "0007_0014_group_outline":
+                        _write_text(
+                            path,
+                            "# 0007-0014 组纲\n\n"
+                            + "\n\n".join(f"## {index:04d}\n- 写作目标：第 {index:04d} 章。" for index in range(7, 15)),
+                        )
+                return _agent_stage_result(
+                    adaptation_workflow.WorkflowSubmissionPayload(
+                        summary="整卷组纲生成完成。",
+                        generated_files=sorted(allowed_files),
+                    ),
+                    "resp_group_generation",
+                )
+
+            with (
+                patch.object(adaptation_group_outlines_module, "run_agent_stage", side_effect=fake_run_agent_stage),
+                patch.object(adaptation_group_outlines_module, "print_adaptation_request_context_summary"),
+            ):
+                submission, response_id, response_ids = adaptation_workflow.run_group_outline_generation_agent(
+                    client=Mock(),
+                    model="test-model",
+                    manifest=manifest,  # type: ignore[arg-type]
+                    volume_material=volume_material,  # type: ignore[arg-type]
+                    paths=paths,
+                    stage_shared_prompt="",
+                    previous_response_id="resp_plan",
+                    prompt_cache_key="cache-key",
+                    response_ids=["resp_plan"],
+                )
+
+            self.assertEqual(response_id, "resp_group_generation")
+            self.assertEqual(response_ids, ["resp_plan", "resp_group_generation"])
+            self.assertIn("0001_0006_group_outline", submission.generated_files)
+            plan = adaptation_workflow.load_group_outline_plan(project_root, "001")
+            self.assertEqual(plan["status"], "review_pending")
+            self.assertEqual(plan["total_groups"], 2)
+            self.assertEqual(plan["total_chapters"], 14)
+            self.assertEqual(
+                [group["chapter_numbers"] for group in plan["groups"]],
+                [[f"{index:04d}" for index in range(1, 7)], [f"{index:04d}" for index in range(7, 15)]],
+            )
+            self.assertTrue(adaptation_workflow.group_outline_path(project_root, "001", [f"{index:04d}" for index in range(1, 7)]).exists())
+            self.assertTrue(adaptation_workflow.group_outline_path(project_root, "001", [f"{index:04d}" for index in range(7, 15)]).exists())
+
+    def test_group_outline_review_failure_keeps_manifest_unprocessed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+            paths = _seed_adaptation_docs(project_root, "001")
+            group = ["0001", "0002"]
+            adaptation_workflow.write_group_outline_plan_manifest(
+                project_root,
+                "001",
+                status="review_pending",
+                groups=[
+                    {
+                        "chapter_count": 2,
+                        "source_chapter_range": "01-02",
+                        "group_title": "测试组",
+                        "guidance": "测试推进。",
+                    }
+                ],
+            )
+            _write_text(
+                adaptation_workflow.group_outline_path(project_root, "001", group),
+                "# 0001-0002 组纲\n\n## 0001\n- 写作目标：测试。\n\n## 0002\n- 写作目标：测试。\n",
+            )
+            failed_review = adaptation_workflow.WorkflowSubmissionPayload(
+                passed=False,
+                review_md="组纲审核不通过。",
+                blocking_issues=["0002 缺少源功能映射"],
+                rewrite_targets=["0001_0002_group_outline"],
+            )
+
+            with (
+                self.assertRaises(adaptation_workflow.llm_runtime.ModelOutputError),
+                patch.object(adaptation_group_outlines_module, "MAX_ADAPTATION_REVIEW_ATTEMPTS", 1),
+                patch.object(
+                    adaptation_group_outlines_module,
+                    "run_agent_stage",
+                    return_value=_agent_stage_result(failed_review, "resp_group_review"),
+                ),
+                patch.object(adaptation_group_outlines_module, "print_adaptation_request_context_summary"),
+            ):
+                adaptation_workflow.run_group_outline_review_until_passed(
+                    client=Mock(),
+                    model="test-model",
+                    manifest=manifest,  # type: ignore[arg-type]
+                    volume_material=volume_material,  # type: ignore[arg-type]
+                    paths=paths,
+                    stage_shared_prompt="",
+                    previous_response_id="resp_generation",
+                    prompt_cache_key="cache-key",
+                    response_ids=["resp_generation"],
+                )
+
+            self.assertEqual(manifest["processed_volumes"], [])
+            plan = adaptation_workflow.load_group_outline_plan(project_root, "001")
+            self.assertEqual(plan["status"], "review_pending")
+            self.assertEqual(plan["review"]["status"], "failed")
+            self.assertEqual(plan["review"]["blocking_issues"], ["0002 缺少源功能映射"])
+            self.assertEqual(plan["review"]["rewrite_targets"], ["0001_0002_group_outline"])
 
     def test_review_payload_for_later_volume_includes_existing_style_guide(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

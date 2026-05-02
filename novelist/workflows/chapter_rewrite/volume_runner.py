@@ -12,6 +12,7 @@ def process_volume_workflow(
     run_mode: str,
     requested_chapter: str | None = None,
 ) -> tuple[str, Any]:
+    volume_material = {**volume_material, "project_root": rewrite_manifest["project_root"]}
     while True:
         if requested_chapter:
             current_group = find_group_for_chapter(volume_material, requested_chapter)

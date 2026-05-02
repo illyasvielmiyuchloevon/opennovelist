@@ -379,7 +379,7 @@ def mark_five_chapter_group_pending_for_chapter(
     volume_material: dict[str, Any],
     chapter_number: str,
 ) -> None:
-    group = find_group_for_chapter(volume_material, chapter_number)
+    group = find_group_for_chapter({**volume_material, "project_root": manifest["project_root"]}, chapter_number)
     batch_id = five_chapter_batch_id(group)
     state = get_five_chapter_review_state(manifest, volume_material["volume_number"], batch_id, group)
     if state.get("status") == "passed":
@@ -405,7 +405,8 @@ def all_group_chapters_passed(
     return True
 
 def next_pending_group(volume_material: dict[str, Any], manifest: dict[str, Any]) -> list[str] | None:
-    for group in build_five_chapter_groups(volume_material):
+    groups = group_plan_groups(Path(manifest["project_root"]), volume_material["volume_number"], require_passed=True)
+    for group in groups:
         batch_id = five_chapter_batch_id(group)
         state = get_five_chapter_review_state(manifest, volume_material["volume_number"], batch_id, group)
         if state.get("status") != "passed":
@@ -437,7 +438,7 @@ def next_group_after(
     manifest: dict[str, Any],
     current_group: list[str],
 ) -> list[str] | None:
-    groups = build_five_chapter_groups(volume_material)
+    groups = group_plan_groups(Path(manifest["project_root"]), volume_material["volume_number"], require_passed=True)
     found_current = False
     for group in groups:
         if not found_current:
@@ -473,7 +474,8 @@ def select_next_chapter(
             return chapter_number
 
     five_review_states = manifest.get("five_chapter_review_states", {}).get(volume_material["volume_number"], {})
-    for group in build_five_chapter_groups(volume_material):
+    groups = group_plan_groups(Path(manifest["project_root"]), volume_material["volume_number"], require_passed=True)
+    for group in groups:
         batch_id = five_chapter_batch_id(group)
         state = five_review_states.get(batch_id, {})
         for chapter_number in [item.zfill(4) for item in state.get("chapters_to_revise", []) if item]:

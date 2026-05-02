@@ -53,7 +53,39 @@ def _volume_material(chapter_numbers: list[str]) -> dict:
     }
 
 
+def _seed_group_plan(project_root: Path, groups: list[list[str]], *, status: str = "passed") -> None:
+    raw_groups = [
+        {
+            "chapter_count": len(group),
+            "source_chapter_range": f"{group[0]}-{group[-1]}",
+            "group_title": f"{group[0]}-{group[-1]} 测试组",
+            "guidance": "测试组纲指导。",
+        }
+        for group in groups
+    ]
+    rewrite_workflow.write_group_outline_plan_manifest(
+        project_root,
+        "001",
+        status=status,
+        groups=raw_groups,
+        source_volume_dir=str(project_root / "source" / "001"),
+        note="测试组纲计划。",
+        response_ids=["resp_group_plan"],
+        review={"status": status, "passed": status == "passed"},
+    )
+    for group in groups:
+        outline_path = rewrite_workflow.group_outline_path(project_root, "001", group)
+        outline = "\n\n".join(
+            [
+                f"# {group[0]}-{group[-1]} 组纲",
+                *[f"## {chapter_number}\n- 写作目标：测试。\n- 节奏建议：按组纲推进。\n- 参考源功能映射：测试转换。" for chapter_number in group],
+            ]
+        )
+        _write_text(outline_path, outline)
+
+
 def _seed_rewrite_files(project_root: Path, chapter_numbers: list[str]) -> None:
+    _seed_group_plan(project_root, [chapter_numbers])
     for chapter_number in chapter_numbers:
         paths = rewrite_workflow.rewrite_paths(project_root, "001", chapter_number)
         _write_text(paths["chapter_outline"], f"# {chapter_number} 章纲\n")
@@ -156,6 +188,7 @@ class VolumeReadinessTests(unittest.TestCase):
             _write_text(paths["book_outline"], "# 全书大纲\n")
             _write_text(paths["foreshadowing"], "# 伏笔管理\n")
             _write_text(paths["volume_outline"], "# 卷级大纲\n")
+            _seed_group_plan(project_root, [["0001"]])
 
             readiness = rewrite_workflow.assess_volume_readiness(project_root, source_root, "001")
 
@@ -413,12 +446,9 @@ class ChapterStageToolContractTests(unittest.TestCase):
 class GroupGenerationWorkflowTests(unittest.TestCase):
     def test_group_and_volume_source_summaries_group_chapter_files(self) -> None:
         chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
-        volume_material = _volume_material(chapter_numbers)
 
         group_lines = rewrite_workflow.group_generation_source_summary_lines(
-            volume_material,  # type: ignore[arg-type]
             chapter_numbers,
-            source_char_count=1234,
         )
         volume_lines = rewrite_workflow.volume_review_source_summary_lines(
             {
@@ -432,8 +462,9 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
         joined_group = "\n".join(group_lines)
         joined_volume = "\n".join(volume_lines)
 
-        self.assertIn("当前区间参考源总字符数约 1234", joined_group)
-        self.assertIn("参考源章节文件[1]：0001.txt，0002.txt，0003.txt，0004.txt，0005.txt", joined_group)
+        self.assertIn("不注入参考源章节正文", joined_group)
+        self.assertIn("已审核组纲", joined_group)
+        self.assertNotIn("参考源章节文件", joined_group)
         self.assertNotIn("标题：", joined_group)
         self.assertNotIn("0001.txt（", joined_group)
         self.assertIn("正文总字符数约", joined_volume)
@@ -489,7 +520,7 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
         self.assertNotIn("字符数约 1000", "\n".join(target_lines))
         self.assertIn("建议工具=edit_or_patch", "\n".join(target_lines))
 
-    def test_volume_index_defers_chapter_text_until_group_source_material(self) -> None:
+    def test_volume_index_defers_chapter_text_during_rewrite_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             volume_dir = Path(temp_dir) / "001"
             volume_dir.mkdir()
@@ -514,23 +545,15 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             self.assertNotIn("0001.txt", read_names)
 
             read_names.clear()
-            with patch.object(novel_source_module, "read_text", side_effect=tracking_read_text):
-                group_material = rewrite_workflow.group_source_material(
-                    volume_index,
-                    ["0001", "0002", "0003", "0004", "0005"],
-                )
+            self.assertEqual(read_names, [])
 
-            self.assertEqual([chapter["chapter_number"] for chapter in group_material["chapters"]], ["0001", "0002", "0003", "0004", "0005"])
-            self.assertIn("参考源正文 0001。", group_material["chapters"][0]["text"])
-            self.assertIn("0005.txt", read_names)
-            self.assertNotIn("0006.txt", read_names)
-
-    def test_group_generation_payload_uses_single_group_outline_target(self) -> None:
+    def test_group_generation_payload_uses_reviewed_group_outline_as_input(self) -> None:
         chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
         volume_material = _volume_material(chapter_numbers)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
+            _seed_group_plan(project_root, [chapter_numbers])
             catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0001")
             payload, _, _ = rewrite_workflow.build_group_generation_payload(
                 project_root=project_root,
@@ -541,57 +564,62 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             )
 
         target_keys = [item["file_key"] for item in payload["update_target_files"]]
-        self.assertIn("group_outline", target_keys)
+        self.assertNotIn("group_outline", target_keys)
         self.assertNotIn("0001_chapter_outline", target_keys)
         self.assertEqual(payload["document_request"]["required_group_outline_file"], "0001_0005_group_outline.md")
-        group_target = next(item for item in payload["update_target_files"] if item["file_key"] == "group_outline")
-        self.assertEqual(group_target["required_structure"]["chapter_headings"], ["## 0001", "## 0002", "## 0003", "## 0004", "## 0005"])
+        self.assertEqual(payload["current_group_outline"]["chapter_numbers"], chapter_numbers)
+        self.assertNotIn("reference_chapter_metrics", payload)
+        self.assertIn("不再读取参考源章节正文", "\n".join(payload["requirements"]))
 
-    def test_last_volume_group_can_be_short_without_crossing_volume(self) -> None:
-        chapter_numbers = [f"{index:04d}" for index in range(1, 49)]
-        volume_material = _volume_material(chapter_numbers)
-
-        groups = rewrite_workflow.build_five_chapter_groups(volume_material)
-
-        self.assertEqual(groups[-1], ["0046", "0047", "0048"])
-        self.assertEqual(len(groups[-1]), 3)
+    def test_dynamic_groups_come_from_reviewed_group_plan(self) -> None:
+        chapter_numbers = [f"{index:04d}" for index in range(1, 15)]
+        first_group = [f"{index:04d}" for index in range(1, 7)]
+        second_group = [f"{index:04d}" for index in range(7, 15)]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
-            catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0046")
+            _seed_group_plan(project_root, [first_group, second_group])
+            volume_material = {**_volume_material(chapter_numbers), "project_root": str(project_root)}
+            groups = rewrite_workflow.build_five_chapter_groups(volume_material)
+
+            catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0007")
             payload, _, _ = rewrite_workflow.build_group_generation_payload(
                 project_root=project_root,
                 volume_material=volume_material,
                 volume_number="001",
-                chapter_numbers=groups[-1],
+                chapter_numbers=groups[1],
                 catalog=catalog,
             )
 
+        self.assertEqual(groups, [first_group, second_group])
+
         target_keys = [item["file_key"] for item in payload["update_target_files"]]
-        self.assertEqual(payload["document_request"]["chapter_numbers"], ["0046", "0047", "0048"])
-        self.assertEqual(payload["document_request"]["chapter_count"], 3)
-        self.assertIn("0046_rewritten_chapter", target_keys)
-        self.assertIn("0048_rewritten_chapter", target_keys)
-        self.assertNotIn("0049_rewritten_chapter", target_keys)
-        self.assertNotIn("0050_rewritten_chapter", target_keys)
-        self.assertIn("禁止补入下一卷章节", "\n".join(payload["requirements"]))
+        self.assertEqual(payload["document_request"]["chapter_numbers"], second_group)
+        self.assertEqual(payload["document_request"]["chapter_count"], 8)
+        self.assertIn("0007_rewritten_chapter", target_keys)
+        self.assertIn("0014_rewritten_chapter", target_keys)
+        self.assertNotIn("0006_rewritten_chapter", target_keys)
+        self.assertIn("章节组来自组纲计划", "\n".join(payload["requirements"]))
 
     def test_process_volume_runs_short_final_group_as_one_group(self) -> None:
         chapter_numbers = ["0001", "0002", "0003"]
         volume_material = _volume_material(chapter_numbers)
-        manifest = _manifest(Path("F:/project"))
 
-        with (
-            patch.object(volume_runner_module, "run_group_generation_workflow") as generation,
-            patch.object(volume_runner_module, "run_five_chapter_review") as review,
-            patch.object(volume_runner_module, "print_progress"),
-        ):
-            completed_scope, next_target = volume_runner_module.process_volume_workflow(
-                client=Mock(),
-                model="test-model",
-                rewrite_manifest=manifest,
-                volume_material=volume_material,
-                run_mode=rewrite_workflow.RUN_MODE_GROUP,
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            _seed_group_plan(project_root, [chapter_numbers])
+            with (
+                patch.object(volume_runner_module, "run_group_generation_workflow") as generation,
+                patch.object(volume_runner_module, "run_five_chapter_review") as review,
+                patch.object(volume_runner_module, "print_progress"),
+            ):
+                completed_scope, next_target = volume_runner_module.process_volume_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    run_mode=rewrite_workflow.RUN_MODE_GROUP,
             )
 
         self.assertEqual((completed_scope, next_target), ("group", None))
@@ -617,20 +645,11 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             _write_text(paths["world_model"], "# 世界模型\n")
             _write_text(paths["volume_outline"], "# 卷级大纲\n")
             _write_text(paths["volume_plot_progress"], "# 卷级剧情进程\n")
+            _seed_group_plan(project_root, [chapter_numbers])
 
             def fake_generation_agent(*args, **kwargs):
                 allowed_files = kwargs["allowed_files"]
-                group_outline = "\n\n".join(
-                    [
-                        "# 0001-0005 组纲",
-                        "## 0001\n- 功能映射：起势。",
-                        "## 0002\n- 功能映射：推进。",
-                        "## 0003\n- 功能映射：转折。",
-                        "## 0004\n- 功能映射：加压。",
-                        "## 0005\n- 功能映射：收束。",
-                    ]
-                )
-                _write_text(allowed_files["group_outline"], group_outline)
+                self.assertNotIn("group_outline", allowed_files)
                 for chapter_number in chapter_numbers:
                     _write_text(
                         allowed_files[f"{chapter_number}_rewritten_chapter"],
@@ -638,15 +657,15 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                     )
                 return _rewrite_agent_stage_result(
                     rewrite_workflow.WorkflowSubmissionPayload(
-                        summary="五章组生成完成。",
-                        generated_files=["group_outline", *[f"{item}_rewritten_chapter" for item in chapter_numbers]],
+                        summary="动态组正文生成完成。",
+                        generated_files=[f"{item}_rewritten_chapter" for item in chapter_numbers],
                     ),
                     "resp_group_generation_submit",
                     ["resp_group_generation_write", "resp_group_generation_submit"],
                     applications=[
                         _agent_application(
                             "submit_document_writes",
-                            ["group_outline", "0001_rewritten_chapter"],
+                            ["0001_rewritten_chapter"],
                         )
                     ],
                 )
@@ -659,7 +678,7 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                     return_value=_rewrite_agent_stage_result(
                         passed_review,
                         "resp_group_review",
-                        applications=[_agent_application("submit_document_edits", ["group_outline"])],
+                        applications=[_agent_application("submit_document_edits", ["0001_rewritten_chapter"])],
                     ),
                 ) as review_agent,
                 patch.object(rewrite_workflow, "print_request_context_summary") as context_summary,
@@ -706,11 +725,11 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             self.assertIn("[global] 世界模型", included_docs)
             self.assertIn("[volume] 卷级大纲", included_docs)
             self.assertIn("[volume] 卷级剧情进程", included_docs)
-            self.assertIn("同卷其他章节正文当前不注入", "\n".join(group_summary_call.kwargs["source_summary_lines"]))
+            self.assertIn("不注入参考源章节正文", "\n".join(group_summary_call.kwargs["source_summary_lines"]))
             progress_lines = "\n".join(str(call.args[0]) for call in agent_progress.call_args_list if call.args)
-            self.assertIn("组生成 agent 本轮执行文档工具 1 次，累计变更=group_outline, 0001_rewritten_chapter。", progress_lines)
-            self.assertIn("组生成 agent 提交阶段结果：generated_files=group_outline", progress_lines)
-            self.assertIn("组审查 agent 本轮执行文档工具 1 次，累计变更=group_outline。", progress_lines)
+            self.assertIn("组生成 agent 本轮执行文档工具 1 次，累计变更=0001_rewritten_chapter。", progress_lines)
+            self.assertIn("组生成 agent 提交阶段结果：generated_files=0001_rewritten_chapter", progress_lines)
+            self.assertIn("组审查 agent 本轮执行文档工具 1 次，累计变更=0001_rewritten_chapter。", progress_lines)
             self.assertIn("组审查 agent 提交审核结论：通过；返修章节=无；返修目标=无；阻塞问题=0 项。", progress_lines)
 
 
@@ -1184,7 +1203,7 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
             self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
             self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_group_review_1")
-            self.assertIn("group_outline", agent_call.call_args_list[0].kwargs["allowed_files"])
+            self.assertNotIn("group_outline", agent_call.call_args_list[0].kwargs["allowed_files"])
             self.assertEqual(group_state["status"], "passed")
             self.assertEqual(group_state["last_response_id"], "resp_group_review_2")
             self.assertEqual(

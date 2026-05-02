@@ -9,9 +9,9 @@
 1. `novelist.workflows.split_novel`
    把一整本小说按章节拆开，并按每 50 章自动分卷。
 2. `novelist.workflows.novel_adaptation`
-   基于参考源逐卷生成改编规划文档。
+   基于参考源逐卷生成改编规划文档，并在卷资料审核通过后继续生成整卷组纲计划、所有组纲与组纲审核。
 3. `novelist.workflows.novel_chapter_rewrite`
-   基于规划文档按最多五章一组生成组纲、仿写正文和配套审核文档。
+   基于已审核组纲计划按动态章节组生成仿写正文和配套审核文档。
 
 如果你不想手动串联，可以直接使用：
 
@@ -179,18 +179,22 @@ python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 - 全书大纲
 - 伏笔文档
 - 卷级大纲
+- 当前卷组纲计划
+- 本卷所有组纲
+- 组纲审核
 
-agent 阶段按 OpenCode 风格维护本地 transcript：首轮发送阶段完整上下文，工具轮会把本阶段大上下文、已发生的工具调用和工具结果一起重新组装发送，不把 `previous_response_id` 当作唯一上下文来源。卷资料审核会在同一个审核逻辑会话内压缩模型上下文：重新组装最新落盘文档，稳定前缀和当前卷参考源仍会随请求发送，但 provider 请求不会沿用生成阶段或上一轮审核的旧 `previous_response_id`。
+agent 阶段按 OpenCode 风格维护本地 transcript：首轮发送阶段完整上下文，工具轮会把本阶段大上下文、已发生的工具调用和工具结果一起重新组装发送，不把 `previous_response_id` 当作唯一上下文来源。卷资料审核会在同一个审核逻辑会话内压缩模型上下文：重新组装最新落盘文档，稳定前缀和当前卷参考源仍会随请求发送，但 provider 请求不会沿用生成阶段或上一轮审核的旧 `previous_response_id`。卷资料审核通过后，本卷不会立刻写入 `processed_volumes`，而是继续进入整卷组纲生成与组纲审核；只有组纲审核也通过后，本卷资料适配才算完成。
 
 #### 第三步：组级重写
 
 统一入口会调用 `novelist.workflows.novel_chapter_rewrite`，生成：
 
-- 组纲（一个文件内包含当前组每章细纲）
 - 当前组仿写正文
 - 状态类文档
 - 组审查
 - 卷级审核
+
+章节组划分唯一来自 `group_injection/<volume>_group_injection/00_group_outline_plan.md`。如果缺少计划或计划尚未审核通过，章节重写会阻断并提示先补跑 `novel_adaptation` 的整卷组纲生成/审核阶段；不会回退到固定 5 章切组。
 
 ## 6. 也可以单独运行三个工作流入口
 
@@ -385,18 +389,24 @@ volume_injection/
 
 ### 9.5 `group_injection`
 
-最多每 5 章一组的组纲、组生成断点和组审查文档；当前卷最后不足 5 章时按短组处理，不补入下一卷章节：
+卷资料适配阶段生成的动态组纲计划、组纲、组纲审核，以及章节阶段追加的组生成断点和组审查文档：
 
 ```text
 group_injection/
 └─ 001_group_injection/
-   └─ 0001_0005_group_injection/
-      ├─ 0001_0005_group_outline.md
-      ├─ 0001_0005_group_review.md
+   ├─ 00_group_outline_plan.md
+   ├─ 001_group_outline_review.md
+   ├─ 0001_0006_group_injection/
+   │  ├─ 0001_0006_group_outline.md
+   │  ├─ 0001_0006_group_review.md
+   │  └─ 00_group_stage_manifest.md
+   └─ 0007_0014_group_injection/
+      ├─ 0007_0014_group_outline.md
+      ├─ 0007_0014_group_review.md
       └─ 00_group_stage_manifest.md
 ```
 
-`0001_0005_group_outline.md` 是新流程唯一新规划产物。顶层标题形如 `# 0001-0005 组纲`，内部每章一个二级标题，例如 `## 0001`、`## 0002`；每个二级标题下沿用旧单章章纲的细纲粒度和功能映射要求。当前卷最后短组会使用实际章节范围命名，例如 `0046_0048_group_outline.md`。旧的独立章纲文件只作为兼容输入，不会在新运行中继续生成。
+`00_group_outline_plan.md` 记录本卷 `total_groups`、`total_chapters`、每组章节号、组纲路径和审核状态。每个 `*_group_outline.md` 顶层标题形如 `# 0001-0006 组纲`，内部每章一个二级标题，例如 `## 0001`、`## 0002`；每章细纲必须包含写作目标、节奏/篇幅建议和源功能映射说明。章节正文、组审和卷审阶段只读取已审核组纲、卷级注入和全局注入，不再读取参考源章节正文，也不得在章节阶段改写组纲。
 
 ### 9.6 `rewritten_novel`
 

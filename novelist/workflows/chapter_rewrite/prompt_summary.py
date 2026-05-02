@@ -32,9 +32,7 @@ def chapter_shared_prefix_summary_lines(
 
 def group_generation_shared_prefix_summary_lines(
     manifest: dict[str, Any],
-    volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_char_count: int,
 ) -> list[str]:
     return [
         "共享前缀构造：COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + build_five_chapter_generation_shared_prompt()。",
@@ -45,22 +43,16 @@ def group_generation_shared_prefix_summary_lines(
         ),
         (
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
-            f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前组："
+            f"{manifest.get('target_worldview', '') or '未设置'} / 当前组："
             f"{chapter_numbers[0]}-{chapter_numbers[-1]}。"
         ),
-        f"固定工作流规则：最多五章一组；当前组 {len(chapter_numbers)} 章，当前卷最后短组不得跨卷补章。",
-        (
-            f"固定参考源原文：当前组 source bundle，只包含本组 {len(chapter_numbers)} 章参考源与 "
-            f"{len(volume_material['extras'])} 个补充文件，字符数约 {source_char_count}。"
-        ),
-        "固定参考源范围：同卷其他章节正文不注入本次组生成请求。",
+        f"固定工作流规则：动态章节组；当前组 {len(chapter_numbers)} 章，分组来自已审核组纲计划。",
+        "固定组纲来源：当前组纲由卷资料适配阶段生成并审核通过；本阶段不读取参考源章节正文。",
     ]
 
 def group_review_shared_prefix_summary_lines(
     manifest: dict[str, Any],
-    volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_char_count: int,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> list[str]:
     return [
@@ -72,11 +64,11 @@ def group_review_shared_prefix_summary_lines(
         ),
         (
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
-            f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前组："
+            f"{manifest.get('target_worldview', '') or '未设置'} / 当前组："
             f"{chapter_numbers[0]}-{chapter_numbers[-1]}。"
         ),
         f"固定工作流规则：{FIVE_CHAPTER_REVIEW_NAME}规则 3 条。",
-        f"固定参考源原文：当前组 source bundle，包含 {len(chapter_numbers)} 章参考源与 {len(volume_material['extras'])} 个补充文件，字符数约 {source_char_count}。",
+        "固定参考源规则：组审不读取参考源章节正文，只根据已审核组纲、卷级/全局注入和当前组正文判断。",
         f"固定已生成章节清单：当前组待审章节 {len(rewritten_chapters)} 章。",
     ]
 
@@ -328,39 +320,25 @@ def print_request_context_summary(
         print_progress("    - 无。")
 
 def five_chapter_review_source_summary_lines(
-    volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_char_count: int,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> list[str]:
     rewritten_total = sum(len(data.get("text", "")) for data in rewritten_chapters.values())
     lines = [
         f"当前审查区间：{chapter_numbers[0]}-{chapter_numbers[-1]}。",
-        f"当前区间参考源总字符数约 {source_char_count}。",
+        "当前区间不注入参考源章节正文；审核依据为已审核组纲、卷级/全局注入和已生成正文。",
         f"当前区间已生成章节数：{len(rewritten_chapters)}，正文总字符数约 {rewritten_total}。",
     ]
-    chapter_names = [str(get_chapter_material(volume_material, chapter_number)["file_name"]) for chapter_number in chapter_numbers]
-    for index, chunk in enumerate(_chunk_text_items(chapter_names, 10), start=1):
-        lines.append(f"参考源章节文件[{index}]：{chunk}")
     return lines
 
 def group_generation_source_summary_lines(
-    volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_char_count: int,
 ) -> list[str]:
     lines = [
         f"当前生成区间：{chapter_numbers[0]}-{chapter_numbers[-1]}。",
-        f"当前区间参考源总字符数约 {source_char_count}。",
-        f"当前卷补充文件：{len(volume_material['extras'])} 个，当前请求会一并注入。",
+        "当前区间不注入参考源章节正文；正文依据为已审核组纲、卷级/全局注入和状态文档。",
+        "当前组纲已在卷资料适配阶段生成并审核通过，本阶段只读组纲，不改组纲。",
     ]
-    extra_names = [str(extra["file_name"]) for extra in volume_material["extras"]]
-    for index, chunk in enumerate(_chunk_text_items(extra_names, 8), start=1):
-        lines.append(f"补充文件[{index}]：{chunk}")
-    chapter_names = [str(get_chapter_material(volume_material, chapter_number)["file_name"]) for chapter_number in chapter_numbers]
-    for index, chunk in enumerate(_chunk_text_items(chapter_names, 10), start=1):
-        lines.append(f"参考源章节文件[{index}]：{chunk}")
-    lines.append("未输入的来源章节：同卷其他章节正文当前不注入。")
     return lines
 
 def chapter_source_summary_lines(volume_material: dict[str, Any], chapter_number: str, source_char_count: int) -> list[str]:

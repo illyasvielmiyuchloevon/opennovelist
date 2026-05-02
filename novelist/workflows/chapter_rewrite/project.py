@@ -6,7 +6,7 @@ from ._shared import *  # noqa: F401,F403
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "基于 novel_adaptation 产出的工程目录，按最多五章一组生成组纲、仿写章节、配套状态文档与审核文档，"
+            "基于 novel_adaptation 产出的工程目录，按已审核组纲计划生成仿写章节、配套状态文档与审核文档，"
             "使用 OpenAI Responses API 与 core 运行时。"
         )
     )
@@ -145,6 +145,10 @@ def assess_volume_readiness(project_root: Path, source_root: Path, volume_number
 
     if not paths["volume_outline"].exists():
         missing.append(f"缺少卷级大纲：{paths['volume_outline'].name}")
+    try:
+        load_group_outline_plan(project_root, volume_number, require_passed=True)
+    except Exception as error:
+        missing.append(str(error))
 
     return {
         "volume_number": volume_number,

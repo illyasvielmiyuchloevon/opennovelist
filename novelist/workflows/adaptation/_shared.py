@@ -33,6 +33,23 @@ from novelist.workflows.split_novel import (
     rebalance_source_volumes,
     rebalance_summary_lines,
 )
+from novelist.core.group_outline_plan import (
+    GROUP_DIR_SUFFIX,
+    GROUP_OUTLINE_PLAN_MANIFEST_NAME,
+    GROUP_ROOT_DIRNAME,
+    group_batch_id,
+    group_injection_dir,
+    group_injection_root,
+    group_outline_docs_from_plan,
+    group_outline_path,
+    group_outline_plan_path,
+    group_outline_plan_review_path,
+    group_plan_groups,
+    group_review_path,
+    load_group_outline_plan,
+    validate_group_outline_files,
+    write_group_outline_plan_manifest,
+)
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"
@@ -119,6 +136,10 @@ COMMON_STAGE_TOOL_OUTPUT_RULE = (
     "必须使用 write/edit/patch 文档工具，不要调用 submit_workflow_result。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_generation_agent 时，"
     "可以多次调用 write/edit/patch 写入所有目标文件，全部完成后必须调用 submit_workflow_result 结束阶段。"
+    "当 Dynamic Request 中的 document_request.phase=volume_group_outline_generation 时，"
+    "必须使用 write/edit/patch 写入当前卷全部组纲文件，最后调用 submit_workflow_result。"
+    "当 Dynamic Request 中的 document_request.phase=volume_group_outline_review 时，"
+    "可以先调用 write/edit/patch 原地修复组纲，最终必须使用 submit_workflow_result 提交 passed/review_md/blocking_issues/rewrite_targets。"
 )
 COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"
@@ -135,6 +156,69 @@ COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
 COMMON_STAGE_DOCUMENT_INSTRUCTIONS = COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS
 COMMON_ADAPTATION_REVIEW_INSTRUCTIONS = COMMON_STAGE_DOCUMENT_INSTRUCTIONS
 COMMON_ADAPTATION_REVIEW_FIX_INSTRUCTIONS = COMMON_STAGE_DOCUMENT_INSTRUCTIONS
+
+
+def agent_changed_keys(agent_result: Any) -> list[str]:
+    changed_keys: list[str] = []
+    for application in getattr(agent_result, "applications", []) or []:
+        applied = getattr(application, "applied", None)
+        if applied is None:
+            continue
+        for key in getattr(applied, "changed_keys", []) or []:
+            key_text = str(key)
+            if key_text not in changed_keys:
+                changed_keys.append(key_text)
+    return changed_keys
+
+
+def print_agent_application_summary(
+    agent_result: Any,
+    *,
+    agent_label: str,
+    no_tool_message: str,
+) -> None:
+    applications = list(getattr(agent_result, "applications", []) or [])
+    if not applications:
+        print_progress(no_tool_message)
+        return
+    changed = ", ".join(agent_changed_keys(agent_result)) or "无内容变化"
+    print_progress(f"{agent_label} 本轮执行文档工具 {len(applications)} 次，累计变更={changed}。")
+
+
+def agent_submission_summary_text(submission: Any, *, limit: int = 120) -> str:
+    summary = str(
+        getattr(submission, "summary", "")
+        or getattr(submission, "content_md", "")
+        or getattr(submission, "error", "")
+        or ""
+    ).strip()
+    summary = " ".join(summary.split())
+    if not summary:
+        return "无"
+    if len(summary) <= limit:
+        return summary
+    return summary[: limit - 1].rstrip() + "..."
+
+
+def print_agent_generation_submission_summary(agent_result: Any, *, agent_label: str) -> None:
+    submission = getattr(agent_result, "submission", None)
+    generated_files = list(getattr(submission, "generated_files", []) or [])
+    generated = ", ".join(str(item) for item in generated_files) or "未声明"
+    print_progress(
+        f"{agent_label} 提交阶段结果：generated_files={generated}；"
+        f"摘要={agent_submission_summary_text(submission)}。"
+    )
+
+
+def print_agent_review_submission_summary(review: Any, *, agent_label: str) -> None:
+    rewrite_targets = [str(item) for item in getattr(review, "rewrite_targets", []) or [] if item]
+    blocking_issues = [str(item) for item in getattr(review, "blocking_issues", []) or [] if item]
+    print_progress(
+        f"{agent_label} 提交审核结论："
+        f"{'通过' if getattr(review, 'passed', None) else '未通过'}；"
+        f"返修目标={', '.join(rewrite_targets) if rewrite_targets else '无'}；"
+        f"阻塞问题={len(blocking_issues)} 项。"
+    )
 
 
 # Export imported helpers and workflow constants for the split modules.

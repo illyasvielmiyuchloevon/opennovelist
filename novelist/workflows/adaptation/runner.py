@@ -22,6 +22,7 @@ def render_dry_run_summary(
     print(f"总字符数：{source_char_count}")
     print(
         f"请求模式：资料生成 agent 会话覆盖 {len(plan)} 个目标文档，随后进入卷资料审核；"
+        "卷资料审核通过后继续生成整卷组纲并审核；"
         "生成和审核阶段都使用 OpenCode 风格本地 transcript，多轮工具调用会重发本阶段上下文与工具历史。"
     )
     print(f"运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
@@ -248,13 +249,32 @@ def main() -> int:
                 previous_response_id=previous_response_id,
                 prompt_cache_key=prompt_cache_key,
             )
-            paths = mark_volume_processed_after_review(
+            paths = write_stage_outputs_after_adaptation_review(
                 manifest,
                 volume_material,
                 generated_documents=generated_documents,
                 source_char_count=source_char_count,
                 loaded_file_count=len(loaded_files),
                 review_result=review_result,
+            )
+            print_progress("卷资料审核已通过，继续进入当前卷整卷组纲生成与组纲审核。")
+            group_outline_result, previous_response_id = run_group_outline_workflow_until_passed(
+                client=client,
+                model=openai_settings["model"],
+                manifest=manifest,
+                volume_material=volume_material,
+                stage_shared_prompt=stage_shared_prompt,
+                previous_response_id=previous_response_id,
+                prompt_cache_key=prompt_cache_key,
+            )
+            paths = mark_volume_processed_after_group_outline_review(
+                manifest,
+                volume_material,
+                generated_documents=generated_documents,
+                source_char_count=source_char_count,
+                loaded_file_count=len(loaded_files),
+                review_result=review_result,
+                group_outline_result=group_outline_result,
             )
 
             print_progress(f"已处理卷：{volume_material['volume_number']}")
@@ -272,6 +292,8 @@ def main() -> int:
             print_progress(f"伏笔文档：{paths['foreshadowing']}")
             print_progress(f"卷级大纲：{paths['volume_outline']}")
             print_progress(f"卷资料审核：{paths['adaptation_review']}")
+            print_progress(f"组纲计划：{paths['group_outline_plan']}")
+            print_progress(f"组纲审核：{paths['group_outline_review']}")
 
             next_volume = find_next_pending_volume_after(
                 volume_dirs,

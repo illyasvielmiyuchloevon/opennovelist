@@ -4,7 +4,7 @@
 
 - 原始小说按章节/分卷拆分
 - 基于参考源逐卷生成改编规划文档
-- 基于规划文档按最多五章一组生成组纲、仿写正文、状态文档与审核文档
+- 卷资料适配阶段前置生成整卷组纲计划，并按已审核计划生成章节组正文、状态文档与审核文档
 - 统一入口调度完整工作流，并支持断点续跑
 
 项目主要面向 Windows + PowerShell 使用场景，所有工作流入口都支持交互式运行。
@@ -20,9 +20,9 @@
   - 全书大纲
   - 伏笔文档
   - 卷级大纲
+  - 当前卷组纲计划、所有组纲与组纲审核
 - [novelist/workflows/novel_chapter_rewrite.py](./novelist/workflows/novel_chapter_rewrite.py)
-  兼容入口；内部实现位于 `novelist/workflows/chapter_rewrite/`。读取改编工程目录，按最多五章一组生成：
-  - 组纲（一个文件内包含当前组每章细纲）
+  兼容入口；内部实现位于 `novelist/workflows/chapter_rewrite/`。读取改编工程目录，按已审核组纲计划顺序生成：
   - 当前组仿写正文
   - 人物状态卡 / 人物关系链
   - 卷级剧情进程
@@ -98,7 +98,7 @@ python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 
 1. `novelist.workflows.split_novel` 先拆分小说
 2. `novelist.workflows.novel_adaptation` 生成逐卷改编规划
-3. `novelist.workflows.novel_chapter_rewrite` 按最多五章一组生成正文、组纲与审核文档
+3. `novelist.workflows.novel_chapter_rewrite` 按已审核组纲计划生成正文与审核文档
 
 ### 2. 从已拆分好的目录开始
 
@@ -197,6 +197,8 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 │     └─ 001_volume_review.md
 ├─ group_injection/
 │  └─ 001_group_injection/
+│     ├─ 00_group_outline_plan.md
+│     ├─ 001_group_outline_review.md
 │     └─ 0001_0005_group_injection/
 │        ├─ 0001_0005_group_outline.md
 │        ├─ 0001_0005_group_review.md
@@ -208,7 +210,7 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
       └─ ...
 ```
 
-新流程不再新建独立 `0001_chapter_outline.md`。`0001_0005_group_outline.md` 的顶层标题为 `# 0001-0005 组纲`，内部用 `## 0001` 到 `## 0005` 分别承载每章细纲，细纲格式沿用旧单章章纲要求。当前卷最后一组如果不足 5 章，会生成短组组纲，例如 `0046_0048_group_outline.md`，不会补入下一卷章节。
+新流程不再新建独立 `0001_chapter_outline.md`。卷资料审核通过后不会立即把本卷标记为已完成，而是继续生成 `00_group_outline_plan.md`、本卷所有组纲文件和 `001_group_outline_review.md`。章节组数量和每组章数完全来自这份审核通过的计划，例如可以是 `0001_0006`、`0007_0014`，不再机械按 5 章切组。组纲顶层标题形如 `# 0001-0006 组纲`，内部用 `## 0001` 到 `## 0006` 分别承载每章细纲；每章细纲必须包含写作目标、节奏/篇幅建议和源功能映射说明，因为章节正文阶段不再读取参考源章节正文。
 
 ## 运行模式
 
@@ -224,7 +226,7 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 - `chapter`
   按指定章节所在组推进
 - `group`
-  按最多 5 章一组推进，并包含组生成与组审查；当前卷最后不足 5 章时按短组处理
+  按已审核组纲计划推进当前章节组，并包含组生成与组审查；没有组纲计划时会阻断并提示先补跑卷资料适配的组纲生成/审核
 - `volume`
   跑完整卷，包含所有组生成、组审查、卷审查
 

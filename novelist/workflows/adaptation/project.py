@@ -229,6 +229,11 @@ def ensure_project_dirs(project_root: Path) -> list[str]:
         container_dirname=VOLUME_ROOT_DIRNAME,
         suffix=VOLUME_DIR_SUFFIX,
     )
+    migrate_numbered_injection_dirs(
+        project_root,
+        container_dirname=GROUP_ROOT_DIRNAME,
+        suffix=GROUP_DIR_SUFFIX,
+    )
     return warnings
 
 def resolve_style_mode(args: argparse.Namespace) -> tuple[str, str | None]:
@@ -583,6 +588,8 @@ def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
         "world_model": global_dir / GLOBAL_FILE_NAMES["world_model"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
         "adaptation_review": volume_dir / f"{volume_number}_adaptation_review.md",
+        "group_outline_plan": group_outline_plan_path(project_root, volume_number),
+        "group_outline_review": group_outline_plan_review_path(project_root, volume_number),
         "source_digest": volume_dir / "00_source_digest.md",
         "stage_manifest": volume_dir / "00_stage_manifest.md",
         "response_debug": volume_dir / "00_last_response_debug.md",
@@ -673,12 +680,20 @@ def write_stage_outputs(
         "volume_files": {
             "volume_outline": str(paths["volume_outline"]),
             "adaptation_review": str(paths["adaptation_review"]),
+            "group_outline_plan": str(paths["group_outline_plan"]),
+            "group_outline_review": str(paths["group_outline_review"]),
             "source_digest": str(paths["source_digest"]),
         },
         "adaptation_review": {
             "status": "pending",
             "review_file": str(paths["adaptation_review"]),
             "note": "资料文档已生成，等待卷资料审核通过后才会标记本卷完成。",
+        },
+        "group_outline_stage": {
+            "status": "pending",
+            "plan_file": str(paths["group_outline_plan"]),
+            "review_file": str(paths["group_outline_review"]),
+            "note": "卷资料审核通过后会继续生成并审核整卷组纲；组纲审核通过后才标记本卷完成。",
         },
         "stage_summary": {
             "processed_volume": volume_material["volume_number"],
@@ -698,12 +713,13 @@ def write_stage_outputs(
             f"global_dir: {paths['global_dir']}",
             f"volume_dir: {paths['volume_dir']}",
             f"adaptation_review: {paths['adaptation_review']}",
+            f"group_outline_plan: {paths['group_outline_plan']}",
         ],
     )
 
     return paths
 
-def mark_volume_processed_after_review(
+def write_stage_outputs_after_adaptation_review(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
     *,
@@ -714,19 +730,13 @@ def mark_volume_processed_after_review(
 ) -> dict[str, Path]:
     project_root = Path(manifest["project_root"])
     paths = stage_paths(project_root, volume_material["volume_number"])
-    processed = set(manifest.get("processed_volumes", []))
-    processed.add(volume_material["volume_number"])
-    manifest["processed_volumes"] = sorted(processed)
-    manifest["last_processed_volume"] = volume_material["volume_number"]
-    save_manifest(manifest)
-
     review = review_result.payload
     stage_manifest_payload = {
         "generated_at": now_iso(),
-        "status": "completed",
+        "status": "group_outline_pending",
         "processed_volume": volume_material["volume_number"],
         "source_volume_dir": volume_material["volume_dir"],
-        "request_mode": "per_document_function_call_with_volume_session_with_volume_review",
+        "request_mode": "per_document_function_call_with_volume_session_with_volume_review_pending_group_outline",
         "api_calls": generated_documents,
         "loaded_file_count": loaded_file_count,
         "source_char_count": source_char_count,
@@ -739,6 +749,8 @@ def mark_volume_processed_after_review(
         "volume_files": {
             "volume_outline": str(paths["volume_outline"]),
             "adaptation_review": str(paths["adaptation_review"]),
+            "group_outline_plan": str(paths["group_outline_plan"]),
+            "group_outline_review": str(paths["group_outline_review"]),
             "source_digest": str(paths["source_digest"]),
         },
         "adaptation_review": {
@@ -750,12 +762,112 @@ def mark_volume_processed_after_review(
             "blocking_issues": review.blocking_issues,
             "rewrite_targets": review.rewrite_targets,
         },
+        "group_outline_stage": {
+            "status": "pending",
+            "plan_file": str(paths["group_outline_plan"]),
+            "review_file": str(paths["group_outline_review"]),
+            "note": "卷资料审核已通过，等待整卷组纲生成与组纲审核。",
+        },
         "stage_summary": {
             "processed_volume": volume_material["volume_number"],
             "generated_documents": [item.get("label") for item in generated_documents],
             "loaded_file_count": loaded_file_count,
             "source_char_count": source_char_count,
             "adaptation_review_status": "passed" if review.passed else "failed",
+            "group_outline_status": "pending",
+        },
+    }
+    write_markdown_data(
+        paths["stage_manifest"],
+        title=f"Stage Manifest {volume_material['volume_number']}",
+        payload=stage_manifest_payload,
+        summary_lines=[
+            "status: group_outline_pending",
+            f"processed_volume: {volume_material['volume_number']}",
+            "request_mode: per_document_function_call_with_volume_session_with_volume_review_pending_group_outline",
+            f"global_dir: {paths['global_dir']}",
+            f"volume_dir: {paths['volume_dir']}",
+            f"adaptation_review: {paths['adaptation_review']}",
+            f"group_outline_plan: {paths['group_outline_plan']}",
+        ],
+    )
+
+    return paths
+
+
+def mark_volume_processed_after_group_outline_review(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    *,
+    generated_documents: list[dict[str, Any]],
+    source_char_count: int,
+    loaded_file_count: int,
+    review_result: AdaptationReviewResult,
+    group_outline_result: Any,
+) -> dict[str, Path]:
+    project_root = Path(manifest["project_root"])
+    paths = stage_paths(project_root, volume_material["volume_number"])
+    processed = set(manifest.get("processed_volumes", []))
+    processed.add(volume_material["volume_number"])
+    manifest["processed_volumes"] = sorted(processed)
+    manifest["last_processed_volume"] = volume_material["volume_number"]
+    save_manifest(manifest)
+
+    review = review_result.payload
+    group_review = group_outline_result.payload
+    group_plan = load_group_outline_plan(project_root, volume_material["volume_number"], require_passed=True)
+    stage_manifest_payload = {
+        "generated_at": now_iso(),
+        "status": "completed",
+        "processed_volume": volume_material["volume_number"],
+        "source_volume_dir": volume_material["volume_dir"],
+        "request_mode": "per_document_function_call_with_volume_session_with_volume_review_and_group_outlines",
+        "api_calls": generated_documents,
+        "loaded_file_count": loaded_file_count,
+        "source_char_count": source_char_count,
+        "generated_document_keys": [item.get("key") for item in generated_documents],
+        "global_files": {
+            key: str(paths[key])
+            for key in ("book_outline", "style_guide", "world_model", "foreshadowing")
+            if paths[key].exists()
+        },
+        "volume_files": {
+            "volume_outline": str(paths["volume_outline"]),
+            "adaptation_review": str(paths["adaptation_review"]),
+            "group_outline_plan": str(paths["group_outline_plan"]),
+            "group_outline_review": str(paths["group_outline_review"]),
+            "source_digest": str(paths["source_digest"]),
+        },
+        "adaptation_review": {
+            "status": "passed" if review.passed else "failed",
+            "passed": review.passed,
+            "review_file": review_result.review_path,
+            "response_ids": review_result.response_ids,
+            "fix_attempts": review_result.fix_attempts,
+            "blocking_issues": review.blocking_issues,
+            "rewrite_targets": review.rewrite_targets,
+        },
+        "group_outline_stage": {
+            "status": "passed" if group_review.passed else "failed",
+            "passed": group_review.passed,
+            "plan_file": str(paths["group_outline_plan"]),
+            "review_file": group_outline_result.review_path,
+            "response_ids": group_outline_result.response_ids,
+            "fix_attempts": group_outline_result.fix_attempts,
+            "blocking_issues": group_review.blocking_issues,
+            "rewrite_targets": group_review.rewrite_targets,
+            "total_groups": group_plan.get("total_groups"),
+            "total_chapters": group_plan.get("total_chapters"),
+        },
+        "stage_summary": {
+            "processed_volume": volume_material["volume_number"],
+            "generated_documents": [item.get("label") for item in generated_documents],
+            "loaded_file_count": loaded_file_count,
+            "source_char_count": source_char_count,
+            "adaptation_review_status": "passed" if review.passed else "failed",
+            "group_outline_status": "passed" if group_review.passed else "failed",
+            "total_groups": group_plan.get("total_groups"),
+            "total_chapters": group_plan.get("total_chapters"),
         },
     }
     write_markdown_data(
@@ -765,14 +877,35 @@ def mark_volume_processed_after_review(
         summary_lines=[
             "status: completed",
             f"processed_volume: {volume_material['volume_number']}",
-            "request_mode: per_document_function_call_with_volume_session_with_volume_review",
+            "request_mode: per_document_function_call_with_volume_session_with_volume_review_and_group_outlines",
             f"global_dir: {paths['global_dir']}",
             f"volume_dir: {paths['volume_dir']}",
             f"adaptation_review: {paths['adaptation_review']}",
+            f"group_outline_plan: {paths['group_outline_plan']}",
+            f"group_outline_review: {paths['group_outline_review']}",
         ],
     )
 
     return paths
+
+
+def mark_volume_processed_after_review(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    *,
+    generated_documents: list[dict[str, Any]],
+    source_char_count: int,
+    loaded_file_count: int,
+    review_result: AdaptationReviewResult,
+) -> dict[str, Path]:
+    return write_stage_outputs_after_adaptation_review(
+        manifest,
+        volume_material,
+        generated_documents=generated_documents,
+        source_char_count=source_char_count,
+        loaded_file_count=loaded_file_count,
+        review_result=review_result,
+    )
 
 __all__ = [
     'parse_args',
@@ -800,5 +933,7 @@ __all__ = [
     'stage_paths',
     'write_source_inventory_snapshot',
     'write_stage_outputs',
+    'write_stage_outputs_after_adaptation_review',
     'mark_volume_processed_after_review',
+    'mark_volume_processed_after_group_outline_review',
 ]
