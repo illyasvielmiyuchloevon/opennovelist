@@ -193,13 +193,40 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(captured["api_key"], "test-key")
         self.assertEqual(captured["base_url"], "https://api.openai.com/v1")
         self.assertEqual(captured["max_retries"], 0)
-        self.assertIsInstance(captured["timeout"], httpx.Timeout)
-        timeout = captured["timeout"]
+        self.assertIsInstance(captured["http_client"], httpx.Client)
+        http_client = captured["http_client"]
+        assert isinstance(http_client, httpx.Client)
+        timeout = http_client.timeout
         assert isinstance(timeout, httpx.Timeout)
         self.assertEqual(timeout.connect, llm_runtime.DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS)
         self.assertEqual(timeout.read, llm_runtime.DEFAULT_OPENAI_READ_TIMEOUT_SECONDS)
         self.assertEqual(timeout.write, llm_runtime.DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS)
         self.assertEqual(timeout.pool, llm_runtime.DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS)
+        self.assertTrue(getattr(http_client, "_trust_env"))
+        http_client.close()
+
+    def test_build_openai_client_bypasses_environment_proxy_for_local_base_url(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _SentinelClient:
+            pass
+
+        def fake_openai(**kwargs):
+            captured.update(kwargs)
+            return _SentinelClient()
+
+        with patch("novelist.core.responses_runtime.OpenAI", side_effect=fake_openai):
+            client = llm_runtime.build_openai_client(
+                api_key="test-key",
+                base_url="http://localhost:8317/v1",
+            )
+
+        self.assertIsInstance(client, _SentinelClient)
+        self.assertIsInstance(captured["http_client"], httpx.Client)
+        http_client = captured["http_client"]
+        assert isinstance(http_client, httpx.Client)
+        self.assertFalse(getattr(http_client, "_trust_env"))
+        http_client.close()
 
     def test_responses_stream_merges_final_and_reconstructed_function_call_items(self) -> None:
         events = [

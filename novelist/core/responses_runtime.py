@@ -7,8 +7,10 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import Any, Generic, TypeVar
+from urllib.parse import urlparse
 
 import httpx
 import openai
@@ -32,6 +34,7 @@ DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS = float(os.getenv("OPENAI_POOL_TIMEOUT_SECON
 DEFAULT_RESPONSE_POLL_TIMEOUT_SECONDS = float(os.getenv("OPENAI_RESPONSE_POLL_TIMEOUT_SECONDS", "600"))
 DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS = float(os.getenv("OPENAI_RESPONSE_POLL_INTERVAL_SECONDS", "2"))
 IN_PROGRESS_RESPONSE_STATUSES = {"queued", "in_progress"}
+LOCAL_BASE_URL_HOSTS = {"localhost"}
 
 
 class ApiRequestError(RuntimeError):
@@ -221,6 +224,31 @@ class StatusSpinner:
         print("\r" + (" " * self._last_length) + "\r", end="", file=self.stream, flush=True)
 
 
+def _parse_env_bool(value: str | None) -> bool | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _should_trust_environment_http_settings(base_url: str) -> bool:
+    override = _parse_env_bool(os.getenv("OPENAI_HTTP_TRUST_ENV"))
+    if override is not None:
+        return override
+
+    host = (urlparse(base_url).hostname or "").strip().lower()
+    if not host:
+        return True
+    if host in LOCAL_BASE_URL_HOSTS:
+        return False
+    try:
+        return not ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
 def build_openai_client(*, api_key: str, base_url: str) -> OpenAI:
     timeout = httpx.Timeout(
         connect=DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS,
@@ -228,10 +256,14 @@ def build_openai_client(*, api_key: str, base_url: str) -> OpenAI:
         write=DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS,
         pool=DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS,
     )
+    http_client = httpx.Client(
+        timeout=timeout,
+        trust_env=_should_trust_environment_http_settings(base_url),
+    )
     return OpenAI(
         api_key=api_key,
         base_url=base_url,
-        timeout=timeout,
+        http_client=http_client,
         max_retries=0,
     )
 
