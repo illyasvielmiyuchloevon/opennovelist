@@ -92,6 +92,7 @@ MAX_REVIEW_FIX_ATTEMPTS = MAX_CHAPTER_REVIEW_FIX_ATTEMPTS
 RUN_MODE_CHAPTER = "chapter"
 RUN_MODE_GROUP = "group"
 RUN_MODE_VOLUME = "volume"
+PUBLIC_RUN_MODES = (RUN_MODE_GROUP, RUN_MODE_VOLUME)
 PHASE1_OUTLINE = "phase1_outline"
 PHASE2_CHAPTER_TEXT = "phase2_chapter_text"
 PHASE2_SUPPORT_UPDATES = "phase2_support_updates"
@@ -103,10 +104,21 @@ CHAPTER_WORKFLOW_PHASE_ORDER = [
     PHASE3_REVIEW,
 ]
 RUN_MODE_LABELS = {
-    RUN_MODE_CHAPTER: "按章节运行",
-    RUN_MODE_GROUP: "按组运行",
+    RUN_MODE_CHAPTER: "按章节定位当前组（旧参数，等同按章节组运行）",
+    RUN_MODE_GROUP: "按章节组运行",
     RUN_MODE_VOLUME: "按卷运行",
 }
+
+
+def normalize_rewrite_run_mode(run_mode: str, *, warn: bool = True) -> str:
+    normalized = str(run_mode or "").strip().lower()
+    if normalized in PUBLIC_RUN_MODES:
+        return normalized
+    if normalized == RUN_MODE_CHAPTER:
+        if warn:
+            print_progress("`chapter` 是旧章节运行参数；新流程已按其所在章节组运行。")
+        return RUN_MODE_GROUP
+    fail(f"不支持的章节重写运行模式：{run_mode}。支持：group、volume。")
 
 ADAPTATION_GLOBAL_FILE_NAMES = {
     "world_model": "01_world_model.md",

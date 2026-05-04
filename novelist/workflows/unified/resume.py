@@ -13,11 +13,25 @@ def pending_rewrite_volumes(project_root: Path) -> list[str]:
         return []
 
     rewrite_manifest = rewrite_workflow.load_rewrite_manifest(project_root)
-    adapted_volumes = sorted_volume_numbers(list(adaptation_manifest.get("processed_volumes", [])))
+    adapted_volumes = [
+        volume
+        for volume in sorted_volume_numbers(list(adaptation_manifest.get("processed_volumes", [])))
+        if adaptation_workflow.group_outline_plan_passed(adaptation_manifest, volume)
+    ]
     rewritten_volumes = set(
         sorted_volume_numbers(list((rewrite_manifest or {}).get("processed_volumes", [])))
     )
     return [volume for volume in adapted_volumes if volume not in rewritten_volumes]
+
+def pending_group_outline_backfill_volumes(project_root: Path) -> list[str]:
+    adaptation_manifest = adaptation_workflow.load_manifest(project_root)
+    if adaptation_manifest is None:
+        return []
+    return [
+        volume
+        for volume in sorted_volume_numbers(list(adaptation_manifest.get("processed_volumes", [])))
+        if adaptation_workflow.needs_legacy_group_outline_backfill(adaptation_manifest, volume)
+    ]
 
 def pending_adaptation_volumes(project_root: Path) -> list[str]:
     adaptation_manifest = adaptation_workflow.load_manifest(project_root)
@@ -39,7 +53,9 @@ def pending_adaptation_volumes(project_root: Path) -> list[str]:
             total_volumes = 0
         source_volumes = [f"{index:03d}" for index in range(1, total_volumes + 1)]
 
-    return [volume for volume in sorted_volume_numbers(source_volumes) if volume not in processed_volumes]
+    group_outline_backfill = pending_group_outline_backfill_volumes(project_root)
+    unfinished = [volume for volume in sorted_volume_numbers(source_volumes) if volume not in processed_volumes]
+    return sorted_volume_numbers([*group_outline_backfill, *unfinished])
 
 def should_prompt_interrupted_workflow(
     args: argparse.Namespace,
@@ -62,11 +78,11 @@ def prompt_interrupted_workflow_scope(
     options: list[tuple[str, str]] = []
     if adaptation_backlog_volumes:
         adaptation_label = "、".join(adaptation_backlog_volumes)
-        print_progress(f"检测到资料适配尚未完成的卷：{adaptation_label}")
+        print_progress(f"检测到资料适配尚未完成或旧卷待补组纲的卷：{adaptation_label}")
         options.append(
             (
                 WORKFLOW_SCOPE_CONTINUE_ADAPTATION,
-                f"继续资料适配断点（第 {adaptation_label} 卷）",
+                f"继续资料适配/补组纲断点（第 {adaptation_label} 卷）",
             )
         )
     if rewrite_backlog_volumes:
@@ -139,6 +155,7 @@ def resolve_rewrite_volume_override(
 __all__ = [
     'sorted_volume_numbers',
     'pending_rewrite_volumes',
+    'pending_group_outline_backfill_volumes',
     'pending_adaptation_volumes',
     'should_prompt_interrupted_workflow',
     'prompt_interrupted_workflow_scope',

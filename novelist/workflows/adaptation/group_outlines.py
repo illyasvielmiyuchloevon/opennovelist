@@ -61,12 +61,29 @@ def build_group_outline_plan_request(
     volume_material: dict[str, Any],
     paths: dict[str, Path],
 ) -> dict[str, Any]:
+    requirements = [
+        "不要机械按 5 章一组；必须根据卷纲、参考源推进阶段和新书正文需要决定每组章数。",
+        "本阶段决定的是新书章节组，不要求与参考源章节一一对应；每组只需要说明对应参考源范围和功能理解。",
+        "每组的 guidance 必须能指导后续生成独立组纲：写清本组要承接的卷纲任务、参考源功能映射、新书冲突推进、高潮/收束位置、篇幅和节奏倾向。",
+        "后续章节生成不会再读取参考源章节正文，所以本阶段必须把参考源功能理解转化成可执行的组纲指导。",
+        "目标新书章节号会按分组顺序自动从 0001 连续编号；你只需要给每组 chapter_count。",
+        "严禁把参考源人物名、地名、势力名、事件名、术语名、等级体系或话语体系写成新书主体设定；只能写功能映射和转换要求。",
+        "必须调用 submit_group_outline_plan 提交结构化 groups；不要调用文档工具，不要提交普通文本。",
+    ]
+    migration_context: dict[str, Any] = {}
+    if volume_material.get("legacy_group_outline_backfill"):
+        migration_context = {
+            "mode": "legacy_group_outline_backfill",
+            "rule": "旧工程当前卷资料已经适配完成，本阶段只在现有源卷和既有卷资料基础上补齐动态章节组计划，不要求重分卷、不重写卷资料。",
+        }
+        requirements.insert(0, "这是旧工程补齐组纲：必须尊重当前源卷边界和既有卷资料，不得要求自适应重分卷或重做卷资料适配。")
     return {
         "document_request": {
             "phase": "volume_group_outline_planning",
             "role": "当前卷章节组规划编辑",
             "task": "基于当前卷整卷参考源、卷级大纲和全局资料，决定本卷新书正文要拆成多少个章节组，以及每组写多少章。",
         },
+        "migration_context": migration_context,
         "planning_scope": {
             "new_book_title": manifest["new_book_title"],
             "target_worldview": manifest["target_worldview"],
@@ -81,15 +98,7 @@ def build_group_outline_plan_request(
             "foreshadowing": _read_doc(paths["foreshadowing"]),
             "volume_outline": _read_doc(paths["volume_outline"]),
         },
-        "requirements": [
-            "不要机械按 5 章一组；必须根据卷纲、参考源推进阶段和新书正文需要决定每组章数。",
-            "本阶段决定的是新书章节组，不要求与参考源章节一一对应；每组只需要说明对应参考源范围和功能理解。",
-            "每组的 guidance 必须能指导后续生成独立组纲：写清本组要承接的卷纲任务、参考源功能映射、新书冲突推进、高潮/收束位置、篇幅和节奏倾向。",
-            "后续章节生成不会再读取参考源章节正文，所以本阶段必须把参考源功能理解转化成可执行的组纲指导。",
-            "目标新书章节号会按分组顺序自动从 0001 连续编号；你只需要给每组 chapter_count。",
-            "严禁把参考源人物名、地名、势力名、事件名、术语名、等级体系或话语体系写成新书主体设定；只能写功能映射和转换要求。",
-            "必须调用 submit_group_outline_plan 提交结构化 groups；不要调用文档工具，不要提交普通文本。",
-        ],
+        "requirements": requirements,
         "latest_work_target": {
             "type": "latest_user_input",
             "instruction": "这是本次请求的最新工作目标：提交当前卷动态章节组计划。必须调用 submit_group_outline_plan。",
@@ -204,6 +213,17 @@ def build_group_outline_generation_request(
 ) -> dict[str, Any]:
     project_root = Path(manifest["project_root"])
     plan = load_group_outline_plan(project_root, volume_material["volume_number"], require_passed=False)
+    requirements = [
+        "必须为 group_outline_plan.groups 中每一个章节组写入一个组纲文件，不得漏组。",
+        "每个组纲顶层标题必须是 # 起始章-结束章 组纲，并为本组每章写一个二级标题，例如 ## 0001。",
+        "每章细纲必须包含：本章写作目标、剧情推进、冲突/爽点、角色状态变化、篇幅/节奏建议、参考源功能映射到新书的转换说明。",
+        "组纲可以根据新书需要重新安排章节内容，不要求与参考源章节一一对应。",
+        "后续正文阶段不再加载参考源章节，所以组纲必须把源功能理解转化为可直接执行的章纲。",
+        "严禁把参考源原名词、原事件名、原术语、原等级体系和话语体系写成新书主体内容。",
+        "全部组纲文件写入后，必须调用 submit_workflow_result，并在 generated_files 中列出所有组纲 file_key。",
+    ]
+    if volume_material.get("legacy_group_outline_backfill"):
+        requirements.insert(0, "这是旧工程补齐组纲：只生成缺失的组纲文件，不重写已有卷资料，不要求重排参考源分卷。")
     return {
         "document_request": {
             "phase": "volume_group_outline_generation",
@@ -218,15 +238,7 @@ def build_group_outline_generation_request(
             "foreshadowing": _read_doc(paths["foreshadowing"]),
             "volume_outline": _read_doc(paths["volume_outline"]),
         },
-        "requirements": [
-            "必须为 group_outline_plan.groups 中每一个章节组写入一个组纲文件，不得漏组。",
-            "每个组纲顶层标题必须是 # 起始章-结束章 组纲，并为本组每章写一个二级标题，例如 ## 0001。",
-            "每章细纲必须包含：本章写作目标、剧情推进、冲突/爽点、角色状态变化、篇幅/节奏建议、参考源功能映射到新书的转换说明。",
-            "组纲可以根据新书需要重新安排章节内容，不要求与参考源章节一一对应。",
-            "后续正文阶段不再加载参考源章节，所以组纲必须把源功能理解转化为可直接执行的章纲。",
-            "严禁把参考源原名词、原事件名、原术语、原等级体系和话语体系写成新书主体内容。",
-            "全部组纲文件写入后，必须调用 submit_workflow_result，并在 generated_files 中列出所有组纲 file_key。",
-        ],
+        "requirements": requirements,
         "target_files": group_outline_generation_target_inventory(project_root, volume_material["volume_number"]),
         "latest_work_target": {
             "type": "latest_user_input",

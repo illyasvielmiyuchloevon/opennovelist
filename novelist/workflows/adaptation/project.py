@@ -365,9 +365,111 @@ def select_volume_to_process(
 
     processed = set(manifest.get("processed_volumes", []))
     for volume_dir in volume_dirs:
+        if needs_legacy_group_outline_backfill(manifest, volume_dir.name):
+            return volume_dir
         if volume_dir.name not in processed:
             return volume_dir
     return None
+
+def group_outline_plan_passed(manifest: dict[str, Any], volume_number: str) -> bool:
+    try:
+        load_group_outline_plan(
+            Path(manifest["project_root"]),
+            str(volume_number).zfill(3),
+            require_passed=True,
+        )
+    except Exception:
+        return False
+    return True
+
+def needs_legacy_group_outline_backfill(manifest: dict[str, Any], volume_number: str) -> bool:
+    normalized = str(volume_number).zfill(3)
+    processed = {str(item).zfill(3) for item in manifest.get("processed_volumes", [])}
+    return normalized in processed and not group_outline_plan_passed(manifest, normalized)
+
+def select_source_rebalance_start_volume(
+    volume_dirs: list[Path],
+    manifest: dict[str, Any],
+    requested_volume: str | None,
+) -> Path | None:
+    volume_map = {volume_dir.name: volume_dir for volume_dir in volume_dirs}
+    processed = {str(item).zfill(3) for item in manifest.get("processed_volumes", [])}
+
+    if requested_volume:
+        normalized = requested_volume.zfill(3)
+        if normalized not in volume_map:
+            fail(f"未找到指定卷：{normalized}")
+        return None if normalized in processed else volume_map[normalized]
+
+    for volume_dir in volume_dirs:
+        if volume_dir.name not in processed:
+            return volume_dir
+    return None
+
+def _load_stage_payload_for_legacy_backfill(paths: dict[str, Path]) -> dict[str, Any]:
+    content = read_text_if_exists(paths["stage_manifest"]).strip()
+    if not content:
+        return {}
+    try:
+        return extract_json_payload(content)
+    except Exception:
+        return {}
+
+def legacy_adaptation_generated_documents(
+    paths: dict[str, Path],
+    volume_number: str,
+) -> list[dict[str, Any]]:
+    stage_payload = _load_stage_payload_for_legacy_backfill(paths)
+    api_calls = stage_payload.get("api_calls")
+    if isinstance(api_calls, list) and api_calls:
+        return [item for item in api_calls if isinstance(item, dict)]
+
+    from .prompts import build_document_plan, document_output_path
+
+    generated_documents: list[dict[str, Any]] = []
+    for index, doc_spec in enumerate(build_document_plan(volume_number), start=1):
+        doc_key = str(doc_spec["key"])
+        output_path = document_output_path(paths, doc_key)
+        if not read_text_if_exists(output_path).strip():
+            continue
+        generated_documents.append(
+            {
+                "index": index,
+                "key": doc_key,
+                "label": doc_spec["label"],
+                "response_id": "",
+                "response_ids": [],
+                "output_path": str(output_path),
+                "operation_mode": "legacy_existing_file",
+                "changed": False,
+            }
+        )
+    return generated_documents
+
+def legacy_adaptation_review_result(paths: dict[str, Path]) -> Any:
+    from .models import AdaptationReviewPayload, AdaptationReviewResult
+
+    stage_payload = _load_stage_payload_for_legacy_backfill(paths)
+    review_md = read_text_if_exists(paths["adaptation_review"]).strip()
+    if not review_md:
+        review_md = "旧工程已将当前卷标记为卷资料适配完成；本次只补齐组纲计划、组纲和组纲审核。"
+    review = stage_payload.get("adaptation_review")
+    response_ids: list[str] = []
+    fix_attempts = 0
+    if isinstance(review, dict):
+        raw_response_ids = review.get("response_ids")
+        if isinstance(raw_response_ids, list):
+            response_ids = [str(item) for item in raw_response_ids if str(item).strip()]
+        fix_attempts = int(review.get("fix_attempts") or 0)
+    last_response_id = str(stage_payload.get("last_response_id") or "").strip()
+    if last_response_id and last_response_id not in response_ids:
+        response_ids.append(last_response_id)
+    return AdaptationReviewResult(
+        payload=AdaptationReviewPayload(passed=True, review_md=review_md),
+        response_ids=response_ids,
+        review_path=str(paths["adaptation_review"]),
+        fix_attempts=fix_attempts,
+    )
 
 def find_next_pending_volume_after(
     volume_dirs: list[Path],
@@ -381,6 +483,8 @@ def find_next_pending_volume_after(
             if volume_dir.name == current_volume_name:
                 found_current = True
             continue
+        if needs_legacy_group_outline_backfill(manifest, volume_dir.name):
+            return volume_dir
         if volume_dir.name in processed:
             continue
         return volume_dir
@@ -923,6 +1027,11 @@ __all__ = [
     'resolve_protagonist_mode',
     'init_or_load_project',
     'select_volume_to_process',
+    'group_outline_plan_passed',
+    'needs_legacy_group_outline_backfill',
+    'select_source_rebalance_start_volume',
+    'legacy_adaptation_generated_documents',
+    'legacy_adaptation_review_result',
     'find_next_pending_volume_after',
     'append_source_rebalance_history',
     'backup_project_outputs_for_source_rebalance',

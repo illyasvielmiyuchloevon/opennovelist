@@ -124,22 +124,6 @@ def main() -> int:
                 print_progress("当前重写范围已完成，统一工作流将接管后续调度。")
                 return 0
 
-            if completed_scope == "chapter":
-                if next_target is not None:
-                    if not prompt_next_chapter(next_target):
-                        return 0
-                    requested_volume = current_volume.name
-                    requested_chapter = next_target
-                    continue
-                next_volume = find_next_volume_after(volume_dirs, current_volume.name, readiness_map)
-                if not prompt_continue_same_mode_next_volume(run_mode, next_volume):
-                    return 0
-                if next_volume is None:
-                    return 0
-                requested_volume = next_volume.name
-                requested_chapter = None
-                continue
-
             if completed_scope == "group":
                 if next_target is not None:
                     if not prompt_next_group(next_target):

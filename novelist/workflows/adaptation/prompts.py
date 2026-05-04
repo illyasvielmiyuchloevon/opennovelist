@@ -142,6 +142,10 @@ def adaptation_payload_input_summary_lines(payload: dict[str, Any]) -> list[str]
     if isinstance(existing_global_docs, dict):
         for key, content in existing_global_docs.items():
             lines.append(_payload_file_line("既有全局资料输入", str(key), content))
+    injected_documents = payload.get("injected_documents")
+    if isinstance(injected_documents, dict):
+        for key, content in injected_documents.items():
+            lines.append(_payload_file_line("注入资料输入", str(key), content))
 
     for field_name, section_label in (
         ("target_files", "生成目标文件当前内容"),

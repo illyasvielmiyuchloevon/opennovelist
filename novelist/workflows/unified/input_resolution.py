@@ -157,7 +157,7 @@ def resolve_adaptation_run_mode(args: argparse.Namespace) -> str:
 def resolve_rewrite_run_mode(args: argparse.Namespace) -> str:
     rewrite_run_mode = getattr(args, "rewrite_run_mode", None)
     if rewrite_run_mode:
-        return rewrite_run_mode
+        return rewrite_workflow.normalize_rewrite_run_mode(rewrite_run_mode)
     if getattr(args, "input_path", None):
         return rewrite_workflow.RUN_MODE_VOLUME
     if not sys.stdin or not sys.stdin.isatty():
@@ -165,8 +165,7 @@ def resolve_rewrite_run_mode(args: argparse.Namespace) -> str:
     return prompt_choice(
         "选择 novel_chapter_rewrite 的运行方式",
         [
-            (rewrite_workflow.RUN_MODE_CHAPTER, "按章节运行"),
-            (rewrite_workflow.RUN_MODE_GROUP, "按组运行"),
+            (rewrite_workflow.RUN_MODE_GROUP, "按章节组运行"),
             (rewrite_workflow.RUN_MODE_VOLUME, "按卷运行"),
         ],
     )

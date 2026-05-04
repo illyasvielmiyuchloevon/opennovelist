@@ -251,9 +251,10 @@ python -m novelist.workflows.novel_chapter_rewrite "F:\books\玄幻忍者" `
 
 `--run-mode` 支持：
 
-- `chapter`
 - `group`
 - `volume`
+
+`--chapter` 仍可用于定位指定章节，但实际会从该章所在的已审核章节组开始运行，不再存在单章独立运行模式。
 
 ## 7. 统一入口的运行方式说明
 
@@ -268,13 +269,14 @@ python -m novelist.workflows.novel_chapter_rewrite "F:\books\玄幻忍者" `
 
 ### 7.2 `novel_chapter_rewrite` 的运行方式
 
-- `按章节运行`
-- `按组运行`
+- `按章节组运行`
 - `按卷运行`
 
 ## 8. 断点续跑机制
 
 这是这个项目里非常重要的一部分。
+
+旧工程如果已经完成卷资料适配，但没有 `group_injection/<volume>_group_injection/00_group_outline_plan.md` 或组纲审核未通过，会被统一入口识别为“资料适配/补组纲断点”。这类卷只补齐组纲计划、组纲文件和组纲审核，不重跑卷资料适配，也不触发当前旧卷的自适应分卷；组纲通过后才会进入章节重写候选。
 
 ### 8.1 改编规划的断点
 

@@ -14,6 +14,23 @@ import novelist.core.openai_config as openai_config
 from novelist.core.files import write_markdown_data
 
 
+def _seed_passed_group_plan(project_root: Path, volume_number: str = "001") -> None:
+    adaptation_workflow.write_group_outline_plan_manifest(
+        project_root,
+        volume_number,
+        status="passed",
+        groups=[
+            {
+                "chapter_count": 1,
+                "source_chapter_range": "01",
+                "group_title": "测试组",
+                "guidance": "测试组纲指导。",
+            }
+        ],
+        review={"status": "passed", "passed": True},
+    )
+
+
 class WorkflowFacadeCompatibilityTests(unittest.TestCase):
     def test_legacy_workflow_modules_delegate_to_split_packages(self) -> None:
         adaptation_package = importlib.import_module("novelist.workflows.adaptation")
@@ -200,6 +217,8 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 },
                 summary_lines=["new_book_title: 测试书"],
             )
+            _seed_passed_group_plan(project_root, "001")
+            _seed_passed_group_plan(project_root, "002")
 
             self.assertEqual(workflow_entry.pending_rewrite_volumes(project_root), ["002"])
 
@@ -228,8 +247,37 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 },
                 summary_lines=["new_book_title: 测试书"],
             )
+            _seed_passed_group_plan(project_root, "001")
 
             self.assertEqual(workflow_entry.pending_adaptation_volumes(project_root), ["002", "003"])
+
+    def test_pending_adaptation_volumes_reports_legacy_group_outline_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "source"
+            project_root = root / "project"
+            (source_root / "001").mkdir(parents=True)
+            project_root.mkdir()
+            write_markdown_data(
+                project_root / adaptation_workflow.PROJECT_MANIFEST_NAME,
+                title="Project Manifest",
+                payload={
+                    "project_root": str(project_root),
+                    "source_root": str(source_root),
+                    "new_book_title": "测试书",
+                    "target_worldview": "测试世界观",
+                    "style": {"mode": adaptation_workflow.STYLE_MODE_SOURCE, "style_file": None},
+                    "protagonist": {"mode": adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE, "description": None},
+                    "total_volumes": 1,
+                    "processed_volumes": ["001"],
+                    "last_processed_volume": "001",
+                },
+                summary_lines=["new_book_title: 测试书"],
+            )
+
+            self.assertEqual(workflow_entry.pending_group_outline_backfill_volumes(project_root), ["001"])
+            self.assertEqual(workflow_entry.pending_adaptation_volumes(project_root), ["001"])
+            self.assertEqual(workflow_entry.pending_rewrite_volumes(project_root), [])
 
 
 class WorkflowCliArgumentTests(unittest.TestCase):
@@ -247,6 +295,7 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             protagonist_mode=adaptation_workflow.PROTAGONIST_MODE_ADAPTIVE,
             protagonist_text=None,
             project_root="F:\\project",
+            rewrite_run_mode=None,
             adaptation_volume="001",
             rewrite_volume="002",
             rewrite_chapter="0003",
@@ -349,6 +398,14 @@ class WorkflowCliArgumentTests(unittest.TestCase):
         self.assertEqual(
             workflow_entry.resolve_rewrite_run_mode(args),
             rewrite_workflow.RUN_MODE_VOLUME,
+        )
+
+    def test_legacy_chapter_rewrite_run_mode_maps_to_group(self) -> None:
+        args = self.build_args()
+        args.rewrite_run_mode = rewrite_workflow.RUN_MODE_CHAPTER
+        self.assertEqual(
+            workflow_entry.resolve_rewrite_run_mode(args),
+            rewrite_workflow.RUN_MODE_GROUP,
         )
 
     def test_startup_mode_labels_cover_config_only(self) -> None:

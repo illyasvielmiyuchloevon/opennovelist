@@ -12,6 +12,7 @@ def process_volume_workflow(
     run_mode: str,
     requested_chapter: str | None = None,
 ) -> tuple[str, Any]:
+    run_mode = normalize_rewrite_run_mode(run_mode, warn=False)
     volume_material = {**volume_material, "project_root": rewrite_manifest["project_root"]}
     while True:
         if requested_chapter:
@@ -53,9 +54,6 @@ def process_volume_workflow(
         )
 
         next_group = next_group_after(volume_material, rewrite_manifest, current_group)
-        if run_mode == RUN_MODE_CHAPTER:
-            return ("chapter", next_group[0] if next_group else None)
-
         if run_mode == RUN_MODE_GROUP:
             return ("group", next_group)
 

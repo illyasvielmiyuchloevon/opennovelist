@@ -95,6 +95,30 @@ class AdaptationDocumentPlanTests(unittest.TestCase):
 
 
 class AdaptationContextSummaryTests(unittest.TestCase):
+    def test_payload_summary_lists_group_outline_injected_documents(self) -> None:
+        payload = {
+            "injected_documents": {
+                "world_model": {
+                    "file_name": "01_world_model.md",
+                    "file_path": "F:/project/global_injection/01_world_model.md",
+                    "char_count": 12,
+                    "content": "世界模型正文",
+                },
+                "volume_outline": {
+                    "file_name": "001_volume_outline.md",
+                    "file_path": "F:/project/volume_injection/001_volume_injection/001_volume_outline.md",
+                    "char_count": 20,
+                    "content": "卷级大纲正文",
+                },
+            }
+        }
+
+        lines = adaptation_workflow.adaptation_payload_input_summary_lines(payload)
+
+        joined = "\n".join(lines)
+        self.assertIn("注入资料输入：世界模型", joined)
+        self.assertIn("注入资料输入：卷级大纲", joined)
+
     def test_generation_payload_does_not_duplicate_target_global_docs_as_existing_docs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -1020,6 +1044,56 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertIn('"status": "completed"', stage_manifest)
             self.assertIn('"status": "passed"', stage_manifest)
             self.assertIn('"group_outline_status": "passed"', stage_manifest)
+
+    def test_legacy_processed_volume_without_group_outline_is_selected_for_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "source"
+            project_root = root / "project"
+            _write_text(source_root / "001" / "0001.txt", "第1章\n旧卷正文。\n")
+            _write_text(source_root / "002" / "0002.txt", "第2章\n新卷正文。\n")
+            manifest = _manifest(project_root)
+            manifest["source_root"] = str(source_root)
+            manifest["processed_volumes"] = ["001"]
+            manifest["last_processed_volume"] = "001"
+            _seed_adaptation_docs(project_root, "001")
+            volume_dirs = adaptation_workflow.discover_volume_dirs(source_root)
+
+            selected = adaptation_workflow.select_volume_to_process(volume_dirs, manifest, None)
+            rebalance_start = adaptation_workflow.select_source_rebalance_start_volume(volume_dirs, manifest, None)
+            requested_legacy_rebalance = adaptation_workflow.select_source_rebalance_start_volume(volume_dirs, manifest, "001")
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.name, "001")
+        self.assertIsNotNone(rebalance_start)
+        self.assertEqual(rebalance_start.name, "002")
+        self.assertIsNone(requested_legacy_rebalance)
+
+    def test_legacy_group_outline_backfill_uses_existing_adaptation_docs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            manifest["processed_volumes"] = ["001"]
+            paths = _seed_adaptation_docs(project_root, "001")
+            _write_text(paths["adaptation_review"], "# 卷资料审核\n\n通过。\n")
+            volume_material = {
+                **_volume_material("001"),
+                "legacy_group_outline_backfill": True,
+            }
+
+            generated_documents = adaptation_workflow.legacy_adaptation_generated_documents(paths, "001")
+            review_result = adaptation_workflow.legacy_adaptation_review_result(paths)
+            payload = adaptation_workflow.build_group_outline_plan_request(
+                manifest=manifest,  # type: ignore[arg-type]
+                volume_material=volume_material,  # type: ignore[arg-type]
+                paths=paths,
+            )
+
+        self.assertTrue(generated_documents)
+        self.assertTrue(review_result.payload.passed)
+        self.assertIn("通过", review_result.payload.review_md)
+        self.assertEqual(payload["migration_context"]["mode"], "legacy_group_outline_backfill")
+        self.assertIn("不得要求自适应重分卷", "\n".join(payload["requirements"]))
 
     def test_group_outline_generation_writes_dynamic_group_outlines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

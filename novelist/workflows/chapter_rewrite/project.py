@@ -22,8 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chapter", help="指定处理某一章，例如 0001。")
     parser.add_argument(
         "--run-mode",
-        choices=(RUN_MODE_CHAPTER, RUN_MODE_GROUP, RUN_MODE_VOLUME),
-        help="运行模式：按章节运行、按组运行、按卷运行。",
+        metavar="{group,volume}",
+        help="运行模式：group=按章节组运行，volume=按卷运行；旧值 chapter 会兼容为 group。",
     )
     parser.add_argument(
         "--dry-run",
@@ -121,12 +121,11 @@ def resolve_project_input(
 
 def resolve_run_mode(args: argparse.Namespace) -> str:
     if args.run_mode:
-        return args.run_mode
+        return normalize_rewrite_run_mode(args.run_mode)
     return prompt_choice(
         "请选择运行方式",
         [
-            (RUN_MODE_CHAPTER, "按章节运行"),
-            (RUN_MODE_GROUP, "按组运行"),
+            (RUN_MODE_GROUP, "按章节组运行"),
             (RUN_MODE_VOLUME, "按卷运行"),
         ],
     )
@@ -223,22 +222,6 @@ def select_volume_to_process(
         return volume_dir
     return None
 
-def prompt_next_chapter(next_chapter: str | None) -> bool:
-    if next_chapter is None:
-        print_progress("当前卷没有新的待处理章节了；如需继续，请改用按组运行或按卷运行。")
-        return False
-    if not sys.stdin or not sys.stdin.isatty():
-        print_progress("当前章节已完成；当前环境无法交互确认，程序将退出。")
-        return False
-    choice = prompt_choice(
-        f"当前章节已完成。下一章是 {next_chapter}。请选择后续操作",
-        [
-            ("next", f"继续下一章（{next_chapter}）"),
-            ("exit", "退出程序"),
-        ],
-    )
-    return choice == "next"
-
 def prompt_next_volume(next_volume: Path | None) -> bool:
     if next_volume is None:
         print_progress("本书完整结束。")
@@ -326,7 +309,6 @@ __all__ = [
     'print_volume_readiness_summary',
     'ensure_source_volumes_stable_for_rewrite',
     'select_volume_to_process',
-    'prompt_next_chapter',
     'prompt_next_volume',
     'prompt_next_group',
     'find_next_volume_after',

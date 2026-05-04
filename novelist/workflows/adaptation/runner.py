@@ -20,11 +20,17 @@ def render_dry_run_summary(
     print(f"章节数：{len(volume_material['chapters'])}")
     print(f"补充资料数：{len(volume_material['extras'])}")
     print(f"总字符数：{source_char_count}")
-    print(
-        f"请求模式：资料生成 agent 会话覆盖 {len(plan)} 个目标文档，随后进入卷资料审核；"
-        "卷资料审核通过后继续生成整卷组纲并审核；"
-        "生成和审核阶段都使用 OpenCode 风格本地 transcript，多轮工具调用会重发本阶段上下文与工具历史。"
-    )
+    if needs_legacy_group_outline_backfill(manifest, target_volume.name):
+        print(
+            "请求模式：旧工程已完成卷组纲补齐；不重跑卷资料适配，不触发自适应分卷，"
+            "只生成组纲计划、组纲文件和组纲审核。"
+        )
+    else:
+        print(
+            f"请求模式：资料生成 agent 会话覆盖 {len(plan)} 个目标文档，随后进入卷资料审核；"
+            "卷资料审核通过后继续生成整卷组纲并审核；"
+            "生成和审核阶段都使用 OpenCode 风格本地 transcript，多轮工具调用会重发本阶段上下文与工具历史。"
+        )
     print(f"运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
     print("本次 dry-run 不调用 API，也不会生成文档正文。")
 
@@ -74,6 +80,7 @@ def main() -> int:
             print_progress("已加载已有工程配置，将直接继续上次进度。")
 
         requested_volume = args.volume
+        prepared_source_from: str | None = None
         first_target_volume = select_volume_to_process(volume_dirs, manifest, requested_volume)
         if first_target_volume is None:
             print_progress("所有卷都已处理完成，没有新的卷需要生成。")
@@ -82,12 +89,18 @@ def main() -> int:
         migration_warnings = ensure_project_dirs(Path(manifest["project_root"]))
         for warning in migration_warnings:
             print_progress(warning, error=True)
-        volume_dirs = prepare_source_volumes_for_adaptation(
-            source_root=source_root,
-            manifest=manifest,
-            target_volume=first_target_volume,
-            dry_run=args.dry_run,
-        )
+        rebalance_start_volume = select_source_rebalance_start_volume(volume_dirs, manifest, requested_volume)
+        if rebalance_start_volume is not None:
+            volume_dirs = prepare_source_volumes_for_adaptation(
+                source_root=source_root,
+                manifest=manifest,
+                target_volume=rebalance_start_volume,
+                dry_run=args.dry_run,
+            )
+            prepared_source_from = rebalance_start_volume.name
+        else:
+            manifest["total_volumes"] = len(volume_dirs)
+            save_manifest(manifest)
         first_target_volume = select_volume_to_process(volume_dirs, manifest, requested_volume)
         if first_target_volume is None:
             print_progress("所有卷都已处理完成，没有新的卷需要生成。")
@@ -127,6 +140,21 @@ def main() -> int:
             if target_volume is None:
                 print_progress("所有卷都已处理完成，没有新的卷需要生成。")
                 return 0
+            if (
+                not needs_legacy_group_outline_backfill(manifest, target_volume.name)
+                and (prepared_source_from is None or target_volume.name < prepared_source_from)
+            ):
+                volume_dirs = prepare_source_volumes_for_adaptation(
+                    source_root=source_root,
+                    manifest=manifest,
+                    target_volume=target_volume,
+                    dry_run=False,
+                )
+                prepared_source_from = target_volume.name
+                target_volume = select_volume_to_process(volume_dirs, manifest, target_volume.name)
+                if target_volume is None:
+                    print_progress("所有卷都已处理完成，没有新的卷需要生成。")
+                    return 0
 
             print_progress(f"本次准备处理第 {target_volume.name} 卷。")
             volume_material = load_volume_material(target_volume)
@@ -135,6 +163,82 @@ def main() -> int:
             document_plan = build_document_plan(volume_material["volume_number"])
             planned_calls = len(document_plan)
             paths = stage_paths(Path(manifest["project_root"]), volume_material["volume_number"])
+            if needs_legacy_group_outline_backfill(manifest, volume_material["volume_number"]):
+                print_progress(
+                    f"检测到第 {volume_material['volume_number']} 卷是旧工程已完成卷，"
+                    "但缺少已审核组纲；本次只补齐组纲，不重跑卷资料适配，也不重排参考源分卷。"
+                )
+                generated_documents = legacy_adaptation_generated_documents(paths, volume_material["volume_number"])
+                review_result = legacy_adaptation_review_result(paths)
+                previous_response_id = review_result.response_ids[-1] if review_result.response_ids else None
+                legacy_volume_material = {**volume_material, "legacy_group_outline_backfill": True}
+                prompt_cache_key = build_phase_session_key(manifest, volume_material["volume_number"])
+                stage_shared_prompt = build_stage_shared_prompt(
+                    manifest=manifest,
+                    volume_material=legacy_volume_material,
+                    loaded_files=loaded_files,
+                    source_bundle=source_bundle,
+                    source_char_count=source_char_count,
+                )
+                write_stage_status_snapshot(
+                    manifest,
+                    legacy_volume_material,
+                    status="legacy_group_outline_backfill_started",
+                    note="旧工程卷资料已完成，本阶段只在现有卷边界内补齐组纲计划、组纲和组纲审核。",
+                    total_batches=3,
+                    current_batch=1,
+                    current_batch_range="legacy_group_outline_backfill",
+                    generated_documents=generated_documents,
+                    previous_response_id=previous_response_id,
+                )
+                group_outline_result, previous_response_id = run_group_outline_workflow_until_passed(
+                    client=client,
+                    model=openai_settings["model"],
+                    manifest=manifest,
+                    volume_material=legacy_volume_material,
+                    stage_shared_prompt=stage_shared_prompt,
+                    previous_response_id=previous_response_id,
+                    prompt_cache_key=prompt_cache_key,
+                )
+                paths = mark_volume_processed_after_group_outline_review(
+                    manifest,
+                    legacy_volume_material,
+                    generated_documents=generated_documents,
+                    source_char_count=source_char_count,
+                    loaded_file_count=len(loaded_files),
+                    review_result=review_result,
+                    group_outline_result=group_outline_result,
+                )
+
+                print_progress(f"已补齐旧工程卷组纲：{volume_material['volume_number']}")
+                print_progress(f"工程目录：{manifest['project_root']}")
+                print_progress(f"卷级注入目录：{paths['volume_dir']}")
+                print_progress(f"卷级大纲：{paths['volume_outline']}")
+                print_progress(f"卷资料审核：{paths['adaptation_review']}")
+                print_progress(f"组纲计划：{paths['group_outline_plan']}")
+                print_progress(f"组纲审核：{paths['group_outline_review']}")
+
+                next_volume = find_next_pending_volume_after(
+                    volume_dirs,
+                    manifest,
+                    volume_material["volume_number"],
+                )
+                if args.workflow_controlled:
+                    print_progress("当前旧卷组纲补齐已完成，统一工作流将接管后续调度。")
+                    return 0
+                if run_mode == RUN_MODE_STAGE:
+                    if not prompt_next_stage(next_volume):
+                        return 0
+                    print_progress(f"准备进入下一阶段：第 {next_volume.name} 卷。")
+                    requested_volume = next_volume.name
+                    continue
+
+                if next_volume is None:
+                    print_progress("当前卷之后没有新的待处理卷可继续了。")
+                    return 0
+                print_progress(f"按全书运行，自动进入下一阶段：第 {next_volume.name} 卷。")
+                requested_volume = next_volume.name
+                continue
             resume_state = load_document_generation_resume_state(
                 paths,
                 document_plan,
