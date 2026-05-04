@@ -522,6 +522,7 @@ def run_group_outline_workflow_until_passed(
     prompt_cache_key: str,
 ) -> tuple[GroupOutlineStageResult, str | None]:
     paths = stage_paths(Path(manifest["project_root"]), volume_material["volume_number"])
+    group_outline_prompt_cache_key = f"{prompt_cache_key}-group-outline"
     plan_payload, plan_response_id, response_ids = submit_group_outline_plan(
         client=client,
         model=model,
@@ -530,7 +531,7 @@ def run_group_outline_workflow_until_passed(
         paths=paths,
         stage_shared_prompt=stage_shared_prompt,
         previous_response_id=previous_response_id,
-        prompt_cache_key=f"{prompt_cache_key}-group-outline-plan",
+        prompt_cache_key=group_outline_prompt_cache_key,
     )
     _, generation_response_id, response_ids = run_group_outline_generation_agent(
         client=client,
@@ -540,7 +541,7 @@ def run_group_outline_workflow_until_passed(
         paths=paths,
         stage_shared_prompt=stage_shared_prompt,
         previous_response_id=plan_response_id,
-        prompt_cache_key=f"{prompt_cache_key}-group-outline-generation",
+        prompt_cache_key=group_outline_prompt_cache_key,
         response_ids=response_ids,
     )
     return run_group_outline_review_until_passed(
@@ -551,7 +552,7 @@ def run_group_outline_workflow_until_passed(
         paths=paths,
         stage_shared_prompt=stage_shared_prompt,
         previous_response_id=generation_response_id or plan_response_id,
-        prompt_cache_key=f"{prompt_cache_key}-group-outline-review",
+        prompt_cache_key=group_outline_prompt_cache_key,
         response_ids=response_ids or list(plan_payload.get("response_ids", [])),
     )
 

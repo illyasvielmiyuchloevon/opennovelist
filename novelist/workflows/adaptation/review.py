@@ -161,16 +161,17 @@ def build_adaptation_review_request(
         },
     }
 
-def compact_adaptation_review_previous_response_id(_previous_response_id: str | None) -> None:
-    return None
+def compact_adaptation_review_previous_response_id(previous_response_id: str | None) -> str | None:
+    return previous_response_id
 
 def adaptation_review_compaction_session_status(previous_response_id: str | None) -> str:
     if previous_response_id:
         return (
-            "会话：沿用卷资料审核逻辑会话；已压缩为新的 OpenCode 风格本地 transcript，"
-            f"本次 provider 请求不沿用 previous_response_id={previous_response_id}。"
+            "会话：沿用卷资料适配生成会话进入卷资料审核；"
+            f"本次 provider 请求继续携带 previous_response_id={previous_response_id}，"
+            "并重新组装最新落盘资料文档供审核/返修。"
         )
-    return "会话：卷资料审核逻辑会话；本次以压缩后的最新资料上下文发起本地 agent transcript。"
+    return "会话：卷资料审核逻辑会话；本次以最新资料上下文发起本地 agent transcript。"
 
 def write_adaptation_review_report(
     path: Path,
@@ -386,12 +387,6 @@ def run_adaptation_review_until_passed(
         )
         print_progress(f"卷资料审核第 {attempt}/{MAX_ADAPTATION_REVIEW_ATTEMPTS} 次调用：审核第 {volume_material['volume_number']} 卷资料。")
         request_previous_response_id = compact_adaptation_review_previous_response_id(current_response_id)
-        if current_response_id and request_previous_response_id is None:
-            print_progress(
-                "卷资料审核上下文压缩：保留同一个审核逻辑会话，"
-                f"但本次 provider 请求不沿用 previous_response_id={current_response_id}；"
-                "重新发送稳定前缀、参考源和最新资料文档。"
-            )
         review_payload = build_adaptation_review_request(
             manifest=manifest,
             volume_material=volume_material,

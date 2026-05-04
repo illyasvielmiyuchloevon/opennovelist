@@ -1174,6 +1174,74 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertTrue(adaptation_workflow.group_outline_path(project_root, "001", [f"{index:04d}" for index in range(1, 7)]).exists())
             self.assertTrue(adaptation_workflow.group_outline_path(project_root, "001", [f"{index:04d}" for index in range(7, 15)]).exists())
 
+    def test_group_outline_workflow_reuses_single_cache_key_across_substages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material("001")
+
+            def fake_submit_plan(*args, **kwargs):
+                return {"response_ids": ["resp_group_plan"]}, "resp_group_plan", ["resp_group_plan"]
+
+            def fake_generation(*args, **kwargs):
+                return (
+                    adaptation_workflow.WorkflowSubmissionPayload(summary="整卷组纲生成完成。"),
+                    "resp_group_generation",
+                    [*kwargs["response_ids"], "resp_group_generation"],
+                )
+
+            def fake_review(*args, **kwargs):
+                return (
+                    adaptation_group_outlines_module.GroupOutlineStageResult(
+                        payload=adaptation_workflow.WorkflowSubmissionPayload(
+                            passed=True,
+                            review_md="整卷组纲审核通过。",
+                        ),
+                        response_ids=[*kwargs["response_ids"], "resp_group_review"],
+                        review_path=str(project_root / "review.md"),
+                    ),
+                    "resp_group_review",
+                )
+
+            with (
+                patch.object(
+                    adaptation_group_outlines_module,
+                    "submit_group_outline_plan",
+                    side_effect=fake_submit_plan,
+                ) as plan_call,
+                patch.object(
+                    adaptation_group_outlines_module,
+                    "run_group_outline_generation_agent",
+                    side_effect=fake_generation,
+                ) as generation_call,
+                patch.object(
+                    adaptation_group_outlines_module,
+                    "run_group_outline_review_until_passed",
+                    side_effect=fake_review,
+                ) as review_call,
+            ):
+                result, response_id = adaptation_group_outlines_module.run_group_outline_workflow_until_passed(
+                    client=Mock(),
+                    model="test-model",
+                    manifest=manifest,  # type: ignore[arg-type]
+                    volume_material=volume_material,  # type: ignore[arg-type]
+                    stage_shared_prompt="shared\n",
+                    previous_response_id="resp_adaptation_review",
+                    prompt_cache_key="cache-key",
+                )
+
+            self.assertEqual(response_id, "resp_group_review")
+            self.assertEqual(
+                result.response_ids,
+                ["resp_group_plan", "resp_group_generation", "resp_group_review"],
+            )
+            self.assertEqual(plan_call.call_args.kwargs["previous_response_id"], "resp_adaptation_review")
+            self.assertEqual(generation_call.call_args.kwargs["previous_response_id"], "resp_group_plan")
+            self.assertEqual(review_call.call_args.kwargs["previous_response_id"], "resp_group_generation")
+            self.assertEqual(plan_call.call_args.kwargs["prompt_cache_key"], "cache-key-group-outline")
+            self.assertEqual(generation_call.call_args.kwargs["prompt_cache_key"], "cache-key-group-outline")
+            self.assertEqual(review_call.call_args.kwargs["prompt_cache_key"], "cache-key-group-outline")
+
     def test_group_outline_review_failure_keeps_manifest_unprocessed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -1456,8 +1524,8 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertEqual(agent_call.call_count, 2)
             self.assertEqual(agent_call.call_args_list[0].kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
             self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], adaptation_workflow.COMMON_STAGE_DOCUMENT_INSTRUCTIONS)
-            self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
-            self.assertIsNone(agent_call.call_args_list[1].kwargs["previous_response_id"])
+            self.assertEqual(agent_call.call_args_list[0].kwargs["previous_response_id"], "resp_docs")
+            self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_review_1")
             self.assertTrue(callable(agent_call.call_args_list[0].kwargs["on_tool_result"]))
             self.assertIn("新书主角名已替换", agent_call.call_args_list[1].kwargs["user_input"])
             progress_text = "\n".join(str(call.args[0]) for call in progress_call.call_args_list if call.args)
@@ -1509,23 +1577,25 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertEqual(adaptation_workflow.MAX_ADAPTATION_REVIEW_ATTEMPTS, 5)
             self.assertEqual(adaptation_workflow.MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS, 4)
             self.assertEqual(agent_call.call_count, 5)
-            self.assertTrue(
-                all(call.kwargs["previous_response_id"] is None for call in agent_call.call_args_list)
+            self.assertEqual(
+                [call.kwargs["previous_response_id"] for call in agent_call.call_args_list],
+                ["resp_docs", "resp_review_1", "resp_review_2", "resp_review_3", "resp_review_4"],
             )
 
-    def test_adaptation_review_context_compaction_drops_previous_response_id(self) -> None:
-        self.assertIsNone(
-            adaptation_workflow.compact_adaptation_review_previous_response_id("resp_docs")
+    def test_adaptation_review_context_continues_previous_response_id(self) -> None:
+        self.assertEqual(
+            adaptation_workflow.compact_adaptation_review_previous_response_id("resp_docs"),
+            "resp_docs",
         )
         self.assertIsNone(
             adaptation_workflow.compact_adaptation_review_previous_response_id(None)
         )
         self.assertIn(
-            "沿用卷资料审核逻辑会话",
+            "沿用卷资料适配生成会话进入卷资料审核",
             adaptation_workflow.adaptation_review_compaction_session_status("resp_docs"),
         )
         self.assertIn(
-            "不沿用 previous_response_id=resp_docs",
+            "继续携带 previous_response_id=resp_docs",
             adaptation_workflow.adaptation_review_compaction_session_status("resp_docs"),
         )
 

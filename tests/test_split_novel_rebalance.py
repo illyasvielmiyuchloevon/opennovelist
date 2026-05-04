@@ -137,23 +137,24 @@ class SourceRebalanceTests(unittest.TestCase):
             self.assertNotIn("002", rewrite_manifest["chapter_states"])
             self.assertNotIn("002", rewrite_manifest["group_generation_states"])
 
-    def test_rewrite_guard_stops_when_adaptation_should_rebalance_first(self) -> None:
+    def test_rewrite_guard_does_not_rebalance_or_block_chapter_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source_root = Path(temp_dir) / "source"
             _write_text(source_root / "001" / "0001.txt", "第1章\nlocked\n")
             for index in range(2, 52):
                 _write_text(source_root / "002" / f"{index:04d}.txt", f"第{index}章\n" + ("x" * 4000))
 
-            with (
-                patch.object(rewrite_workflow, "print_progress"),
-                self.assertRaisesRegex(ValueError, "请先运行 novel_adaptation"),
-            ):
+            with patch.object(rewrite_workflow, "print_progress") as progress_call:
                 rewrite_workflow.ensure_source_volumes_stable_for_rewrite(
                     source_root=source_root,
                     project_manifest={"processed_volumes": ["001"]},
                     target_volume=source_root / "002",
                     dry_run=False,
                 )
+
+            self.assertFalse((source_root / "003").exists())
+            progress_text = "\n".join(str(call.args[0]) for call in progress_call.call_args_list if call.args)
+            self.assertIn("章节工作流不执行参考源自适应分卷检查", progress_text)
 
 
 if __name__ == "__main__":

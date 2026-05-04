@@ -174,20 +174,8 @@ def ensure_source_volumes_stable_for_rewrite(
     target_volume: Path,
     dry_run: bool,
 ) -> None:
-    report = rebalance_source_volumes(
-        source_root,
-        start_volume=target_volume.name,
-        locked_volumes=set(project_manifest.get("processed_volumes", [])),
-        dry_run=True,
-    )
-    if report.needed or report.warnings:
-        for line in rebalance_summary_lines(report):
-            print_progress(line, error=bool(report.needed and report.changed and not dry_run))
-    if report.needed and report.changed and not dry_run:
-        fail(
-            "参考源当前卷或后续卷超过自适应分卷预算，章节工作流不会直接重排源卷。"
-            "请先运行 novel_adaptation，让卷资料适配阶段自动重分卷并重跑受影响卷资料。"
-        )
+    _ = (source_root, project_manifest, target_volume, dry_run)
+    print_progress("章节工作流不执行参考源自适应分卷检查；本次以已审核组纲计划和已落盘适配资料为准。")
 
 def select_volume_to_process(
     volume_dirs: list[Path],
