@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 
 from novelist.workflows import novel_adaptation as adaptation_workflow
 from novelist.workflows.adaptation import document_generation as adaptation_document_generation_module
-from novelist.workflows.adaptation import group_outlines as adaptation_group_outlines_module
 from novelist.workflows.adaptation import review as adaptation_review_module
 
 ORIGINAL_ADAPTATION_CALL_DOCUMENT_OPERATION_RESPONSE = adaptation_document_generation_module.call_document_operation_response
@@ -95,7 +94,7 @@ class AdaptationDocumentPlanTests(unittest.TestCase):
 
 
 class AdaptationContextSummaryTests(unittest.TestCase):
-    def test_payload_summary_lists_group_outline_injected_documents(self) -> None:
+    def test_payload_summary_lists_injected_documents(self) -> None:
         payload = {
             "injected_documents": {
                 "world_model": {
@@ -973,7 +972,7 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             self.assertEqual(resume_state["completed_keys"], ["world_model"])
             self.assertEqual(resume_state["last_response_id"], "resp_world")
 
-    def test_stage_outputs_wait_for_review_before_processed(self) -> None:
+    def test_stage_outputs_mark_volume_processed_after_review(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
             manifest = _manifest(project_root)
@@ -1008,44 +1007,14 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
                 review_result=review_result,
             )
 
-            self.assertEqual(manifest["processed_volumes"], [])
-            stage_manifest = paths["stage_manifest"].read_text(encoding="utf-8")
-            self.assertIn('"status": "group_outline_pending"', stage_manifest)
-
-            group = ["0001"]
-            adaptation_workflow.write_group_outline_plan_manifest(
-                project_root,
-                "001",
-                status="passed",
-                groups=[{"chapter_count": 1, "source_chapter_range": "01", "group_title": "测试组", "guidance": "测试。"}],
-                review={"status": "passed", "passed": True},
-            )
-            group_outline = adaptation_workflow.group_outline_path(project_root, "001", group)
-            _write_text(group_outline, "# 0001-0001 组纲\n\n## 0001\n- 写作目标：测试。\n")
-            group_result = adaptation_workflow.GroupOutlineStageResult(
-                payload=adaptation_workflow.WorkflowSubmissionPayload(passed=True, review_md="组纲审核通过。"),
-                response_ids=["resp_group_review"],
-                review_path=str(paths["group_outline_review"]),
-                fix_attempts=0,
-            )
-            adaptation_workflow.mark_volume_processed_after_group_outline_review(
-                manifest,  # type: ignore[arg-type]
-                volume_material,  # type: ignore[arg-type]
-                generated_documents=[{"key": "world_model", "label": "世界模型文档"}],
-                source_char_count=123,
-                loaded_file_count=1,
-                review_result=review_result,
-                group_outline_result=group_result,
-            )
-
             self.assertEqual(manifest["processed_volumes"], ["001"])
             self.assertEqual(manifest["last_processed_volume"], "001")
             stage_manifest = paths["stage_manifest"].read_text(encoding="utf-8")
             self.assertIn('"status": "completed"', stage_manifest)
             self.assertIn('"status": "passed"', stage_manifest)
-            self.assertIn('"group_outline_status": "passed"', stage_manifest)
+            self.assertIn('"adaptation_review"', stage_manifest)
 
-    def test_legacy_processed_volume_without_group_outline_is_selected_for_backfill(self) -> None:
+    def test_legacy_processed_volume_is_not_selected_for_backfill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "source"
@@ -1064,243 +1033,51 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
             requested_legacy_rebalance = adaptation_workflow.select_source_rebalance_start_volume(volume_dirs, manifest, "001")
 
         self.assertIsNotNone(selected)
-        self.assertEqual(selected.name, "001")
+        self.assertEqual(selected.name, "002")
         self.assertIsNotNone(rebalance_start)
         self.assertEqual(rebalance_start.name, "002")
         self.assertIsNone(requested_legacy_rebalance)
 
-    def test_legacy_group_outline_backfill_uses_existing_adaptation_docs(self) -> None:
+    def test_adaptive_chapter_group_plan_is_written_after_review(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
             manifest = _manifest(project_root)
-            manifest["processed_volumes"] = ["001"]
-            paths = _seed_adaptation_docs(project_root, "001")
-            _write_text(paths["adaptation_review"], "# 卷资料审核\n\n通过。\n")
             volume_material = {
                 **_volume_material("001"),
-                "legacy_group_outline_backfill": True,
-            }
-
-            generated_documents = adaptation_workflow.legacy_adaptation_generated_documents(paths, "001")
-            review_result = adaptation_workflow.legacy_adaptation_review_result(paths)
-            payload = adaptation_workflow.build_group_outline_plan_request(
-                manifest=manifest,  # type: ignore[arg-type]
-                volume_material=volume_material,  # type: ignore[arg-type]
-                paths=paths,
-            )
-
-        self.assertTrue(generated_documents)
-        self.assertTrue(review_result.payload.passed)
-        self.assertIn("通过", review_result.payload.review_md)
-        self.assertEqual(payload["migration_context"]["mode"], "legacy_group_outline_backfill")
-        self.assertIn("不得要求自适应重分卷", "\n".join(payload["requirements"]))
-
-    def test_group_outline_generation_writes_dynamic_group_outlines(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_root = Path(temp_dir)
-            manifest = _manifest(project_root)
-            volume_material = _volume_material("001")
-            paths = _seed_adaptation_docs(project_root, "001")
-            adaptation_workflow.write_group_outline_plan_manifest(
-                project_root,
-                "001",
-                status="planned",
-                groups=[
+                "chapters": [
                     {
-                        "chapter_count": 6,
-                        "source_chapter_range": "01-06",
-                        "group_title": "武会后段",
-                        "guidance": "连续强敌与决赛铺垫。",
-                    },
-                    {
-                        "chapter_count": 8,
-                        "source_chapter_range": "07-14",
-                        "group_title": "决赛爆发",
-                        "guidance": "夺冠与各方震动。",
-                    },
-                ],
-            )
-
-            def fake_run_agent_stage(*args, **kwargs):
-                allowed_files = kwargs["allowed_files"]
-                for file_key, path in allowed_files.items():
-                    if file_key == "0001_0006_group_outline":
-                        _write_text(
-                            path,
-                            "# 0001-0006 组纲\n\n"
-                            + "\n\n".join(f"## {index:04d}\n- 写作目标：第 {index:04d} 章。" for index in range(1, 7)),
-                        )
-                    if file_key == "0007_0014_group_outline":
-                        _write_text(
-                            path,
-                            "# 0007-0014 组纲\n\n"
-                            + "\n\n".join(f"## {index:04d}\n- 写作目标：第 {index:04d} 章。" for index in range(7, 15)),
-                        )
-                return _agent_stage_result(
-                    adaptation_workflow.WorkflowSubmissionPayload(
-                        summary="整卷组纲生成完成。",
-                        generated_files=sorted(allowed_files),
-                    ),
-                    "resp_group_generation",
-                )
-
-            with (
-                patch.object(adaptation_group_outlines_module, "run_agent_stage", side_effect=fake_run_agent_stage),
-                patch.object(adaptation_group_outlines_module, "print_adaptation_request_context_summary"),
-            ):
-                submission, response_id, response_ids = adaptation_workflow.run_group_outline_generation_agent(
-                    client=Mock(),
-                    model="test-model",
-                    manifest=manifest,  # type: ignore[arg-type]
-                    volume_material=volume_material,  # type: ignore[arg-type]
-                    paths=paths,
-                    stage_shared_prompt="",
-                    previous_response_id="resp_plan",
-                    prompt_cache_key="cache-key",
-                    response_ids=["resp_plan"],
-                )
-
-            self.assertEqual(response_id, "resp_group_generation")
-            self.assertEqual(response_ids, ["resp_plan", "resp_group_generation"])
-            self.assertIn("0001_0006_group_outline", submission.generated_files)
-            plan = adaptation_workflow.load_group_outline_plan(project_root, "001")
-            self.assertEqual(plan["status"], "review_pending")
-            self.assertEqual(plan["total_groups"], 2)
-            self.assertEqual(plan["total_chapters"], 14)
-            self.assertEqual(
-                [group["chapter_numbers"] for group in plan["groups"]],
-                [[f"{index:04d}" for index in range(1, 7)], [f"{index:04d}" for index in range(7, 15)]],
-            )
-            self.assertTrue(adaptation_workflow.group_outline_path(project_root, "001", [f"{index:04d}" for index in range(1, 7)]).exists())
-            self.assertTrue(adaptation_workflow.group_outline_path(project_root, "001", [f"{index:04d}" for index in range(7, 15)]).exists())
-
-    def test_group_outline_workflow_reuses_single_cache_key_across_substages(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_root = Path(temp_dir)
-            manifest = _manifest(project_root)
-            volume_material = _volume_material("001")
-
-            def fake_submit_plan(*args, **kwargs):
-                return {"response_ids": ["resp_group_plan"]}, "resp_group_plan", ["resp_group_plan"]
-
-            def fake_generation(*args, **kwargs):
-                return (
-                    adaptation_workflow.WorkflowSubmissionPayload(summary="整卷组纲生成完成。"),
-                    "resp_group_generation",
-                    [*kwargs["response_ids"], "resp_group_generation"],
-                )
-
-            def fake_review(*args, **kwargs):
-                return (
-                    adaptation_group_outlines_module.GroupOutlineStageResult(
-                        payload=adaptation_workflow.WorkflowSubmissionPayload(
-                            passed=True,
-                            review_md="整卷组纲审核通过。",
-                        ),
-                        response_ids=[*kwargs["response_ids"], "resp_group_review"],
-                        review_path=str(project_root / "review.md"),
-                    ),
-                    "resp_group_review",
-                )
-
-            with (
-                patch.object(
-                    adaptation_group_outlines_module,
-                    "submit_group_outline_plan",
-                    side_effect=fake_submit_plan,
-                ) as plan_call,
-                patch.object(
-                    adaptation_group_outlines_module,
-                    "run_group_outline_generation_agent",
-                    side_effect=fake_generation,
-                ) as generation_call,
-                patch.object(
-                    adaptation_group_outlines_module,
-                    "run_group_outline_review_until_passed",
-                    side_effect=fake_review,
-                ) as review_call,
-            ):
-                result, response_id = adaptation_group_outlines_module.run_group_outline_workflow_until_passed(
-                    client=Mock(),
-                    model="test-model",
-                    manifest=manifest,  # type: ignore[arg-type]
-                    volume_material=volume_material,  # type: ignore[arg-type]
-                    stage_shared_prompt="shared\n",
-                    previous_response_id="resp_adaptation_review",
-                    prompt_cache_key="cache-key",
-                )
-
-            self.assertEqual(response_id, "resp_group_review")
-            self.assertEqual(
-                result.response_ids,
-                ["resp_group_plan", "resp_group_generation", "resp_group_review"],
-            )
-            self.assertEqual(plan_call.call_args.kwargs["previous_response_id"], "resp_adaptation_review")
-            self.assertEqual(generation_call.call_args.kwargs["previous_response_id"], "resp_group_plan")
-            self.assertEqual(review_call.call_args.kwargs["previous_response_id"], "resp_group_generation")
-            self.assertEqual(plan_call.call_args.kwargs["prompt_cache_key"], "cache-key-group-outline")
-            self.assertEqual(generation_call.call_args.kwargs["prompt_cache_key"], "cache-key-group-outline")
-            self.assertEqual(review_call.call_args.kwargs["prompt_cache_key"], "cache-key-group-outline")
-
-    def test_group_outline_review_failure_keeps_manifest_unprocessed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_root = Path(temp_dir)
-            manifest = _manifest(project_root)
-            volume_material = _volume_material("001")
-            paths = _seed_adaptation_docs(project_root, "001")
-            group = ["0001", "0002"]
-            adaptation_workflow.write_group_outline_plan_manifest(
-                project_root,
-                "001",
-                status="review_pending",
-                groups=[
-                    {
-                        "chapter_count": 2,
-                        "source_chapter_range": "01-02",
-                        "group_title": "测试组",
-                        "guidance": "测试推进。",
+                        "chapter_number": f"{index:04d}",
+                        "text": "x" * 4_000,
                     }
+                    for index in range(1, 10)
                 ],
-            )
-            _write_text(
-                adaptation_workflow.group_outline_path(project_root, "001", group),
-                "# 0001-0002 组纲\n\n## 0001\n- 写作目标：测试。\n\n## 0002\n- 写作目标：测试。\n",
-            )
-            failed_review = adaptation_workflow.WorkflowSubmissionPayload(
-                passed=False,
-                review_md="组纲审核不通过。",
-                blocking_issues=["0002 缺少源功能映射"],
-                rewrite_targets=["0001_0002_group_outline"],
+            }
+            _seed_adaptation_docs(project_root, "001")
+            review_result = adaptation_workflow.AdaptationReviewResult(
+                payload=adaptation_workflow.AdaptationReviewPayload(passed=True, review_md="审核通过。"),
+                response_ids=["resp_review"],
+                review_path=str(project_root / "review.md"),
+                fix_attempts=0,
             )
 
-            with (
-                self.assertRaises(adaptation_workflow.llm_runtime.ModelOutputError),
-                patch.object(adaptation_group_outlines_module, "MAX_ADAPTATION_REVIEW_ATTEMPTS", 1),
-                patch.object(
-                    adaptation_group_outlines_module,
-                    "run_agent_stage",
-                    return_value=_agent_stage_result(failed_review, "resp_group_review"),
-                ),
-                patch.object(adaptation_group_outlines_module, "print_adaptation_request_context_summary"),
-            ):
-                adaptation_workflow.run_group_outline_review_until_passed(
-                    client=Mock(),
-                    model="test-model",
-                    manifest=manifest,  # type: ignore[arg-type]
-                    volume_material=volume_material,  # type: ignore[arg-type]
-                    paths=paths,
-                    stage_shared_prompt="",
-                    previous_response_id="resp_generation",
-                    prompt_cache_key="cache-key",
-                    response_ids=["resp_generation"],
-                )
+            adaptation_workflow.mark_volume_processed_after_review(
+                manifest,  # type: ignore[arg-type]
+                volume_material,  # type: ignore[arg-type]
+                generated_documents=[{"key": "world_model", "label": "世界模型文档"}],
+                source_char_count=36_000,
+                loaded_file_count=9,
+                review_result=review_result,
+            )
 
-            self.assertEqual(manifest["processed_volumes"], [])
-            plan = adaptation_workflow.load_group_outline_plan(project_root, "001")
-            self.assertEqual(plan["status"], "review_pending")
-            self.assertEqual(plan["review"]["status"], "failed")
-            self.assertEqual(plan["review"]["blocking_issues"], ["0002 缺少源功能映射"])
-            self.assertEqual(plan["review"]["rewrite_targets"], ["0001_0002_group_outline"])
+            plan_path = adaptation_workflow.chapter_group_plan_path(project_root, "001")
+            self.assertTrue(plan_path.exists())
+            plan = adaptation_workflow.extract_json_payload(plan_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(plan["status"], "ready")
+        self.assertEqual(
+            [group["chapter_numbers"] for group in plan["groups"]],
+            [["0001", "0002", "0003", "0004", "0005", "0006"], ["0007", "0008", "0009"]],
+        )
 
     def test_review_payload_for_later_volume_includes_existing_style_guide(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

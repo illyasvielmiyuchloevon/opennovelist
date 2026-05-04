@@ -6,7 +6,7 @@ from ._shared import *  # noqa: F401,F403
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "基于 novel_adaptation 产出的工程目录，按已审核组纲计划生成仿写章节、配套状态文档与审核文档，"
+            "基于 novel_adaptation 产出的工程目录，按章节组逐章生成仿写章节、配套状态文档与审核文档，"
             "使用 OpenAI Responses API 与 core 运行时。"
         )
     )
@@ -144,11 +144,6 @@ def assess_volume_readiness(project_root: Path, source_root: Path, volume_number
 
     if not paths["volume_outline"].exists():
         missing.append(f"缺少卷级大纲：{paths['volume_outline'].name}")
-    try:
-        load_group_outline_plan(project_root, volume_number, require_passed=True)
-    except Exception as error:
-        missing.append(str(error))
-
     return {
         "volume_number": volume_number,
         "eligible": not missing,
@@ -175,7 +170,7 @@ def ensure_source_volumes_stable_for_rewrite(
     dry_run: bool,
 ) -> None:
     _ = (source_root, project_manifest, target_volume, dry_run)
-    print_progress("章节工作流不执行参考源自适应分卷检查；本次以已审核组纲计划和已落盘适配资料为准。")
+    print_progress("章节工作流不执行参考源自适应分卷检查；本次以已落盘适配资料和章节组范围为准。")
 
 def select_volume_to_process(
     volume_dirs: list[Path],

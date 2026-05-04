@@ -1,6 +1,78 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from novelist.core.agent_runtime import AgentStageResult, run_agent_stage
+
+
+def _append_unique_response_ids(response_ids: list[str], new_response_ids: list[str]) -> None:
+    for response_id in new_response_ids:
+        value = str(response_id or "").strip()
+        if value and value not in response_ids:
+            response_ids.append(value)
+
+
+def _chapter_agent_allowed_files(paths: dict[str, Path], phase_key: str) -> dict[str, Path]:
+    if phase_key == PHASE1_OUTLINE:
+        return {"chapter_outline": paths["chapter_outline"]}
+    if phase_key == PHASE2_CHAPTER_TEXT:
+        return {"rewritten_chapter": paths["rewritten_chapter"]}
+    if phase_key == PHASE2_SUPPORT_UPDATES:
+        return support_update_target_paths(paths)
+    if phase_key == PHASE3_REVIEW:
+        return {"chapter_review": paths["chapter_review"]}
+    return {}
+
+
+def _run_chapter_agent_stage(
+    *,
+    client: OpenAI,
+    model: str,
+    instructions: str,
+    user_input: str,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    previous_response_id: str | None,
+    prompt_cache_key: str,
+    agent_label: str,
+) -> AgentStageResult:
+    def report_tool(application: Any) -> None:
+        if application.applied is None:
+            print_progress(f"{agent_label} 工具调用未应用：{application.output}", error=True)
+            return
+        changed = ", ".join(application.applied.changed_keys) if application.applied.changed_keys else "无内容变化"
+        print_progress(f"{agent_label} 工具已应用：{application.tool_name}，变更={changed}。")
+
+    result = run_agent_stage(
+        client,
+        model=model,
+        instructions=instructions,
+        user_input=user_input,
+        allowed_files=allowed_files,
+        previous_response_id=previous_response_id,
+        prompt_cache_key=prompt_cache_key,
+        on_tool_result=report_tool,
+    )
+    print_agent_application_summary(
+        result,
+        agent_label=agent_label,
+        no_tool_message=f"{agent_label} 本轮未调用文档工具，直接提交阶段结果。",
+    )
+    print_agent_generation_submission_summary(result, agent_label=agent_label)
+    return result
+
+
+def _submission_content_or_file(
+    submission_text: str,
+    path: Path,
+    *,
+    error_message: str,
+) -> str:
+    content = submission_text.strip()
+    if content:
+        return content
+    content = read_text_if_exists(path).strip()
+    if content:
+        return content
+    raise llm_runtime.ModelOutputError(error_message)
 
 
 def run_chapter_workflow(
@@ -12,6 +84,9 @@ def run_chapter_workflow(
     chapter_number: str,
 ) -> None:
     project_root = Path(rewrite_manifest["project_root"])
+    source_chapter = get_chapter_material(volume_material, chapter_number)
+    if not str(source_chapter.get("text") or "").strip():
+        fail(f"第 {chapter_number} 章参考源正文为空：{source_chapter.get('file_path') or source_chapter.get('file_name')}")
     paths = rewrite_paths(project_root, volume_material["volume_number"], chapter_number)
     paths["chapter_dir"].mkdir(parents=True, exist_ok=True)
     paths["rewritten_volume_dir"].mkdir(parents=True, exist_ok=True)
@@ -32,10 +107,26 @@ def run_chapter_workflow(
         full_plan = full_chapter_workflow_plan()
         if not phase_plan:
             phase_plan = full_plan
+        phase_plan, artifact_rewind_reason = reconcile_chapter_phase_plan_with_artifacts(
+            rewrite_manifest,
+            volume_material["volume_number"],
+            chapter_number,
+            phase_plan,
+        )
+        if artifact_rewind_reason:
+            print_progress(
+                "检测到章节断点状态与落盘产物不一致："
+                f"{artifact_rewind_reason}；本轮重跑计划已调整为 {revision_plan_label(phase_plan)}，"
+                "并重新开始本章响应链。"
+            )
         total_steps = len(phase_plan)
         step_map = {phase: index + 1 for index, phase in enumerate(phase_plan)}
         stage_payload = load_chapter_stage_manifest_payload(paths["chapter_stage_manifest"])
-        if phase_plan != full_plan and isinstance(stage_payload.get("response_ids"), list):
+        if (
+            not artifact_rewind_reason
+            and phase_plan != full_plan
+            and isinstance(stage_payload.get("response_ids"), list)
+        ):
             response_ids = [str(response_id) for response_id in stage_payload["response_ids"] if str(response_id or "").strip()]
             previous_response_id = latest_chapter_stage_response_id(paths["chapter_stage_manifest"])
         else:
@@ -103,21 +194,34 @@ def run_chapter_workflow(
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                     payload=payload,
                     user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                    session_status_line=(
+                        "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                        "后续阶段重新读取落盘文件并重拼最新 payload。"
+                    ),
                 )
-                outline_md, previous_response_id, outline_result = call_markdown_tool_response(
-                    client,
-                    model,
-                    COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
-                    stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                outline_result = _run_chapter_agent_stage(
+                    client=client,
+                    model=model,
+                    instructions=COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                    user_input=phase_user_input,
+                    allowed_files=_chapter_agent_allowed_files(paths, PHASE1_OUTLINE),
                     previous_response_id=previous_response_id,
                     prompt_cache_key=chapter_session_key,
+                    agent_label="章纲生成 agent",
                 )
-                response_ids.append(str(outline_result.response_id or ""))
+                previous_response_id = outline_result.response_id
+                _append_unique_response_ids(response_ids, outline_result.response_ids)
+                outline_md = _submission_content_or_file(
+                    outline_result.submission.content_md,
+                    paths["chapter_outline"],
+                    error_message="章纲生成 agent 未通过 submit_workflow_result 返回 Markdown，也未写入章纲文件。",
+                )
                 chapter_outline_changed = write_artifact(paths["chapter_outline"], outline_md)
                 print_call_artifact_report(
                     f"第 {step_map[PHASE1_OUTLINE]}/{total_steps} 次调用",
                     [("章纲", paths["chapter_outline"])],
-                    ["chapter_outline"] if chapter_outline_changed else [],
+                    sorted(set(agent_changed_keys(outline_result) + (["chapter_outline"] if chapter_outline_changed else []))),
                 )
 
                 remaining = [phase for phase in phase_plan if phase != PHASE1_OUTLINE]
@@ -181,54 +285,57 @@ def run_chapter_workflow(
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                     payload=payload,
                     user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                    session_status_line=(
+                        "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                        "后续阶段重新读取落盘文件并重拼最新 payload。"
+                    ),
                 )
+                phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
                 if chapter_text_revision_mode:
-                    chapter_text_update, previous_response_id, chapter_text_result = call_chapter_text_revision_response(
-                        client,
-                        model,
-                        COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS,
-                        stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-                        previous_response_id=previous_response_id,
-                        prompt_cache_key=chapter_session_key,
-                    )
-                    response_ids.append(str(chapter_text_result.response_id or ""))
-                    applied_chapter_text_update, previous_response_id, repair_response_ids = apply_document_operation_with_repair(
+                    chapter_text_result = _run_chapter_agent_stage(
                         client=client,
                         model=model,
                         instructions=COMMON_CHAPTER_TEXT_REVISION_INSTRUCTIONS,
-                        shared_prompt=stage_shared_prompt,
-                        operation=chapter_text_update,
-                        allowed_files={"rewritten_chapter": paths["rewritten_chapter"]},
+                        user_input=phase_user_input,
+                        allowed_files=_chapter_agent_allowed_files(paths, PHASE2_CHAPTER_TEXT),
                         previous_response_id=previous_response_id,
                         prompt_cache_key=chapter_session_key,
-                        phase_key=PHASE2_CHAPTER_TEXT,
-                        repair_role="章节仿写修订作者",
-                        repair_task="修正上一次正文修订工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
-                        debug_path=paths["chapter_response_debug"],
+                        agent_label="正文修订 agent",
                     )
-                    response_ids.extend(repair_response_ids)
+                    previous_response_id = chapter_text_result.response_id
+                    _append_unique_response_ids(response_ids, chapter_text_result.response_ids)
                     current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
+                    if not current_chapter_text:
+                        raise llm_runtime.ModelOutputError("正文修订 agent 未写入章节正文。")
                     print_call_artifact_report(
                         f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用",
                         [("仿写章节正文", paths["rewritten_chapter"])],
-                        applied_chapter_text_update.changed_keys,
+                        agent_changed_keys(chapter_text_result),
                     )
                 else:
-                    chapter_txt, previous_response_id, chapter_text_result = call_chapter_text_tool_response(
-                        client,
-                        model,
-                        COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
-                        stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                    chapter_text_result = _run_chapter_agent_stage(
+                        client=client,
+                        model=model,
+                        instructions=COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                        user_input=phase_user_input,
+                        allowed_files=_chapter_agent_allowed_files(paths, PHASE2_CHAPTER_TEXT),
                         previous_response_id=previous_response_id,
                         prompt_cache_key=chapter_session_key,
+                        agent_label="正文生成 agent",
                     )
-                    response_ids.append(str(chapter_text_result.response_id or ""))
+                    previous_response_id = chapter_text_result.response_id
+                    _append_unique_response_ids(response_ids, chapter_text_result.response_ids)
+                    chapter_txt = _submission_content_or_file(
+                        chapter_text_result.submission.chapter_txt,
+                        paths["rewritten_chapter"],
+                        error_message="正文生成 agent 未通过 submit_workflow_result 返回章节正文，也未写入正文文件。",
+                    )
                     chapter_text_changed = write_artifact(paths["rewritten_chapter"], chapter_txt)
                     current_chapter_text = chapter_txt
                     print_call_artifact_report(
                         f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用",
                         [("仿写章节正文", paths["rewritten_chapter"])],
-                        ["rewritten_chapter"] if chapter_text_changed else [],
+                        sorted(set(agent_changed_keys(chapter_text_result) + (["rewritten_chapter"] if chapter_text_changed else []))),
                     )
 
                 remaining = [phase for phase in phase_plan if phase not in {PHASE1_OUTLINE, PHASE2_CHAPTER_TEXT}]
@@ -287,33 +394,32 @@ def run_chapter_workflow(
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                     payload=payload,
                     user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                    session_status_line=(
+                        "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                        "后续阶段重新读取落盘文件并重拼最新 payload。"
+                    ),
                 )
-                support_updates, previous_response_id, support_result = call_support_updates_response(
-                    client,
-                    model,
-                    COMMON_SUPPORT_UPDATE_INSTRUCTIONS,
-                    stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
-                    previous_response_id=previous_response_id,
-                    prompt_cache_key=chapter_session_key,
-                )
-                response_ids.append(str(support_result.response_id or ""))
-                applied_updates, previous_response_id, repair_response_ids = apply_document_operation_with_repair(
+                phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                support_result = _run_chapter_agent_stage(
                     client=client,
                     model=model,
                     instructions=COMMON_SUPPORT_UPDATE_INSTRUCTIONS,
-                    shared_prompt=stage_shared_prompt,
-                    operation=support_updates,
-                    allowed_files=support_update_target_paths(paths),
+                    user_input=phase_user_input,
+                    allowed_files=_chapter_agent_allowed_files(paths, PHASE2_SUPPORT_UPDATES),
                     previous_response_id=previous_response_id,
                     prompt_cache_key=chapter_session_key,
-                    phase_key=PHASE2_SUPPORT_UPDATES,
-                    repair_role="连续性编辑与状态维护编辑",
-                    repair_task="修正上一次配套文档更新工具调用中无法定位的 old_text 或 match_text，并重新提交可应用的局部编辑。",
-                    debug_path=paths["chapter_response_debug"],
+                    agent_label="状态文档更新 agent",
                 )
-                response_ids.extend(repair_response_ids)
-                emitted_docs = applied_updates.emitted_keys
-                changed_docs = applied_updates.changed_keys
+                previous_response_id = support_result.response_id
+                _append_unique_response_ids(response_ids, support_result.response_ids)
+                emitted_docs = []
+                changed_docs = agent_changed_keys(support_result)
+                for application in support_result.applications:
+                    if application.applied is None:
+                        continue
+                    for key in application.applied.emitted_keys:
+                        if key not in emitted_docs:
+                            emitted_docs.append(key)
                 print_call_artifact_report(
                     f"第 {step_map[PHASE2_SUPPORT_UPDATES]}/{total_steps} 次调用",
                     [(doc_label_for_key(key), paths[key]) for key in emitted_docs],
@@ -386,21 +492,32 @@ def run_chapter_workflow(
                         dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                         payload=payload,
                         user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                        session_status_line=(
+                            "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                            "后续阶段重新读取落盘文件并重拼最新 payload。"
+                        ),
                     )
-                    chapter_review, previous_response_id, review_result = call_chapter_review_response(
-                        client,
-                        model,
-                        COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
-                        stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2),
+                    phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                    review_result = _run_chapter_agent_stage(
+                        client=client,
+                        model=model,
+                        instructions=COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
+                        user_input=phase_user_input,
+                        allowed_files=_chapter_agent_allowed_files(paths, PHASE3_REVIEW),
                         previous_response_id=previous_response_id,
                         prompt_cache_key=chapter_session_key,
+                        agent_label="章级审核 agent",
                     )
-                    response_ids.append(str(review_result.response_id or ""))
+                    previous_response_id = review_result.response_id
+                    _append_unique_response_ids(response_ids, review_result.response_ids)
+                    chapter_review = finalize_review_payload(review_result.submission, review_kind="chapter")
+                    if chapter_review.passed is None or not chapter_review.review_md.strip():
+                        raise llm_runtime.ModelOutputError("章级审核 agent 未通过 submit_workflow_result 返回完整的 passed / review_md。")
                     chapter_review_changed = write_artifact(paths["chapter_review"], chapter_review.review_md)
                     print_call_artifact_report(
                         f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用",
                         [("章级审核文档", paths["chapter_review"])],
-                        ["chapter_review"] if chapter_review_changed else [],
+                        sorted(set(agent_changed_keys(review_result) + (["chapter_review"] if chapter_review_changed else []))),
                     )
 
                     if chapter_review.passed:
@@ -488,22 +605,37 @@ def run_chapter_workflow(
                         f"第 {chapter_number} 章章级审核未通过，将在审核阶段直接修复。"
                         f" 本轮问题：{'; '.join(chapter_review.blocking_issues) or '见审核文档'}。"
                     )
-                    applied_fix, previous_response_id, fix_response_ids = apply_review_fix_with_repair(
+                    fix_payload = build_review_fix_payload(
+                        review_kind="chapter",
+                        review=chapter_review,
+                        allowed_files=chapter_review_fix_target_paths(paths),
+                    )
+                    fix_payload["latest_work_target"] = latest_work_target(
+                        "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修章级审核指出的问题。必须先调用 write/edit/patch 文档工具提交修改，然后调用 submit_workflow_result 提交返修完成摘要。",
+                        required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
+                    )
+                    fix_user_input = stage_shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2)
+                    fix_result = _run_chapter_agent_stage(
                         client=client,
                         model=model,
-                        review_kind="chapter",
-                        shared_prompt=stage_shared_prompt,
-                        review=chapter_review,
+                        instructions=review_fix_instructions("chapter"),
+                        user_input=fix_user_input,
                         allowed_files=chapter_review_fix_target_paths(paths),
                         previous_response_id=previous_response_id,
                         prompt_cache_key=chapter_session_key,
-                        debug_path=paths["chapter_response_debug"],
+                        agent_label="章级审核返修 agent",
                     )
-                    response_ids.extend(fix_response_ids)
+                    previous_response_id = fix_result.response_id
+                    _append_unique_response_ids(response_ids, fix_result.response_ids)
                     print_call_artifact_report(
                         "章级审核原地返修调用",
-                        [(doc_label_for_key(item.file_key), item.path) for item in applied_fix.files],
-                        applied_fix.changed_keys,
+                        [
+                            (doc_label_for_key(item.file_key), item.path)
+                            for application in fix_result.applications
+                            if application.applied is not None
+                            for item in application.applied.files
+                        ],
+                        agent_changed_keys(fix_result),
                     )
         except Exception as error:
             if isinstance(error, llm_runtime.ModelOutputError):

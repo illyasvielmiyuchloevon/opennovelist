@@ -14,23 +14,6 @@ import novelist.core.openai_config as openai_config
 from novelist.core.files import write_markdown_data
 
 
-def _seed_passed_group_plan(project_root: Path, volume_number: str = "001") -> None:
-    adaptation_workflow.write_group_outline_plan_manifest(
-        project_root,
-        volume_number,
-        status="passed",
-        groups=[
-            {
-                "chapter_count": 1,
-                "source_chapter_range": "01",
-                "group_title": "测试组",
-                "guidance": "测试组纲指导。",
-            }
-        ],
-        review={"status": "passed", "passed": True},
-    )
-
-
 class WorkflowFacadeCompatibilityTests(unittest.TestCase):
     def test_legacy_workflow_modules_delegate_to_split_packages(self) -> None:
         adaptation_package = importlib.import_module("novelist.workflows.adaptation")
@@ -217,9 +200,6 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 },
                 summary_lines=["new_book_title: 测试书"],
             )
-            _seed_passed_group_plan(project_root, "001")
-            _seed_passed_group_plan(project_root, "002")
-
             self.assertEqual(workflow_entry.pending_rewrite_volumes(project_root), ["002"])
 
     def test_pending_adaptation_volumes_reports_unprocessed_source_volumes(self) -> None:
@@ -247,11 +227,9 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 },
                 summary_lines=["new_book_title: 测试书"],
             )
-            _seed_passed_group_plan(project_root, "001")
-
             self.assertEqual(workflow_entry.pending_adaptation_volumes(project_root), ["002", "003"])
 
-    def test_pending_adaptation_volumes_reports_legacy_group_outline_backfill(self) -> None:
+    def test_pending_adaptation_volumes_ignores_already_processed_legacy_volume(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "source"
@@ -275,9 +253,8 @@ class WorkflowCliDetectionTests(unittest.TestCase):
                 summary_lines=["new_book_title: 测试书"],
             )
 
-            self.assertEqual(workflow_entry.pending_group_outline_backfill_volumes(project_root), ["001"])
-            self.assertEqual(workflow_entry.pending_adaptation_volumes(project_root), ["001"])
-            self.assertEqual(workflow_entry.pending_rewrite_volumes(project_root), [])
+            self.assertEqual(workflow_entry.pending_adaptation_volumes(project_root), [])
+            self.assertEqual(workflow_entry.pending_rewrite_volumes(project_root), ["001"])
 
 
 class WorkflowCliArgumentTests(unittest.TestCase):

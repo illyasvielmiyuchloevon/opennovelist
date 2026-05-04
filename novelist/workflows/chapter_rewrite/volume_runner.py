@@ -14,14 +14,49 @@ def process_volume_workflow(
 ) -> tuple[str, Any]:
     run_mode = normalize_rewrite_run_mode(run_mode, warn=False)
     volume_material = {**volume_material, "project_root": rewrite_manifest["project_root"]}
-    while True:
-        if requested_chapter:
-            current_group = find_group_for_chapter(volume_material, requested_chapter)
-            requested_chapter = None
-        else:
-            current_group = next_pending_group(volume_material, rewrite_manifest)
+    manual_requested_chapter = requested_chapter
+    target_group = None
+    if run_mode == RUN_MODE_GROUP:
+        target_group = (
+            find_group_for_chapter(volume_material, requested_chapter)
+            if requested_chapter
+            else next_pending_group(volume_material, rewrite_manifest)
+        )
 
-        if current_group is None:
+    while True:
+        next_chapter = select_next_chapter(
+            rewrite_manifest,
+            volume_material,
+            requested_chapter=manual_requested_chapter,
+            allowed_chapters=target_group if run_mode == RUN_MODE_GROUP else None,
+        )
+        manual_requested_chapter = None
+
+        if next_chapter is None:
+            if run_mode == RUN_MODE_GROUP:
+                if target_group is None:
+                    return ("group", None)
+                if not all_group_chapters_passed(rewrite_manifest, volume_material, target_group):
+                    fail(f"当前组 {target_group[0]}-{target_group[-1]} 仍有章节未完成，但未识别到可处理章节。")
+                if not run_due_five_chapter_reviews(
+                    client=client,
+                    model=model,
+                    rewrite_manifest=rewrite_manifest,
+                    volume_material=volume_material,
+                    target_group=target_group,
+                ):
+                    continue
+                return ("group", next_group_after(volume_material, rewrite_manifest, target_group))
+
+            if not all_chapters_passed(rewrite_manifest, volume_material):
+                fail(f"第 {volume_material['volume_number']} 卷仍有章节未完成，但未识别到可处理章节。")
+            if not run_due_five_chapter_reviews(
+                client=client,
+                model=model,
+                rewrite_manifest=rewrite_manifest,
+                volume_material=volume_material,
+            ):
+                continue
             if run_mode == RUN_MODE_VOLUME:
                 review_passed = run_volume_review(
                     client=client,
@@ -34,28 +69,30 @@ def process_volume_workflow(
                 continue
             return (run_mode, None)
 
-        print_progress(
-            f"准备处理第 {volume_material['volume_number']} 卷 "
-            f"{current_group[0]}-{current_group[-1]} 组（{len(current_group)} 章）。"
-        )
-        run_group_generation_workflow(
+        print_progress(f"准备处理第 {volume_material['volume_number']} 卷第 {next_chapter} 章。")
+        run_chapter_workflow(
             client=client,
             model=model,
             rewrite_manifest=rewrite_manifest,
             volume_material=volume_material,
-            chapter_numbers=current_group,
-        )
-        run_five_chapter_review(
-            client=client,
-            model=model,
-            rewrite_manifest=rewrite_manifest,
-            volume_material=volume_material,
-            chapter_numbers=current_group,
+            chapter_number=next_chapter,
         )
 
-        next_group = next_group_after(volume_material, rewrite_manifest, current_group)
-        if run_mode == RUN_MODE_GROUP:
-            return ("group", next_group)
+        if not run_due_five_chapter_reviews(
+            client=client,
+            model=model,
+            rewrite_manifest=rewrite_manifest,
+            volume_material=volume_material,
+            target_group=target_group if run_mode == RUN_MODE_GROUP else None,
+        ):
+            continue
+
+        if run_mode == RUN_MODE_GROUP and target_group is not None and group_review_passed(
+            rewrite_manifest,
+            volume_material["volume_number"],
+            target_group,
+        ):
+            return ("group", next_group_after(volume_material, rewrite_manifest, target_group))
 
 __all__ = [
     'process_volume_workflow',

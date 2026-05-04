@@ -49,9 +49,44 @@ def rewrite_paths(project_root: Path, volume_number: str, chapter_number: str | 
 
 def build_five_chapter_groups(volume_material: dict[str, Any]) -> list[list[str]]:
     project_root = str(volume_material.get("project_root") or "").strip()
-    if not project_root:
-        fail("缺少工程目录，不能读取动态组纲计划；新流程不再回退到固定五章切组。")
-    return group_plan_groups(Path(project_root), volume_material["volume_number"], require_passed=True)
+    if project_root:
+        planned_groups = load_planned_chapter_groups(Path(project_root), volume_material["volume_number"])
+        if planned_groups:
+            return planned_groups
+    chapter_numbers = [chapter["chapter_number"] for chapter in volume_material["chapters"]]
+    return [
+        chapter_numbers[index : index + FIVE_CHAPTER_REVIEW_SIZE]
+        for index in range(0, len(chapter_numbers), FIVE_CHAPTER_REVIEW_SIZE)
+    ]
+
+def load_planned_chapter_groups(project_root: Path, volume_number: str) -> list[list[str]]:
+    plan_paths = [
+        group_injection_root(project_root, volume_number) / CHAPTER_GROUP_PLAN_MANIFEST_NAME,
+    ]
+    for plan_path in plan_paths:
+        if not plan_path.exists():
+            continue
+        payload = extract_json_payload(plan_path.read_text(encoding="utf-8"))
+        groups = payload.get("groups")
+        if not isinstance(groups, list):
+            fail(f"第 {volume_number} 卷章节组计划格式错误：{plan_path}")
+        planned: list[list[str]] = []
+        next_chapter = 1
+        for group in groups:
+            if not isinstance(group, dict):
+                fail(f"第 {volume_number} 卷章节组计划包含无效分组：{plan_path}")
+            raw_numbers = group.get("chapter_numbers")
+            if isinstance(raw_numbers, list) and raw_numbers:
+                chapter_numbers = [str(item).zfill(4) for item in raw_numbers if str(item).strip()]
+            else:
+                chapter_count = int(group.get("chapter_count") or 0)
+                if chapter_count <= 0:
+                    fail(f"第 {volume_number} 卷章节组计划缺少有效 chapter_count：{plan_path}")
+                chapter_numbers = [f"{number:04d}" for number in range(next_chapter, next_chapter + chapter_count)]
+            next_chapter = int(chapter_numbers[-1]) + 1
+            planned.append(chapter_numbers)
+        return planned
+    return []
 
 def group_source_material(volume_material: dict[str, Any], chapter_numbers: list[str]) -> dict[str, Any]:
     selected_chapters = [get_chapter_material(volume_material, chapter_number) for chapter_number in chapter_numbers]
@@ -71,25 +106,27 @@ def group_source_material(volume_material: dict[str, Any], chapter_numbers: list
     }
 
 def five_chapter_batch_id(chapter_numbers: list[str]) -> str:
-    return group_batch_id(chapter_numbers)
+    if not chapter_numbers:
+        fail("章节组不能为空。")
+    return f"{chapter_numbers[0]}_{chapter_numbers[-1]}"
 
 def group_injection_root(project_root: Path, volume_number: str) -> Path:
-    return planned_group_injection_root(project_root, volume_number)
+    return project_root / GROUP_ROOT_DIRNAME / f"{volume_number}{GROUP_DIR_SUFFIX}"
 
 def group_injection_dir(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
-    return planned_group_injection_dir(project_root, volume_number, chapter_numbers)
+    batch_id = five_chapter_batch_id(chapter_numbers)
+    return group_injection_root(project_root, volume_number) / f"{batch_id}{GROUP_DIR_SUFFIX}"
 
 def five_chapter_review_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
-    return planned_group_review_path(project_root, volume_number, chapter_numbers)
-
-def group_outline_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
-    return planned_group_outline_path(project_root, volume_number, chapter_numbers)
+    group_dir = group_injection_dir(project_root, volume_number, chapter_numbers)
+    return group_dir / f"{five_chapter_batch_id(chapter_numbers)}_group_review.md"
 
 def group_stage_manifest_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
-    return planned_group_stage_manifest_path(project_root, volume_number, chapter_numbers)
+    return group_injection_dir(project_root, volume_number, chapter_numbers) / GROUP_STAGE_MANIFEST_NAME
 
 def group_response_debug_path(project_root: Path, volume_number: str, chapter_numbers: list[str]) -> Path:
-    return planned_group_response_debug_path(project_root, volume_number, chapter_numbers)
+    group_dir = group_injection_dir(project_root, volume_number, chapter_numbers)
+    return group_dir / f"{five_chapter_batch_id(chapter_numbers)}_group_debug.md"
 
 def find_group_for_chapter(volume_material: dict[str, Any], chapter_number: str) -> list[str]:
     normalized = chapter_number.zfill(4)
@@ -102,11 +139,6 @@ def build_chapter_session_key(manifest: dict[str, Any], volume_number: str, chap
     seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|{chapter_number}"
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
     return f"chapter-rewrite-{digest}"
-
-def build_group_generation_session_key(manifest: dict[str, Any], volume_number: str, chapter_numbers: list[str]) -> str:
-    seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|{five_chapter_batch_id(chapter_numbers)}|group-generation"
-    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
-    return f"group-generation-{digest}"
 
 def build_volume_review_session_key(manifest: dict[str, Any], volume_number: str) -> str:
     seed = f"{manifest['project_root']}|{manifest['source_root']}|{volume_number}|volume-review"
@@ -383,14 +415,12 @@ def build_five_chapter_generation_shared_prompt(
             "rewrite_output_root": manifest["rewrite_output_root"],
         },
         "workflow_rules": [
-            "当前任务是动态章节组正文生成阶段：当前组正文和必要状态文档更新属于同一个 agent 阶段。",
-            "当前组只包含本卷 generation_range 中列出的章节；章节组来自已审核组纲计划，不能自行改分组。",
-            "组纲已由卷资料适配阶段生成并审核通过；本阶段只能读取组纲，不得重写、替换或新建独立章纲。",
-            "需要单章规划时，从当前组纲内对应二级标题块读取，而不是读取参考源章节或新的独立章纲目标。",
-            "全局注入是每卷每组都要看的资料；卷级注入只限当前卷；组纲是本组正文生成的直接规划来源。",
+            "当前任务是章节组范围提示；实际生成必须回到单章工作流逐章生成、逐章审核。",
+            "当前组只包含本卷 generation_range 中列出的章节；章节组只决定运行范围，不能自行改分组。",
+            "每章必须使用自己的章纲、参考源章节、卷级注入和全局注入。",
+            "全局注入是每卷每组都要看的资料；卷级注入只限当前卷。",
             "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
-            "章节正文阶段不再读取参考源章节正文；篇幅、节奏、功能映射和章节目标都必须依据已审核组纲、卷纲与全局注入。",
-            "遇到旧审核意见时要吸收有效约束，但最终以已审核组纲和当前目标文件为准。",
+            "遇到旧审核意见时要吸收有效约束，但最终以当前章目标文件为准。",
         ],
     }
     return (
@@ -405,13 +435,9 @@ def build_five_chapter_review_shared_prompt(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
     chapter_numbers: list[str],
+    source_bundle: str,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> str:
-    current_group_outline_path = group_outline_path(
-        Path(manifest["project_root"]),
-        volume_material["volume_number"],
-        chapter_numbers,
-    )
     payload = {
         "project": {
             "new_book_title": manifest["new_book_title"],
@@ -421,15 +447,11 @@ def build_five_chapter_review_shared_prompt(
             "rewrite_output_root": manifest["rewrite_output_root"],
         },
         "workflow_rules": [
-            f"当前任务是{FIVE_CHAPTER_REVIEW_NAME}，只审查当前这一个动态章节组。",
-            "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅、剧情是否偏离已审核组纲、卷纲与全书大纲。",
+            f"当前任务是{FIVE_CHAPTER_REVIEW_NAME}，只审查当前这一个章节组。",
+            "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅、剧情是否偏离参考源、卷纲与全书大纲。",
             "如果审核不通过，必须明确指出需要返工的章节编号。",
         ],
-        "current_group_outline": {
-            "file_name": current_group_outline_path.name,
-            "file_path": str(current_group_outline_path),
-            "content": read_text_if_exists(current_group_outline_path).strip(),
-        },
+        "current_range_source_bundle": source_bundle,
         "rewritten_chapters": rewritten_chapters,
     }
     return (
@@ -448,7 +470,7 @@ def load_relevant_five_chapter_review_docs(
     try:
         group = find_group_for_chapter(material, chapter_number)
     except Exception as error:
-        return [], [], [f"[group] {FIVE_CHAPTER_REVIEW_NAME}：未加载动态组纲计划，当前无相关组审文档。原因：{error}"]
+        return [], [], [f"[group] {FIVE_CHAPTER_REVIEW_NAME}：未识别到当前章节组，当前无相关组审文档。原因：{error}"]
     path = five_chapter_review_path(project_root, volume_material["volume_number"], group)
     content = read_text_if_exists(path).strip()
     label = f"[group] {FIVE_CHAPTER_REVIEW_NAME}（{group[0]}-{group[-1]}）"
@@ -494,17 +516,16 @@ def support_update_target_paths(paths: dict[str, Path]) -> dict[str, Path]:
 __all__ = [
     'rewrite_paths',
     'build_five_chapter_groups',
+    'load_planned_chapter_groups',
     'group_source_material',
     'five_chapter_batch_id',
     'group_injection_root',
     'group_injection_dir',
     'five_chapter_review_path',
-    'group_outline_path',
     'group_stage_manifest_path',
     'group_response_debug_path',
     'find_group_for_chapter',
     'build_chapter_session_key',
-    'build_group_generation_session_key',
     'build_volume_review_session_key',
     'read_doc_catalog',
     'serialize_doc_for_prompt',

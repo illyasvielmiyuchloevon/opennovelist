@@ -365,27 +365,9 @@ def select_volume_to_process(
 
     processed = set(manifest.get("processed_volumes", []))
     for volume_dir in volume_dirs:
-        if needs_legacy_group_outline_backfill(manifest, volume_dir.name):
-            return volume_dir
         if volume_dir.name not in processed:
             return volume_dir
     return None
-
-def group_outline_plan_passed(manifest: dict[str, Any], volume_number: str) -> bool:
-    try:
-        load_group_outline_plan(
-            Path(manifest["project_root"]),
-            str(volume_number).zfill(3),
-            require_passed=True,
-        )
-    except Exception:
-        return False
-    return True
-
-def needs_legacy_group_outline_backfill(manifest: dict[str, Any], volume_number: str) -> bool:
-    normalized = str(volume_number).zfill(3)
-    processed = {str(item).zfill(3) for item in manifest.get("processed_volumes", [])}
-    return normalized in processed and not group_outline_plan_passed(manifest, normalized)
 
 def select_source_rebalance_start_volume(
     volume_dirs: list[Path],
@@ -406,71 +388,6 @@ def select_source_rebalance_start_volume(
             return volume_dir
     return None
 
-def _load_stage_payload_for_legacy_backfill(paths: dict[str, Path]) -> dict[str, Any]:
-    content = read_text_if_exists(paths["stage_manifest"]).strip()
-    if not content:
-        return {}
-    try:
-        return extract_json_payload(content)
-    except Exception:
-        return {}
-
-def legacy_adaptation_generated_documents(
-    paths: dict[str, Path],
-    volume_number: str,
-) -> list[dict[str, Any]]:
-    stage_payload = _load_stage_payload_for_legacy_backfill(paths)
-    api_calls = stage_payload.get("api_calls")
-    if isinstance(api_calls, list) and api_calls:
-        return [item for item in api_calls if isinstance(item, dict)]
-
-    from .prompts import build_document_plan, document_output_path
-
-    generated_documents: list[dict[str, Any]] = []
-    for index, doc_spec in enumerate(build_document_plan(volume_number), start=1):
-        doc_key = str(doc_spec["key"])
-        output_path = document_output_path(paths, doc_key)
-        if not read_text_if_exists(output_path).strip():
-            continue
-        generated_documents.append(
-            {
-                "index": index,
-                "key": doc_key,
-                "label": doc_spec["label"],
-                "response_id": "",
-                "response_ids": [],
-                "output_path": str(output_path),
-                "operation_mode": "legacy_existing_file",
-                "changed": False,
-            }
-        )
-    return generated_documents
-
-def legacy_adaptation_review_result(paths: dict[str, Path]) -> Any:
-    from .models import AdaptationReviewPayload, AdaptationReviewResult
-
-    stage_payload = _load_stage_payload_for_legacy_backfill(paths)
-    review_md = read_text_if_exists(paths["adaptation_review"]).strip()
-    if not review_md:
-        review_md = "旧工程已将当前卷标记为卷资料适配完成；本次只补齐组纲计划、组纲和组纲审核。"
-    review = stage_payload.get("adaptation_review")
-    response_ids: list[str] = []
-    fix_attempts = 0
-    if isinstance(review, dict):
-        raw_response_ids = review.get("response_ids")
-        if isinstance(raw_response_ids, list):
-            response_ids = [str(item) for item in raw_response_ids if str(item).strip()]
-        fix_attempts = int(review.get("fix_attempts") or 0)
-    last_response_id = str(stage_payload.get("last_response_id") or "").strip()
-    if last_response_id and last_response_id not in response_ids:
-        response_ids.append(last_response_id)
-    return AdaptationReviewResult(
-        payload=AdaptationReviewPayload(passed=True, review_md=review_md),
-        response_ids=response_ids,
-        review_path=str(paths["adaptation_review"]),
-        fix_attempts=fix_attempts,
-    )
-
 def find_next_pending_volume_after(
     volume_dirs: list[Path],
     manifest: dict[str, Any],
@@ -483,8 +400,6 @@ def find_next_pending_volume_after(
             if volume_dir.name == current_volume_name:
                 found_current = True
             continue
-        if needs_legacy_group_outline_backfill(manifest, volume_dir.name):
-            return volume_dir
         if volume_dir.name in processed:
             continue
         return volume_dir
@@ -546,8 +461,8 @@ def backup_project_outputs_for_source_rebalance(
     for volume_number in affected:
         candidates = [
             project_root / VOLUME_ROOT_DIRNAME / f"{volume_number}{VOLUME_DIR_SUFFIX}",
-            project_root / "group_injection" / f"{volume_number}_group_injection",
-            project_root / "rewritten_novel" / volume_number,
+            project_root / GROUP_ROOT_DIRNAME / f"{volume_number}{GROUP_DIR_SUFFIX}",
+            project_root / REWRITTEN_ROOT_DIRNAME / volume_number,
         ]
         for source in candidates:
             if not source.exists():
@@ -590,7 +505,6 @@ def clear_rewrite_manifest_after_source_rebalance(
         "chapter_states",
         "volume_review_states",
         "five_chapter_review_states",
-        "group_generation_states",
     ):
         value = rewrite_manifest.get(key)
         if isinstance(value, dict):
@@ -692,8 +606,6 @@ def stage_paths(project_root: Path, volume_number: str) -> dict[str, Path]:
         "world_model": global_dir / GLOBAL_FILE_NAMES["world_model"],
         "volume_outline": volume_dir / f"{volume_number}_volume_outline.md",
         "adaptation_review": volume_dir / f"{volume_number}_adaptation_review.md",
-        "group_outline_plan": group_outline_plan_path(project_root, volume_number),
-        "group_outline_review": group_outline_plan_review_path(project_root, volume_number),
         "source_digest": volume_dir / "00_source_digest.md",
         "stage_manifest": volume_dir / "00_stage_manifest.md",
         "response_debug": volume_dir / "00_last_response_debug.md",
@@ -784,20 +696,12 @@ def write_stage_outputs(
         "volume_files": {
             "volume_outline": str(paths["volume_outline"]),
             "adaptation_review": str(paths["adaptation_review"]),
-            "group_outline_plan": str(paths["group_outline_plan"]),
-            "group_outline_review": str(paths["group_outline_review"]),
             "source_digest": str(paths["source_digest"]),
         },
         "adaptation_review": {
             "status": "pending",
             "review_file": str(paths["adaptation_review"]),
             "note": "资料文档已生成，等待卷资料审核通过后才会标记本卷完成。",
-        },
-        "group_outline_stage": {
-            "status": "pending",
-            "plan_file": str(paths["group_outline_plan"]),
-            "review_file": str(paths["group_outline_review"]),
-            "note": "卷资料审核通过后会继续生成并审核整卷组纲；组纲审核通过后才标记本卷完成。",
         },
         "stage_summary": {
             "processed_volume": volume_material["volume_number"],
@@ -817,11 +721,93 @@ def write_stage_outputs(
             f"global_dir: {paths['global_dir']}",
             f"volume_dir: {paths['volume_dir']}",
             f"adaptation_review: {paths['adaptation_review']}",
-            f"group_outline_plan: {paths['group_outline_plan']}",
         ],
     )
 
     return paths
+
+def chapter_group_plan_root(project_root: Path, volume_number: str) -> Path:
+    return project_root / GROUP_ROOT_DIRNAME / f"{volume_number}{GROUP_DIR_SUFFIX}"
+
+def chapter_group_plan_path(project_root: Path, volume_number: str) -> Path:
+    return chapter_group_plan_root(project_root, volume_number) / CHAPTER_GROUP_PLAN_MANIFEST_NAME
+
+def build_adaptive_chapter_group_plan(volume_material: dict[str, Any]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    current_numbers: list[str] = []
+    current_chars = 0
+    extra_chars = sum(len(str(extra.get("text", ""))) for extra in volume_material.get("extras", []))
+
+    def flush_current() -> None:
+        nonlocal current_numbers, current_chars
+        if not current_numbers:
+            return
+        groups.append(
+            {
+                "chapter_numbers": list(current_numbers),
+                "chapter_count": len(current_numbers),
+                "source_chapter_range": f"{current_numbers[0]}-{current_numbers[-1]}",
+                "source_char_count": current_chars + extra_chars,
+            }
+        )
+        current_numbers = []
+        current_chars = 0
+
+    for chapter in volume_material.get("chapters", []):
+        raw_chapter_number = str(chapter.get("chapter_number") or "").strip()
+        if not raw_chapter_number:
+            continue
+        chapter_number = raw_chapter_number.zfill(4)
+        chapter_chars = len(str(chapter.get("text", "")))
+        projected_chars = current_chars + chapter_chars + extra_chars
+        if current_numbers and (
+            len(current_numbers) >= MAX_CHAPTERS_PER_GROUP
+            or projected_chars > TARGET_CHAPTER_GROUP_SOURCE_CHARS
+        ):
+            flush_current()
+        current_numbers.append(chapter_number)
+        current_chars += chapter_chars
+    flush_current()
+    return groups
+
+def write_chapter_group_plan_manifest(
+    manifest: dict[str, Any],
+    volume_material: dict[str, Any],
+    *,
+    source_char_count: int,
+) -> Path | None:
+    groups = build_adaptive_chapter_group_plan(volume_material)
+    if not groups:
+        return None
+
+    project_root = Path(manifest["project_root"])
+    volume_number = volume_material["volume_number"]
+    plan_path = chapter_group_plan_path(project_root, volume_number)
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": now_iso(),
+        "status": "ready",
+        "volume_number": volume_number,
+        "source_volume_dir": volume_material.get("volume_dir", ""),
+        "target_group_source_chars": TARGET_CHAPTER_GROUP_SOURCE_CHARS,
+        "max_chapters_per_group": MAX_CHAPTERS_PER_GROUP,
+        "source_char_count": source_char_count,
+        "total_groups": len(groups),
+        "total_chapters": sum(int(group["chapter_count"]) for group in groups),
+        "groups": groups,
+    }
+    write_markdown_data(
+        plan_path,
+        title=f"Chapter Group Plan {volume_number}",
+        payload=payload,
+        summary_lines=[
+            "status: ready",
+            f"volume_number: {volume_number}",
+            f"total_groups: {len(groups)}",
+            f"total_chapters: {payload['total_chapters']}",
+        ],
+    )
+    return plan_path
 
 def write_stage_outputs_after_adaptation_review(
     manifest: dict[str, Any],
@@ -834,83 +820,11 @@ def write_stage_outputs_after_adaptation_review(
 ) -> dict[str, Path]:
     project_root = Path(manifest["project_root"])
     paths = stage_paths(project_root, volume_material["volume_number"])
-    review = review_result.payload
-    stage_manifest_payload = {
-        "generated_at": now_iso(),
-        "status": "group_outline_pending",
-        "processed_volume": volume_material["volume_number"],
-        "source_volume_dir": volume_material["volume_dir"],
-        "request_mode": "per_document_function_call_with_volume_session_with_volume_review_pending_group_outline",
-        "api_calls": generated_documents,
-        "loaded_file_count": loaded_file_count,
-        "source_char_count": source_char_count,
-        "generated_document_keys": [item.get("key") for item in generated_documents],
-        "global_files": {
-            key: str(paths[key])
-            for key in ("book_outline", "style_guide", "world_model", "foreshadowing")
-            if paths[key].exists()
-        },
-        "volume_files": {
-            "volume_outline": str(paths["volume_outline"]),
-            "adaptation_review": str(paths["adaptation_review"]),
-            "group_outline_plan": str(paths["group_outline_plan"]),
-            "group_outline_review": str(paths["group_outline_review"]),
-            "source_digest": str(paths["source_digest"]),
-        },
-        "adaptation_review": {
-            "status": "passed" if review.passed else "failed",
-            "passed": review.passed,
-            "review_file": review_result.review_path,
-            "response_ids": review_result.response_ids,
-            "fix_attempts": review_result.fix_attempts,
-            "blocking_issues": review.blocking_issues,
-            "rewrite_targets": review.rewrite_targets,
-        },
-        "group_outline_stage": {
-            "status": "pending",
-            "plan_file": str(paths["group_outline_plan"]),
-            "review_file": str(paths["group_outline_review"]),
-            "note": "卷资料审核已通过，等待整卷组纲生成与组纲审核。",
-        },
-        "stage_summary": {
-            "processed_volume": volume_material["volume_number"],
-            "generated_documents": [item.get("label") for item in generated_documents],
-            "loaded_file_count": loaded_file_count,
-            "source_char_count": source_char_count,
-            "adaptation_review_status": "passed" if review.passed else "failed",
-            "group_outline_status": "pending",
-        },
-    }
-    write_markdown_data(
-        paths["stage_manifest"],
-        title=f"Stage Manifest {volume_material['volume_number']}",
-        payload=stage_manifest_payload,
-        summary_lines=[
-            "status: group_outline_pending",
-            f"processed_volume: {volume_material['volume_number']}",
-            "request_mode: per_document_function_call_with_volume_session_with_volume_review_pending_group_outline",
-            f"global_dir: {paths['global_dir']}",
-            f"volume_dir: {paths['volume_dir']}",
-            f"adaptation_review: {paths['adaptation_review']}",
-            f"group_outline_plan: {paths['group_outline_plan']}",
-        ],
+    chapter_group_plan = write_chapter_group_plan_manifest(
+        manifest,
+        volume_material,
+        source_char_count=source_char_count,
     )
-
-    return paths
-
-
-def mark_volume_processed_after_group_outline_review(
-    manifest: dict[str, Any],
-    volume_material: dict[str, Any],
-    *,
-    generated_documents: list[dict[str, Any]],
-    source_char_count: int,
-    loaded_file_count: int,
-    review_result: AdaptationReviewResult,
-    group_outline_result: Any,
-) -> dict[str, Path]:
-    project_root = Path(manifest["project_root"])
-    paths = stage_paths(project_root, volume_material["volume_number"])
     processed = set(manifest.get("processed_volumes", []))
     processed.add(volume_material["volume_number"])
     manifest["processed_volumes"] = sorted(processed)
@@ -918,14 +832,12 @@ def mark_volume_processed_after_group_outline_review(
     save_manifest(manifest)
 
     review = review_result.payload
-    group_review = group_outline_result.payload
-    group_plan = load_group_outline_plan(project_root, volume_material["volume_number"], require_passed=True)
     stage_manifest_payload = {
         "generated_at": now_iso(),
         "status": "completed",
         "processed_volume": volume_material["volume_number"],
         "source_volume_dir": volume_material["volume_dir"],
-        "request_mode": "per_document_function_call_with_volume_session_with_volume_review_and_group_outlines",
+        "request_mode": "per_document_function_call_with_volume_session_with_volume_review",
         "api_calls": generated_documents,
         "loaded_file_count": loaded_file_count,
         "source_char_count": source_char_count,
@@ -938,10 +850,9 @@ def mark_volume_processed_after_group_outline_review(
         "volume_files": {
             "volume_outline": str(paths["volume_outline"]),
             "adaptation_review": str(paths["adaptation_review"]),
-            "group_outline_plan": str(paths["group_outline_plan"]),
-            "group_outline_review": str(paths["group_outline_review"]),
             "source_digest": str(paths["source_digest"]),
         },
+        "chapter_group_plan": str(chapter_group_plan) if chapter_group_plan is not None else "",
         "adaptation_review": {
             "status": "passed" if review.passed else "failed",
             "passed": review.passed,
@@ -951,27 +862,13 @@ def mark_volume_processed_after_group_outline_review(
             "blocking_issues": review.blocking_issues,
             "rewrite_targets": review.rewrite_targets,
         },
-        "group_outline_stage": {
-            "status": "passed" if group_review.passed else "failed",
-            "passed": group_review.passed,
-            "plan_file": str(paths["group_outline_plan"]),
-            "review_file": group_outline_result.review_path,
-            "response_ids": group_outline_result.response_ids,
-            "fix_attempts": group_outline_result.fix_attempts,
-            "blocking_issues": group_review.blocking_issues,
-            "rewrite_targets": group_review.rewrite_targets,
-            "total_groups": group_plan.get("total_groups"),
-            "total_chapters": group_plan.get("total_chapters"),
-        },
         "stage_summary": {
             "processed_volume": volume_material["volume_number"],
             "generated_documents": [item.get("label") for item in generated_documents],
             "loaded_file_count": loaded_file_count,
             "source_char_count": source_char_count,
             "adaptation_review_status": "passed" if review.passed else "failed",
-            "group_outline_status": "passed" if group_review.passed else "failed",
-            "total_groups": group_plan.get("total_groups"),
-            "total_chapters": group_plan.get("total_chapters"),
+            "chapter_group_plan": str(chapter_group_plan) if chapter_group_plan is not None else "",
         },
     }
     write_markdown_data(
@@ -981,12 +878,10 @@ def mark_volume_processed_after_group_outline_review(
         summary_lines=[
             "status: completed",
             f"processed_volume: {volume_material['volume_number']}",
-            "request_mode: per_document_function_call_with_volume_session_with_volume_review_and_group_outlines",
+            "request_mode: per_document_function_call_with_volume_session_with_volume_review",
             f"global_dir: {paths['global_dir']}",
             f"volume_dir: {paths['volume_dir']}",
             f"adaptation_review: {paths['adaptation_review']}",
-            f"group_outline_plan: {paths['group_outline_plan']}",
-            f"group_outline_review: {paths['group_outline_review']}",
         ],
     )
 
@@ -1027,11 +922,7 @@ __all__ = [
     'resolve_protagonist_mode',
     'init_or_load_project',
     'select_volume_to_process',
-    'group_outline_plan_passed',
-    'needs_legacy_group_outline_backfill',
     'select_source_rebalance_start_volume',
-    'legacy_adaptation_generated_documents',
-    'legacy_adaptation_review_result',
     'find_next_pending_volume_after',
     'append_source_rebalance_history',
     'backup_project_outputs_for_source_rebalance',
@@ -1042,7 +933,10 @@ __all__ = [
     'stage_paths',
     'write_source_inventory_snapshot',
     'write_stage_outputs',
+    'chapter_group_plan_root',
+    'chapter_group_plan_path',
+    'build_adaptive_chapter_group_plan',
+    'write_chapter_group_plan_manifest',
     'write_stage_outputs_after_adaptation_review',
     'mark_volume_processed_after_review',
-    'mark_volume_processed_after_group_outline_review',
 ]

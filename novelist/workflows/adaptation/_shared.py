@@ -33,23 +33,6 @@ from novelist.workflows.split_novel import (
     rebalance_source_volumes,
     rebalance_summary_lines,
 )
-from novelist.core.group_outline_plan import (
-    GROUP_DIR_SUFFIX,
-    GROUP_OUTLINE_PLAN_MANIFEST_NAME,
-    GROUP_ROOT_DIRNAME,
-    group_batch_id,
-    group_injection_dir,
-    group_injection_root,
-    group_outline_docs_from_plan,
-    group_outline_path,
-    group_outline_plan_path,
-    group_outline_plan_review_path,
-    group_plan_groups,
-    group_review_path,
-    load_group_outline_plan,
-    validate_group_outline_files,
-    write_group_outline_plan_manifest,
-)
 
 
 PROJECT_MANIFEST_NAME = "00_project_manifest.md"
@@ -61,6 +44,12 @@ LEGACY_GLOBAL_CONFIG_PATH = LEGACY_GLOBAL_CONFIG_DIR / "config.json"
 GLOBAL_DIRNAME = "global_injection"
 VOLUME_ROOT_DIRNAME = "volume_injection"
 VOLUME_DIR_SUFFIX = "_volume_injection"
+GROUP_ROOT_DIRNAME = "group_injection"
+GROUP_DIR_SUFFIX = "_group_injection"
+REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
+CHAPTER_GROUP_PLAN_MANIFEST_NAME = "00_chapter_group_plan.md"
+TARGET_CHAPTER_GROUP_SOURCE_CHARS = 24_000
+MAX_CHAPTERS_PER_GROUP = 8
 GLOBAL_FILE_NAMES = {
     # Compatibility alias: the former world_design document is now merged into
     # the canonical world_model document.
@@ -136,10 +125,6 @@ COMMON_STAGE_TOOL_OUTPUT_RULE = (
     "必须使用 write/edit/patch 文档工具，不要调用 submit_workflow_result。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_generation_agent 时，"
     "可以多次调用 write/edit/patch 写入所有目标文件，全部完成后必须调用 submit_workflow_result 结束阶段。"
-    "当 Dynamic Request 中的 document_request.phase=volume_group_outline_generation 时，"
-    "必须使用 write/edit/patch 写入当前卷全部组纲文件，最后调用 submit_workflow_result。"
-    "当 Dynamic Request 中的 document_request.phase=volume_group_outline_review 时，"
-    "可以先调用 write/edit/patch 原地修复组纲，最终必须使用 submit_workflow_result 提交 passed/review_md/blocking_issues/rewrite_targets。"
 )
 COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"

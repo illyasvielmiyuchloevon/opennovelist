@@ -103,7 +103,6 @@ class SourceRebalanceTests(unittest.TestCase):
                     "last_processed_volume": "001",
                     "last_processed_chapter": "0001",
                     "chapter_states": {"002": {"0002": {"status": "passed"}}},
-                    "group_generation_states": {"002": {"0002_0006": {"status": "passed"}}},
                     "five_chapter_review_states": {"002": {"0002_0006": {"status": "passed"}}},
                     "volume_review_states": {"002": {"status": "passed"}},
                 },
@@ -135,7 +134,7 @@ class SourceRebalanceTests(unittest.TestCase):
             self.assertGreater(manifest["total_volumes"], 2)
             rewrite_manifest = extract_json_payload(rewrite_manifest_path.read_text(encoding="utf-8"))
             self.assertNotIn("002", rewrite_manifest["chapter_states"])
-            self.assertNotIn("002", rewrite_manifest["group_generation_states"])
+            self.assertNotIn("002", rewrite_manifest["five_chapter_review_states"])
 
     def test_rewrite_guard_does_not_rebalance_or_block_chapter_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1152,6 +1152,29 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
 
             self.assertEqual(result.response_id, "resp_submit")
             self.assertEqual(target.read_text(encoding="utf-8").strip(), "工具写入正文。")
+            self.assertIsNotNone(result.transcript_state)
+            assert result.transcript_state is not None
+            self.assertIsNotNone(result.transcript_state.responses_transcript)
+            final_transcript = result.transcript_state.responses_transcript
+            assert final_transcript is not None
+            self.assertTrue(
+                any(
+                    item.get("type") == "function_call"
+                    and item.get("call_id") == "call_submit"
+                    and item.get("name") == workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME
+                    for item in final_transcript
+                    if isinstance(item, dict)
+                )
+            )
+            self.assertTrue(
+                any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call_submit"
+                    and '"tool": "submit_workflow_result"' in str(item.get("output") or "")
+                    for item in final_transcript
+                    if isinstance(item, dict)
+                )
+            )
             self.assertEqual(len(calls), 2)
             self.assertIsInstance(calls[0]["user_input"], list)
             self.assertIsNone(calls[0]["previous_response_id"])
@@ -1186,6 +1209,44 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
                     if isinstance(item, dict)
                 )
             )
+            followup_submit = llm_runtime.MultiFunctionToolResult(
+                tool_name=workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME,
+                parsed=workflow_tools.WorkflowSubmissionPayload(summary="后续完成。"),
+                response_id="resp_followup",
+                status="completed",
+                output_types=["function_call"],
+                preview="followup",
+                raw_body_text="",
+                raw_json={},
+                call_id="call_followup",
+                raw_arguments="{}",
+            )
+            calls.clear()
+
+            def fake_followup_call_function_tools(*args, **kwargs):
+                calls.append(dict(kwargs))
+                return followup_submit
+
+            with patch.object(agent_runtime.llm_runtime, "call_function_tools", side_effect=fake_followup_call_function_tools):
+                followup = agent_runtime.run_agent_stage(
+                    client,  # type: ignore[arg-type]
+                    model="test-model",
+                    instructions="instructions",
+                    user_input="next request",
+                    allowed_files={"target": target},
+                    retries=1,
+                    transcript_state=result.transcript_state,
+                )
+
+            self.assertEqual(followup.response_id, "resp_followup")
+            self.assertEqual(len(calls), 1)
+            self.assertIsNone(calls[0]["previous_response_id"])
+            followup_input = calls[0]["user_input"]
+            assert isinstance(followup_input, list)
+            serialized_followup = json.dumps(followup_input, ensure_ascii=False)
+            self.assertIn("initial request", serialized_followup)
+            self.assertIn("next request", serialized_followup)
+            self.assertIn("call_submit", serialized_followup)
 
     def test_compatible_database_internal_server_error_aborts_immediately(self) -> None:
         request = httpx.Request("POST", "https://example.com/v1/chat/completions")

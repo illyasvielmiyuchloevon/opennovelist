@@ -144,7 +144,7 @@ def main() -> int:
             effective_skip_adaptation, effective_skip_rewrite = effective_stage_skips(args, workflow_scope)
             if workflow_scope == WORKFLOW_SCOPE_CONTINUE_ADAPTATION and adaptation_backlog_volumes:
                 print_progress(
-                    "统一工作流将续跑资料适配/补组纲断点，当前轮次暂时不进入章节重写："
+                    "统一工作流将续跑资料适配断点，当前轮次暂时不进入章节重写："
                     + "、".join(adaptation_backlog_volumes)
                 )
             elif workflow_scope == WORKFLOW_SCOPE_CONTINUE_INTERRUPTED and rewrite_backlog_volumes:

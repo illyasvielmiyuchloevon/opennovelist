@@ -52,7 +52,6 @@ def init_or_load_rewrite_manifest(
     if existing is not None:
         existing["total_volumes"] = len(volume_dirs)
         existing["rewrite_output_root"] = str(project_root / REWRITTEN_ROOT_DIRNAME)
-        existing.setdefault("group_generation_states", {})
         save_rewrite_manifest(existing)
         return existing
 
@@ -70,7 +69,6 @@ def init_or_load_rewrite_manifest(
         "last_processed_volume": None,
         "last_processed_chapter": None,
         "chapter_states": {},
-        "group_generation_states": {},
         "volume_review_states": {},
         "five_chapter_review_states": {},
     }
@@ -267,6 +265,42 @@ def chapter_pending_phase_plan(
         return full_chapter_workflow_plan()
     return full_chapter_workflow_plan()
 
+def reconcile_chapter_phase_plan_with_artifacts(
+    manifest: dict[str, Any],
+    volume_number: str,
+    chapter_number: str,
+    phase_plan: list[str],
+) -> tuple[list[str], str | None]:
+    normalized = normalize_phase_plan(phase_plan)
+    if not normalized:
+        return full_chapter_workflow_plan(), None
+
+    project_root = Path(manifest["project_root"])
+    paths = rewrite_paths(project_root, volume_number, chapter_number)
+    needs_outline = any(
+        phase in normalized
+        for phase in (PHASE2_CHAPTER_TEXT, PHASE2_SUPPORT_UPDATES, PHASE3_REVIEW)
+    )
+    if PHASE1_OUTLINE not in normalized and needs_outline and not read_text_if_exists(paths["chapter_outline"]).strip():
+        return (
+            full_chapter_workflow_plan(),
+            f"断点计划从 {normalized[0]} 继续，但缺少章纲文件 {paths['chapter_outline'].name}",
+        )
+
+    needs_chapter_text = any(phase in normalized for phase in (PHASE2_SUPPORT_UPDATES, PHASE3_REVIEW))
+    if (
+        PHASE2_CHAPTER_TEXT not in normalized
+        and needs_chapter_text
+        and not read_text_if_exists(paths["rewritten_chapter"]).strip()
+    ):
+        repaired = merge_phase_plans([PHASE2_CHAPTER_TEXT], normalized)
+        return (
+            repaired,
+            f"断点计划从 {normalized[0]} 继续，但缺少章节正文文件 {paths['rewritten_chapter'].name}",
+        )
+
+    return normalized, None
+
 def get_volume_review_state(manifest: dict[str, Any], volume_number: str) -> dict[str, Any]:
     review_states = manifest.setdefault("volume_review_states", {})
     return review_states.setdefault(
@@ -292,51 +326,6 @@ def update_volume_review_state(
     state["updated_at"] = now_iso()
     save_rewrite_manifest(manifest)
     return state
-
-def get_group_generation_state(
-    manifest: dict[str, Any],
-    volume_number: str,
-    batch_id: str,
-    chapter_numbers: list[str],
-) -> dict[str, Any]:
-    generation_states = manifest.setdefault("group_generation_states", {})
-    volume_states = generation_states.setdefault(volume_number, {})
-    return volume_states.setdefault(
-        batch_id,
-        {
-            "status": "pending",
-            "attempts": 0,
-            "chapter_numbers": list(chapter_numbers),
-            "group_outline_path": "",
-            "updated_at": None,
-            "response_ids": [],
-            "last_response_id": None,
-            "blocking_issues": [],
-        },
-    )
-
-def update_group_generation_state(
-    manifest: dict[str, Any],
-    volume_number: str,
-    batch_id: str,
-    chapter_numbers: list[str],
-    **updates: Any,
-) -> dict[str, Any]:
-    state = get_group_generation_state(manifest, volume_number, batch_id, chapter_numbers)
-    state.update({key: value for key, value in updates.items() if value is not None})
-    state["chapter_numbers"] = list(chapter_numbers)
-    state["updated_at"] = now_iso()
-    save_rewrite_manifest(manifest)
-    return state
-
-def group_generation_passed(
-    manifest: dict[str, Any],
-    volume_number: str,
-    chapter_numbers: list[str],
-) -> bool:
-    batch_id = five_chapter_batch_id(chapter_numbers)
-    state = get_group_generation_state(manifest, volume_number, batch_id, chapter_numbers)
-    return state.get("status") == "passed"
 
 def get_five_chapter_review_state(
     manifest: dict[str, Any],
@@ -393,23 +382,52 @@ def mark_five_chapter_group_pending_for_chapter(
             blocking_issues=[],
         )
 
+def chapter_artifacts_complete(
+    manifest: dict[str, Any],
+    volume_number: str,
+    chapter_number: str,
+) -> bool:
+    project_root = Path(manifest["project_root"])
+    paths = rewrite_paths(project_root, volume_number, chapter_number)
+    required_paths = [
+        paths["chapter_outline"],
+        paths["rewritten_chapter"],
+        paths["chapter_review"],
+    ]
+    return all(read_text_if_exists(path).strip() for path in required_paths)
+
+def chapter_is_passed_and_complete(
+    manifest: dict[str, Any],
+    volume_number: str,
+    chapter_number: str,
+) -> bool:
+    state = get_chapter_state(manifest, volume_number, chapter_number)
+    return state.get("status") == "passed" and chapter_artifacts_complete(
+        manifest,
+        volume_number,
+        chapter_number,
+    )
+
 def all_group_chapters_passed(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
     chapter_numbers: list[str],
 ) -> bool:
     for chapter_number in chapter_numbers:
-        state = get_chapter_state(manifest, volume_material["volume_number"], chapter_number)
-        if state.get("status") != "passed":
+        if not chapter_is_passed_and_complete(
+            manifest,
+            volume_material["volume_number"],
+            chapter_number,
+        ):
             return False
     return True
 
 def next_pending_group(volume_material: dict[str, Any], manifest: dict[str, Any]) -> list[str] | None:
-    groups = group_plan_groups(Path(manifest["project_root"]), volume_material["volume_number"], require_passed=True)
+    groups = build_five_chapter_groups({**volume_material, "project_root": manifest["project_root"]})
     for group in groups:
         batch_id = five_chapter_batch_id(group)
         state = get_five_chapter_review_state(manifest, volume_material["volume_number"], batch_id, group)
-        if state.get("status") != "passed":
+        if not all_group_chapters_passed(manifest, volume_material, group) or state.get("status") != "passed":
             return group
     return None
 
@@ -420,7 +438,7 @@ def current_due_group_review(
     group = next_pending_group(volume_material, manifest)
     if group is None:
         return None
-    if not group_generation_passed(manifest, volume_material["volume_number"], group):
+    if not all_group_chapters_passed(manifest, volume_material, group):
         return None
     return group
 
@@ -438,14 +456,18 @@ def next_group_after(
     manifest: dict[str, Any],
     current_group: list[str],
 ) -> list[str] | None:
-    groups = group_plan_groups(Path(manifest["project_root"]), volume_material["volume_number"], require_passed=True)
+    groups = build_five_chapter_groups({**volume_material, "project_root": manifest["project_root"]})
     found_current = False
     for group in groups:
         if not found_current:
             if group == current_group:
                 found_current = True
             continue
-        if not group_review_passed(manifest, volume_material["volume_number"], group):
+        if not all_group_chapters_passed(manifest, volume_material, group) or not group_review_passed(
+            manifest,
+            volume_material["volume_number"],
+            group,
+        ):
             return group
     return None
 
@@ -470,31 +492,45 @@ def select_next_chapter(
     review_state = get_volume_review_state(manifest, volume_material["volume_number"])
     revision_targets = [item.zfill(4) for item in review_state.get("chapters_to_revise", []) if item]
     for chapter_number in revision_targets:
-        if chapter_number in available and (allowed is None or chapter_number in allowed) and volume_state.get(chapter_number, {}).get("status") != "passed":
+        if chapter_number in available and (allowed is None or chapter_number in allowed) and not chapter_is_passed_and_complete(
+            manifest,
+            volume_material["volume_number"],
+            chapter_number,
+        ):
             return chapter_number
 
     five_review_states = manifest.get("five_chapter_review_states", {}).get(volume_material["volume_number"], {})
-    groups = group_plan_groups(Path(manifest["project_root"]), volume_material["volume_number"], require_passed=True)
+    groups = build_five_chapter_groups({**volume_material, "project_root": manifest["project_root"]})
     for group in groups:
         batch_id = five_chapter_batch_id(group)
         state = five_review_states.get(batch_id, {})
         for chapter_number in [item.zfill(4) for item in state.get("chapters_to_revise", []) if item]:
-            if chapter_number in available and (allowed is None or chapter_number in allowed) and volume_state.get(chapter_number, {}).get("status") != "passed":
+            if chapter_number in available and (allowed is None or chapter_number in allowed) and not chapter_is_passed_and_complete(
+                manifest,
+                volume_material["volume_number"],
+                chapter_number,
+            ):
                 return chapter_number
 
     for chapter in volume_material["chapters"]:
         chapter_number = chapter["chapter_number"]
         if allowed is not None and chapter_number not in allowed:
             continue
-        state = volume_state.get(chapter_number, {})
-        if state.get("status") != "passed":
+        if not chapter_is_passed_and_complete(
+            manifest,
+            volume_material["volume_number"],
+            chapter_number,
+        ):
             return chapter_number
     return None
 
 def all_chapters_passed(manifest: dict[str, Any], volume_material: dict[str, Any]) -> bool:
     for chapter in volume_material["chapters"]:
-        state = get_chapter_state(manifest, volume_material["volume_number"], chapter["chapter_number"])
-        if state.get("status") != "passed":
+        if not chapter_is_passed_and_complete(
+            manifest,
+            volume_material["volume_number"],
+            chapter["chapter_number"],
+        ):
             return False
     return True
 
@@ -515,14 +551,14 @@ __all__ = [
     'build_multi_chapter_revision_plan',
     'rewrite_targets_for_chapter',
     'chapter_pending_phase_plan',
+    'reconcile_chapter_phase_plan_with_artifacts',
     'get_volume_review_state',
     'update_volume_review_state',
-    'get_group_generation_state',
-    'update_group_generation_state',
-    'group_generation_passed',
     'get_five_chapter_review_state',
     'update_five_chapter_review_state',
     'mark_five_chapter_group_pending_for_chapter',
+    'chapter_artifacts_complete',
+    'chapter_is_passed_and_complete',
     'all_group_chapters_passed',
     'next_pending_group',
     'current_due_group_review',

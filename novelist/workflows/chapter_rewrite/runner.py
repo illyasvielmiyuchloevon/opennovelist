@@ -104,12 +104,12 @@ def main() -> int:
                 print_progress("当前没有新的可处理卷。")
                 return 0
 
-            volume_material = load_volume_index(current_volume)
+            volume_material = load_volume_material(current_volume)
             print_progress(
-                f"已扫描第 {current_volume.name} 卷："
+                f"已加载第 {current_volume.name} 卷真实参考源："
                 f"{len(volume_material['chapters'])} 个章节文件，"
                 f"{len(volume_material['extras'])} 个补充文件；"
-                "章节组来自已审核组纲计划；组生成/组审不再读取参考源章节正文。"
+                "章节组仅作为运行范围；组内回到单章工作流逐章生成与审核。"
             )
             completed_scope, next_target = process_volume_workflow(
                 client=client,

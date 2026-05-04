@@ -1,190 +1,86 @@
 # Novel Workflow Toolkit
 
-一套面向中文网文改编工作流的命令行工具集合，覆盖：
+一套面向中文网文改编的命令行工作流工具，覆盖原文拆分、卷资料适配、逐章仿写、章节组审查、卷级审核和统一入口续跑。
 
-- 原始小说按章节/分卷拆分
-- 基于参考源逐卷生成改编规划文档
-- 卷资料适配阶段前置生成整卷组纲计划，并按已审核计划生成章节组正文、状态文档与审核文档
-- 统一入口调度完整工作流，并支持断点续跑
+项目主要面向 Windows + PowerShell 使用，所有入口都支持交互式运行。
 
-项目主要面向 Windows + PowerShell 使用场景，所有工作流入口都支持交互式运行。
-
-## 组件一览
+## 组件
 
 - [novelist/workflows/split_novel.py](./novelist/workflows/split_novel.py)
-  把原始小说 `.txt` 按章节拆分，并按每 50 章归档到卷目录。
+  把原始小说 `.txt` 拆成章节文件，并按参考源注入预算自适应分卷。
 - [novelist/workflows/novel_adaptation.py](./novelist/workflows/novel_adaptation.py)
-  兼容入口；内部实现位于 `novelist/workflows/adaptation/`。读取 `split_novel` 输出后的书名目录，逐卷生成：
-  - 世界模型（合并承载世界观设计）
-  - 文笔写作风格
-  - 全书大纲
-  - 伏笔文档
-  - 卷级大纲
-  - 当前卷组纲计划、所有组纲与组纲审核
+  兼容入口；主要实现位于 `novelist/workflows/adaptation/`。逐卷生成世界模型、文风、全书大纲、伏笔管理和卷级大纲，并在卷资料审核通过后写入轻量章节组范围计划、把该卷记为已完成。
 - [novelist/workflows/novel_chapter_rewrite.py](./novelist/workflows/novel_chapter_rewrite.py)
-  兼容入口；内部实现位于 `novelist/workflows/chapter_rewrite/`。读取改编工程目录，按已审核组纲计划顺序生成：
-  - 当前组仿写正文
-  - 人物状态卡 / 人物关系链
-  - 卷级剧情进程
-  - 世界状态
-  - 组审查 / 卷级审核
+  兼容入口；主要实现位于 `novelist/workflows/chapter_rewrite/`。章节组模式只决定本轮处理范围，组内仍逐章执行旧版单章工作流：章纲、正文、配套状态文档、章级审核，然后再做组审查或卷级审核。
 - [novel_workflow.py](./novel_workflow.py)
-- 一键启动脚本：[start_workflow.bat](./start_workflow.bat)
-  统一入口，自动识别输入类型并串联以上三步。
-- [novelist/core](./novelist/core)
-  可复用核心模块，包括：
-  - OpenAI / OpenAI Compatible 配置
-  - Responses / Chat Completions 运行时
-  - 每次模型调用的发送、接收、缓存命中 token 统计
-  - 文档写入与 patch 工具
-  - 文件与路径工具
-  - UI 输出
-
-资料适配生成的全局文档会按“长期索引 / 规则 / 映射”定位控制粒度；`04_foreshadowing.md` 是唯一的全局伏笔文档，资料适配阶段只更新设计索引，章节工作流写入的运行时记录必须保留。
-世界观设定不再单独生成 `01_world_design.md`，由 `01_world_model.md` 统一承载，避免世界观与世界模型重复注入。
-`01_world_model.md` 是新书全书世界观、世界知识模型和设定的唯一来源，只写全书级世界知识和稳定设定；必须使用新书自己的命名、数值体系、等级体系、术语体系和话语体系，不能沿用参考源同名实体或同一套概念表达。
-`02_style_guide.md` 只在第 001 卷资料适配阶段生成和定稿；后续卷只读取与审核这份文风文档，不再更新它。
-agent 阶段按 OpenCode 风格维护本地 transcript：首轮发送阶段完整上下文，工具轮会把本阶段大上下文、已发生的工具调用和工具结果一起重新组装发送，不把 `previous_response_id` 当作唯一上下文来源。卷资料审核阶段会在同一个审核逻辑会话内压缩上下文：每轮审核都重新发送稳定前缀、当前卷参考源和最新落盘资料文档，但 provider 请求不沿用生成阶段或上一轮审核的旧 `previous_response_id`。
-资料适配阶段会硬性阻断参考源污染：生成任何规划文档时都禁止把参考源人物名、地名、势力名、事件名、专用术语、等级体系、称谓口吻、标志性台词或话语体系直接写入新书资料，只允许保留功能映射。
+  根目录统一入口，自动识别输入并串联拆分、资料适配和章节重写。
+- [start_workflow.bat](./start_workflow.bat)
+  Windows 一键启动脚本。
 
 ## 推荐用法
-
-推荐直接从统一入口开始：
 
 ```powershell
 python F:\novelist\novel_workflow.py
 ```
 
-也可以直接双击仓库根目录下的 `start_workflow.bat` 一键启动。
-
-统一入口支持自动识别以下输入：
+统一入口支持自动识别：
 
 - 原始小说 `.txt`
 - `split_novel` 产出的书名目录
 - 已存在的工程目录
 - 上述目录的父目录
 
-启动后会先让你选择：
+如果工程中存在未完成资料适配卷，或已适配但未完成章节重写的卷，交互式启动会先询问继续哪个断点。旧工程里已经写入 `processed_volumes` 的卷不会再被要求补额外规划文件，也不会因为章节工作流启动而触发参考源重分卷。
 
-- 直接进入统一工作流
-- 先重新配置 OpenAI 设置，再进入统一工作流
-- 只重新配置 OpenAI 设置
-
-如果当前项目里存在“资料适配尚未完成”的卷，或“已完成适配、但尚未完成章节重写”的卷，交互式启动会先询问是继续资料适配断点、继续章节重写断点，还是重新选择工作模式。显式传入路径或非交互运行时仍会保持自动化语义：优先续跑章节重写；只有资料适配断点时按完整流程继续。
-
-旧工程里已经写入 `processed_volumes`、但还没有已审核组纲计划的卷，会显示为资料适配/补组纲断点；它只补齐组纲计划、组纲文件和组纲审核，不会重跑卷资料适配，也不会触发当前旧卷的自适应分卷。
-
-## 安装依赖
-
-当前仓库没有单独的 `requirements.txt`，至少需要：
+## 依赖
 
 ```powershell
 pip install openai pydantic
 ```
 
-如果你使用自己的兼容服务，请确保：
+项目支持 OpenAI Responses API，也支持 OpenAI Compatible 服务。全局配置默认保存在：
 
-- 提供 OpenAI Compatible 接口
-- 能处理 `chat.completions` + `tools`
-- 或直接支持 OpenAI `Responses API`
+```text
+%USERPROFILE%\.novel_adaptation\config.json
+```
 
-## 快速开始
+旧配置 `%USERPROFILE%\.novel_adaptation_cli\config.json` 会在首次读取时自动迁移。
 
-### 1. 从原始小说开始
+## 典型流程
+
+从原始小说开始：
 
 ```powershell
 python F:\novelist\novel_workflow.py "F:\books\我的小说.txt"
 ```
 
-典型流程：
+流程为：
 
-1. `novelist.workflows.split_novel` 先拆分小说
-2. `novelist.workflows.novel_adaptation` 生成逐卷改编规划
-3. `novelist.workflows.novel_chapter_rewrite` 按已审核组纲计划生成正文与审核文档
+1. `split_novel` 拆分章节，并按 150k source bundle 字符预算自适应分卷。
+2. `novel_adaptation` 逐卷生成资料文档并完成卷资料审核。
+3. `novel_chapter_rewrite` 按章节组范围逐章生成正文与审核文档。
 
-### 2. 从已拆分好的目录开始
+## 工程输出结构
 
-```powershell
-python F:\novelist\novel_workflow.py "F:\books\我的小说"
-```
-
-这里的 `F:\books\我的小说` 指的是 `split_novel` 输出的书名目录，里面通常直接包含：
-
-- `001`
-- `002`
-- `003`
-
-### 3. 从已有工程继续
-
-```powershell
-python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
-```
-
-统一入口会自动恢复：
-
-- 已保存的 OpenAI 设置
-- 已保存的输入路径
-- 已完成/未完成的卷状态
-- 已适配但未完成重写的积压卷
-
-## 主要目录结构
-
-### 仓库代码结构
-
-```text
-仓库根目录/
-├─ novel_workflow.py      # 根目录统一入口包装脚本
-├─ start_workflow.bat         # Windows 一键启动脚本
-├─ novelist/
-│  ├─ workflows/              # 业务工作流
-│  │  ├─ split_novel.py
-│  │  ├─ novel_adaptation.py       # 兼容入口 facade
-│  │  ├─ novel_chapter_rewrite.py  # 兼容入口 facade
-│  │  ├─ novel_workflow.py         # 兼容入口 facade
-│  │  ├─ adaptation/               # 资料适配内部实现
-│  │  ├─ chapter_rewrite/          # 章节重写内部实现
-│  │  └─ unified/                  # 统一入口内部实现
-│  └─ core/                   # 可复用核心模块
-├─ docs/
-└─ tests/
-```
-
-如果你要查看或编辑源码，请优先打开 `novelist/workflows/adaptation/...`、`novelist/workflows/chapter_rewrite/...`、`novelist/workflows/unified/...` 和 `novelist/core/...`。`novelist/workflows/novel_*.py` 仍保留旧入口与旧导入兼容，不承载主要实现。
-
-### `split_novel` 输出
-
-```text
-书名/
-├─ 001/
-│  ├─ 书名.txt        # 简介
-│  ├─ 0001.txt
-│  ├─ 0002.txt
-│  └─ ...
-├─ 002/
-└─ ...
-```
-
-`split_novel` 默认仍按最多 50 章一卷拆分，但会额外按参考源注入预算自适应重排：单卷预计 source bundle 超过 150k 字符时，会把卷尾章节顺延到下一卷。后续运行 `novel_adaptation` 时也会在 API 请求前检查当前未完成卷及后续卷；已完成卷资料适配的卷会被冻结，不再移动，未完成卷会自动备份并重分卷。
-
-### `novel_adaptation` 工程输出
+资料适配输出：
 
 ```text
 工程目录/
 ├─ 00_project_manifest.md
 ├─ global_injection/
-│  ├─ 01_world_model.md        # 合并世界观设计与世界模型
+│  ├─ 01_world_model.md
 │  ├─ 02_style_guide.md
 │  ├─ 03_book_outline.md
 │  └─ 04_foreshadowing.md
 └─ volume_injection/
-   ├─ 001_volume_injection/
-   │  ├─ 001_volume_outline.md
-   │  ├─ 00_source_digest.md
-   │  └─ 00_stage_manifest.md
-   └─ 002_volume_injection/
+   └─ 001_volume_injection/
+      ├─ 001_volume_outline.md
+      ├─ 001_adaptation_review.md
+      ├─ 00_source_digest.md
+      └─ 00_stage_manifest.md
 ```
 
-### `novel_chapter_rewrite` 追加输出
+章节重写追加输出：
 
 ```text
 工程目录/
@@ -199,10 +95,8 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
 │     └─ 001_volume_review.md
 ├─ group_injection/
 │  └─ 001_group_injection/
-│     ├─ 00_group_outline_plan.md
-│     ├─ 001_group_outline_review.md
+│     ├─ 00_chapter_group_plan.md      # 动态章节组范围来源
 │     └─ 0001_0005_group_injection/
-│        ├─ 0001_0005_group_outline.md
 │        ├─ 0001_0005_group_review.md
 │        └─ 00_group_stage_manifest.md
 └─ rewritten_novel/
@@ -212,94 +106,36 @@ python F:\novelist\novel_workflow.py "F:\books\新书工程目录"
       └─ ...
 ```
 
-新流程不再新建独立 `0001_chapter_outline.md`。卷资料审核通过后不会立即把本卷标记为已完成，而是继续生成 `00_group_outline_plan.md`、本卷所有组纲文件和 `001_group_outline_review.md`。章节组数量和每组章数完全来自这份审核通过的计划，例如可以是 `0001_0006`、`0007_0014`，不再机械按 5 章切组。组纲顶层标题形如 `# 0001-0006 组纲`，内部用 `## 0001` 到 `## 0006` 分别承载每章细纲；每章细纲必须包含写作目标、节奏/篇幅建议和源功能映射说明，因为章节正文阶段不再读取参考源章节正文。
+`00_chapter_group_plan.md` 只记录章节组范围，由资料适配审核通过后按源章节字符预算生成。没有该文件时，章节重写会按旧版 5 章一组的节奏运行组审查。
 
 ## 运行模式
 
-### `novel_adaptation`
+`novel_adaptation`：
 
-- `stage`
-  每次处理 1 卷
-- `book`
-  自动连续处理后续卷
+- `stage`：每次处理 1 卷。
+- `book`：自动连续处理后续卷。
 
-### `novel_chapter_rewrite`
+`novel_chapter_rewrite`：
 
-- `group`
-  按已审核组纲计划推进当前章节组，并包含组生成与组审查；可配合 `--chapter` 从指定章节所在组开始；没有组纲计划时会阻断并提示先补跑卷资料适配的组纲生成/审核
-- `volume`
-  跑完整卷，包含所有组生成、组审查、卷审查
+- `group`：处理当前章节所在组，组内逐章跑完整单章工作流，组末做组审查。
+- `volume`：跑完整卷，包含所有单章工作流、组审查和卷级审核。
 
-### 统一入口
-
-统一入口会分别让你选择：
-
-- `novel_adaptation` 的运行方式
-- `novel_chapter_rewrite` 的运行方式
-
-并在流程完成后回到启动菜单，允许继续下一轮工作。
-
-## OpenAI 与兼容协议
-
-项目支持：
-
-- OpenAI 官方
-- OpenAI Compatible（自定义 `base_url`）
-
-支持协议：
-
-- OpenAI Responses API
-- OpenAI Compatible（兼容 OpenAI 接口）
-
-重新配置后会记住：
-
-- provider
-- protocol
-- base_url
-- api_key
-- model
-
-全局配置默认保存在：
-
-```text
-%USERPROFILE%\.novel_adaptation\config.json
-```
-
-如果旧版本已经保存过 `%USERPROFILE%\.novel_adaptation_cli\config.json`，新入口会在首次读取配置时自动迁移到新目录。
+旧参数 `chapter` 会兼容为 `group`。
 
 ## 常见命令
 
-### 只拆分小说
-
 ```powershell
 python -m novelist.workflows.split_novel "F:\books\我的小说.txt"
-```
-
-### 只跑卷级改编
-
-```powershell
 python -m novelist.workflows.novel_adaptation "F:\books\我的小说"
-```
-
-### 只跑章节重写
-
-```powershell
 python -m novelist.workflows.novel_chapter_rewrite "F:\books\新书工程目录"
-```
-
-### 统一入口 dry-run
-
-```powershell
 python F:\novelist\novel_workflow.py "F:\books\新书工程目录" --dry-run
 ```
 
-## 详细教程
-
-更完整的操作步骤、断点续跑说明、目录结构解释、配置与常见问题，请看：
+更详细说明见：
 
 - [docs/USAGE.md](./docs/USAGE.md)
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
 
-## 许可证
+## License
 
-本项目使用 [MIT License](./LICENSE)。
+[MIT License](./LICENSE)

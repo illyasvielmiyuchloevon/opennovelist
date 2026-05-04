@@ -5,11 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from novelist.core import novel_source as novel_source_module
+from novelist.core.files import write_markdown_data
 from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
 from novelist.workflows.chapter_rewrite import _shared as chapter_shared_module
 from novelist.workflows.chapter_rewrite import chapter_runner as chapter_runner_module
-from novelist.workflows.chapter_rewrite import group_runner as group_runner_module
 from novelist.workflows.chapter_rewrite import responses as chapter_responses_module
 from novelist.workflows.chapter_rewrite import review as chapter_review_module
 from novelist.workflows.chapter_rewrite import volume_runner as volume_runner_module
@@ -54,34 +53,26 @@ def _volume_material(chapter_numbers: list[str]) -> dict:
 
 
 def _seed_group_plan(project_root: Path, groups: list[list[str]], *, status: str = "passed") -> None:
-    raw_groups = [
-        {
-            "chapter_count": len(group),
-            "source_chapter_range": f"{group[0]}-{group[-1]}",
-            "group_title": f"{group[0]}-{group[-1]} 测试组",
-            "guidance": "测试组纲指导。",
-        }
-        for group in groups
-    ]
-    rewrite_workflow.write_group_outline_plan_manifest(
-        project_root,
-        "001",
-        status=status,
-        groups=raw_groups,
-        source_volume_dir=str(project_root / "source" / "001"),
-        note="测试组纲计划。",
-        response_ids=["resp_group_plan"],
-        review={"status": status, "passed": status == "passed"},
+    group_root = rewrite_workflow.group_injection_root(project_root, "001")
+    group_root.mkdir(parents=True, exist_ok=True)
+    write_markdown_data(
+        group_root / rewrite_workflow.CHAPTER_GROUP_PLAN_MANIFEST_NAME,
+        title="Chapter Group Plan 001",
+        payload={
+            "status": status,
+            "volume_number": "001",
+            "groups": [
+                {
+                    "chapter_numbers": group,
+                    "chapter_count": len(group),
+                    "source_chapter_range": f"{group[0]}-{group[-1]}",
+                    "group_title": f"{group[0]}-{group[-1]} 测试组",
+                }
+                for group in groups
+            ],
+        },
+        summary_lines=[f"status: {status}", f"groups: {len(groups)}"],
     )
-    for group in groups:
-        outline_path = rewrite_workflow.group_outline_path(project_root, "001", group)
-        outline = "\n\n".join(
-            [
-                f"# {group[0]}-{group[-1]} 组纲",
-                *[f"## {chapter_number}\n- 写作目标：测试。\n- 节奏建议：按组纲推进。\n- 参考源功能映射：测试转换。" for chapter_number in group],
-            ]
-        )
-        _write_text(outline_path, outline)
 
 
 def _seed_rewrite_files(project_root: Path, chapter_numbers: list[str]) -> None:
@@ -156,19 +147,35 @@ def _rewrite_agent_stage_result(
     response_id: str,
     response_ids: list[str] | None = None,
     applications: list[Mock] | None = None,
+    transcript_state: object | None = None,
 ) -> Mock:
     return Mock(
         submission=payload,
         response_id=response_id,
         response_ids=response_ids or [response_id],
         applications=applications or [],
+        transcript_state=transcript_state,
     )
 
 
 def _agent_application(tool_name: str, changed_keys: list[str]) -> Mock:
+    applied = rewrite_workflow.document_ops.AppliedDocumentOperation(
+        mode="edit",
+        files=[
+            rewrite_workflow.document_ops.AppliedDocumentFile(
+                file_key=key,
+                path=Path(f"{key}.md"),
+                mode="edit",
+                emitted=True,
+                changed=True,
+                edit_count=1,
+            )
+            for key in changed_keys
+        ],
+    )
     return Mock(
         tool_name=tool_name,
-        applied=Mock(changed_keys=changed_keys),
+        applied=applied,
         output="ok",
     )
 
@@ -443,12 +450,22 @@ class ChapterStageToolContractTests(unittest.TestCase):
         self.assertEqual(call_tools.call_args.kwargs["tool_choice"], "auto")
 
 
-class GroupGenerationWorkflowTests(unittest.TestCase):
-    def test_group_and_volume_source_summaries_group_chapter_files(self) -> None:
+class GroupModeWorkflowTests(unittest.TestCase):
+    def test_group_and_volume_source_summaries_use_current_range_and_generated_text(self) -> None:
         chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
 
-        group_lines = rewrite_workflow.group_generation_source_summary_lines(
+        volume_material = _volume_material(chapter_numbers)
+        group_lines = rewrite_workflow.five_chapter_review_source_summary_lines(
+            volume_material,
             chapter_numbers,
+            1234,
+            {
+                chapter_number: {
+                    "file_name": f"{chapter_number}.txt",
+                    "text": f"{chapter_number} 正文。",
+                }
+                for chapter_number in chapter_numbers
+            },
         )
         volume_lines = rewrite_workflow.volume_review_source_summary_lines(
             {
@@ -462,11 +479,9 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
         joined_group = "\n".join(group_lines)
         joined_volume = "\n".join(volume_lines)
 
-        self.assertIn("不注入参考源章节正文", joined_group)
-        self.assertIn("已审核组纲", joined_group)
-        self.assertNotIn("参考源章节文件", joined_group)
-        self.assertNotIn("标题：", joined_group)
-        self.assertNotIn("0001.txt（", joined_group)
+        self.assertIn("当前审查区间：0001-0005", joined_group)
+        self.assertIn("当前区间参考源总字符数约 1234", joined_group)
+        self.assertIn("当前区间已生成章节数：5", joined_group)
         self.assertIn("正文总字符数约", joined_volume)
         self.assertIn("已生成章节文件[1]：0001.txt，0002.txt，0003.txt，0004.txt，0005.txt", joined_volume)
         self.assertNotIn("0001.txt（字符数约", joined_volume)
@@ -482,12 +497,6 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                     "char_count": 999,
                 }
             },
-            "current_group_outline": {
-                "label": "组纲（0001-0005）",
-                "file_name": "0001_0005_group_outline.md",
-                "file_path": "F:/project/group/0001_0005_group_outline.md",
-                "content": "组纲正文",
-            },
             "rewritten_chapters": {
                 "0001": {
                     "file_name": "0001.txt",
@@ -497,11 +506,11 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             },
             "update_target_files": [
                 {
-                    "file_key": "group_outline",
-                    "label": "组纲",
-                    "file_name": "0001_0005_group_outline.md",
-                    "file_path": "F:/project/group/0001_0005_group_outline.md",
-                    "current_content": "已有组纲一",
+                    "file_key": "0001_rewritten_chapter",
+                    "label": "章节正文",
+                    "file_name": "0001.txt",
+                    "file_path": "F:/project/rewritten/0001.txt",
+                    "current_content": "已有正文一",
                     "current_char_count": 1000,
                     "preferred_mode": "edit_or_patch",
                 }
@@ -514,13 +523,12 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
         self.assertIn("稳定全局注入文档：世界模型（01_world_model.md）", "\n".join(input_lines))
         self.assertIn("字符数约 6", "\n".join(input_lines))
         self.assertNotIn("字符数约 999", "\n".join(input_lines))
-        self.assertIn("当前组纲：组纲（0001-0005）（0001_0005_group_outline.md）", "\n".join(input_lines))
         self.assertIn("已生成章节正文：0001.txt", "\n".join(input_lines))
         self.assertIn("字符数约 5", "\n".join(target_lines))
         self.assertNotIn("字符数约 1000", "\n".join(target_lines))
         self.assertIn("建议工具=edit_or_patch", "\n".join(target_lines))
 
-    def test_volume_index_defers_chapter_text_during_rewrite_scan(self) -> None:
+    def test_volume_material_reads_true_chapter_text_for_rewrite_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             volume_dir = Path(temp_dir) / "001"
             volume_dir.mkdir()
@@ -529,49 +537,17 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                 _write_text(volume_dir / f"{chapter_number}.txt", f"{chapter_number} 标题\n参考源正文 {chapter_number}。")
             _write_text(volume_dir / "volume_note.md", "补充资料。")
 
-            real_read_text = novel_source_module.read_text
-            read_names: list[str] = []
+            volume_material = rewrite_workflow.load_volume_material(volume_dir)
+            chapter = rewrite_workflow.get_chapter_material(volume_material, "0002")
+            source_bundle, source_char_count = rewrite_workflow.build_chapter_source_bundle(volume_material, "0002")
 
-            def tracking_read_text(path: Path) -> str:
-                read_names.append(Path(path).name)
-                return real_read_text(path)
+            self.assertEqual(len(volume_material["chapters"]), 50)
+            self.assertIn("参考源正文 0002", chapter["text"])
+            self.assertEqual(chapter["source_title"], "0002 标题")
+            self.assertIn("参考源正文 0002", source_bundle)
+            self.assertGreater(source_char_count, len(chapter["text"]))
 
-            with patch.object(novel_source_module, "read_text", side_effect=tracking_read_text):
-                volume_index = rewrite_workflow.load_volume_index(volume_dir)
-
-            self.assertEqual(len(volume_index["chapters"]), 50)
-            self.assertTrue(all(chapter["text"] == "" for chapter in volume_index["chapters"]))
-            self.assertIn("volume_note.md", read_names)
-            self.assertNotIn("0001.txt", read_names)
-
-            read_names.clear()
-            self.assertEqual(read_names, [])
-
-    def test_group_generation_payload_uses_reviewed_group_outline_as_input(self) -> None:
-        chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
-        volume_material = _volume_material(chapter_numbers)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_root = Path(temp_dir)
-            _seed_group_plan(project_root, [chapter_numbers])
-            catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0001")
-            payload, _, _ = rewrite_workflow.build_group_generation_payload(
-                project_root=project_root,
-                volume_material=volume_material,
-                volume_number="001",
-                chapter_numbers=chapter_numbers,
-                catalog=catalog,
-            )
-
-        target_keys = [item["file_key"] for item in payload["update_target_files"]]
-        self.assertNotIn("group_outline", target_keys)
-        self.assertNotIn("0001_chapter_outline", target_keys)
-        self.assertEqual(payload["document_request"]["required_group_outline_file"], "0001_0005_group_outline.md")
-        self.assertEqual(payload["current_group_outline"]["chapter_numbers"], chapter_numbers)
-        self.assertNotIn("reference_chapter_metrics", payload)
-        self.assertIn("不再读取参考源章节正文", "\n".join(payload["requirements"]))
-
-    def test_dynamic_groups_come_from_reviewed_group_plan(self) -> None:
+    def test_dynamic_groups_come_from_chapter_group_plan(self) -> None:
         chapter_numbers = [f"{index:04d}" for index in range(1, 15)]
         first_group = [f"{index:04d}" for index in range(1, 7)]
         second_group = [f"{index:04d}" for index in range(7, 15)]
@@ -581,25 +557,47 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             _seed_group_plan(project_root, [first_group, second_group])
             volume_material = {**_volume_material(chapter_numbers), "project_root": str(project_root)}
             groups = rewrite_workflow.build_five_chapter_groups(volume_material)
-
-            catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0007")
-            payload, _, _ = rewrite_workflow.build_group_generation_payload(
-                project_root=project_root,
-                volume_material=volume_material,
-                volume_number="001",
-                chapter_numbers=groups[1],
-                catalog=catalog,
-            )
+            matched = rewrite_workflow.find_group_for_chapter(volume_material, "0007")
 
         self.assertEqual(groups, [first_group, second_group])
+        self.assertEqual(matched, second_group)
 
-        target_keys = [item["file_key"] for item in payload["update_target_files"]]
-        self.assertEqual(payload["document_request"]["chapter_numbers"], second_group)
-        self.assertEqual(payload["document_request"]["chapter_count"], 8)
-        self.assertIn("0007_rewritten_chapter", target_keys)
-        self.assertIn("0014_rewritten_chapter", target_keys)
-        self.assertNotIn("0006_rewritten_chapter", target_keys)
-        self.assertIn("章节组来自组纲计划", "\n".join(payload["requirements"]))
+    def test_passed_state_without_chapter_files_is_treated_as_pending(self) -> None:
+        chapter_numbers = ["0001", "0002", "0003"]
+        volume_material = _volume_material(chapter_numbers)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            _seed_group_plan(project_root, [chapter_numbers])
+            for chapter_number in chapter_numbers:
+                rewrite_workflow.update_chapter_state(
+                    manifest,
+                    "001",
+                    chapter_number,
+                    status="passed",
+                    last_stage=rewrite_workflow.PHASE3_REVIEW,
+                    pending_phases=[],
+                )
+            rewrite_workflow.update_five_chapter_review_state(
+                manifest,
+                "001",
+                rewrite_workflow.five_chapter_batch_id(chapter_numbers),
+                chapter_numbers,
+                status="passed",
+            )
+
+            material = {**volume_material, "project_root": str(project_root)}
+            next_group = rewrite_workflow.next_pending_group(material, manifest)
+            next_chapter = rewrite_workflow.select_next_chapter(
+                manifest,
+                material,
+                allowed_chapters=chapter_numbers,
+            )
+
+        self.assertEqual(next_group, chapter_numbers)
+        self.assertEqual(next_chapter, "0001")
+        self.assertFalse(rewrite_workflow.all_group_chapters_passed(manifest, material, chapter_numbers))
 
     def test_process_volume_runs_short_final_group_as_one_group(self) -> None:
         chapter_numbers = ["0001", "0002", "0003"]
@@ -609,9 +607,25 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             project_root = Path(temp_dir)
             manifest = _manifest(project_root)
             _seed_group_plan(project_root, [chapter_numbers])
+
+            def fake_chapter_workflow(*args, **kwargs):
+                chapter_number = kwargs["chapter_number"]
+                paths = volume_runner_module.rewrite_paths(project_root, "001", chapter_number)
+                _write_text(paths["chapter_outline"], f"# {chapter_number} 章纲\n")
+                _write_text(paths["rewritten_chapter"], f"{chapter_number} 仿写正文。\n")
+                _write_text(paths["chapter_review"], f"# {chapter_number} 章级审核\n\n通过。\n")
+                volume_runner_module.update_chapter_state(
+                    manifest,
+                    "001",
+                    chapter_number,
+                    status="passed",
+                    last_stage=volume_runner_module.PHASE3_REVIEW,
+                    pending_phases=[],
+                )
+
             with (
-                patch.object(volume_runner_module, "run_group_generation_workflow") as generation,
-                patch.object(volume_runner_module, "run_five_chapter_review") as review,
+                patch.object(volume_runner_module, "run_chapter_workflow", side_effect=fake_chapter_workflow) as chapter_workflow,
+                patch.object(volume_runner_module, "run_due_five_chapter_reviews", return_value=True) as review,
                 patch.object(volume_runner_module, "print_progress"),
             ):
                 completed_scope, next_target = volume_runner_module.process_volume_workflow(
@@ -623,17 +637,14 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             )
 
         self.assertEqual((completed_scope, next_target), ("group", None))
-        generation.assert_called_once()
-        review.assert_called_once()
-        self.assertEqual(generation.call_args.kwargs["chapter_numbers"], ["0001", "0002", "0003"])
-        self.assertEqual(review.call_args.kwargs["chapter_numbers"], ["0001", "0002", "0003"])
-
-    def test_process_volume_runs_group_generation_then_group_review(self) -> None:
-        chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
-        passed_review = rewrite_workflow.WorkflowSubmissionPayload(
-            passed=True,
-            review_md="组审查通过。",
+        self.assertEqual(
+            [call.kwargs["chapter_number"] for call in chapter_workflow.call_args_list],
+            ["0001", "0002", "0003"],
         )
+        self.assertEqual(review.call_args.kwargs["target_group"], ["0001", "0002", "0003"])
+
+    def test_process_volume_runs_single_chapters_then_group_review(self) -> None:
+        chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -647,45 +658,40 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
             _write_text(paths["volume_plot_progress"], "# 卷级剧情进程\n")
             _seed_group_plan(project_root, [chapter_numbers])
 
-            def fake_generation_agent(*args, **kwargs):
-                allowed_files = kwargs["allowed_files"]
-                self.assertNotIn("group_outline", allowed_files)
-                for chapter_number in chapter_numbers:
-                    _write_text(
-                        allowed_files[f"{chapter_number}_rewritten_chapter"],
-                        f"{chapter_number} 仿写正文。",
-                    )
-                return _rewrite_agent_stage_result(
-                    rewrite_workflow.WorkflowSubmissionPayload(
-                        summary="动态组正文生成完成。",
-                        generated_files=[f"{item}_rewritten_chapter" for item in chapter_numbers],
-                    ),
-                    "resp_group_generation_submit",
-                    ["resp_group_generation_write", "resp_group_generation_submit"],
-                    applications=[
-                        _agent_application(
-                            "submit_document_writes",
-                            ["0001_rewritten_chapter"],
-                        )
-                    ],
+            def fake_chapter_workflow(*args, **kwargs):
+                chapter_number = kwargs["chapter_number"]
+                paths = volume_runner_module.rewrite_paths(project_root, "001", chapter_number)
+                _write_text(paths["chapter_outline"], f"# {chapter_number} 章纲\n")
+                _write_text(paths["rewritten_chapter"], f"{chapter_number} 仿写正文。\n")
+                _write_text(paths["chapter_review"], f"# {chapter_number} 章级审核\n\n通过。\n")
+                volume_runner_module.update_chapter_state(
+                    manifest,
+                    "001",
+                    chapter_number,
+                    status="passed",
+                    last_stage=volume_runner_module.PHASE3_REVIEW,
+                    pending_phases=[],
                 )
 
+            def fake_due_reviews(*args, **kwargs):
+                target_group = kwargs.get("target_group")
+                if target_group and volume_runner_module.all_group_chapters_passed(manifest, volume_material, target_group):
+                    volume_runner_module.update_five_chapter_review_state(
+                        manifest,
+                        "001",
+                        volume_runner_module.five_chapter_batch_id(target_group),
+                        target_group,
+                        status="passed",
+                    )
+                return True
+
             with (
-                patch.object(group_runner_module, "run_agent_stage", side_effect=fake_generation_agent) as generation_agent,
-                patch.object(
-                    chapter_review_module,
-                    "run_agent_stage",
-                    return_value=_rewrite_agent_stage_result(
-                        passed_review,
-                        "resp_group_review",
-                        applications=[_agent_application("submit_document_edits", ["0001_rewritten_chapter"])],
-                    ),
-                ) as review_agent,
-                patch.object(rewrite_workflow, "print_request_context_summary") as context_summary,
+                patch.object(volume_runner_module, "run_chapter_workflow", side_effect=fake_chapter_workflow) as chapter_workflow,
+                patch.object(volume_runner_module, "run_due_five_chapter_reviews", side_effect=fake_due_reviews) as review_call,
                 patch.object(rewrite_workflow, "print_progress"),
-                patch.object(chapter_shared_module, "print_progress") as agent_progress,
+                patch.object(chapter_shared_module, "print_progress"),
             ):
-                completed_scope, next_target = rewrite_workflow.process_volume_workflow(
+                completed_scope, next_target = volume_runner_module.process_volume_workflow(
                     client=Mock(),
                     model="test-model",
                     rewrite_manifest=manifest,
@@ -694,43 +700,24 @@ class GroupGenerationWorkflowTests(unittest.TestCase):
                     requested_chapter="0001",
                 )
 
-            outline_path = rewrite_workflow.group_outline_path(project_root, "001", chapter_numbers)
-            outline_content = outline_path.read_text(encoding="utf-8")
             self.assertEqual((completed_scope, next_target), ("group", None))
-            self.assertIn("# 0001-0005 组纲", outline_content)
+            self.assertEqual(
+                [call.kwargs["chapter_number"] for call in chapter_workflow.call_args_list],
+                chapter_numbers,
+            )
             for chapter_number in chapter_numbers:
-                self.assertIn(f"## {chapter_number}", outline_content)
                 paths = rewrite_workflow.rewrite_paths(project_root, "001", chapter_number)
+                self.assertTrue(paths["chapter_outline"].exists())
                 self.assertTrue(paths["rewritten_chapter"].exists())
-                self.assertFalse(paths["chapter_outline"].exists())
+                self.assertTrue(paths["chapter_review"].exists())
                 self.assertEqual(
                     rewrite_workflow.get_chapter_state(manifest, "001", chapter_number)["last_stage"],
-                    "group_generation",
+                    rewrite_workflow.PHASE3_REVIEW,
                 )
-
             batch_id = rewrite_workflow.five_chapter_batch_id(chapter_numbers)
-            generation_state = rewrite_workflow.get_group_generation_state(manifest, "001", batch_id, chapter_numbers)
             review_state = rewrite_workflow.get_five_chapter_review_state(manifest, "001", batch_id, chapter_numbers)
-            self.assertEqual(generation_state["status"], "passed")
-            self.assertEqual(generation_state["group_outline_path"], str(outline_path))
             self.assertEqual(review_state["status"], "passed")
-            self.assertEqual(generation_agent.call_count, 1)
-            self.assertEqual(review_agent.call_count, 1)
-            group_summary_call = next(
-                call for call in context_summary.call_args_list
-                if call.kwargs["request_label"].startswith("组生成")
-            )
-            included_docs = "\n".join(group_summary_call.kwargs["included_docs"])
-            self.assertIn("[global] 全书大纲", included_docs)
-            self.assertIn("[global] 世界模型", included_docs)
-            self.assertIn("[volume] 卷级大纲", included_docs)
-            self.assertIn("[volume] 卷级剧情进程", included_docs)
-            self.assertIn("不注入参考源章节正文", "\n".join(group_summary_call.kwargs["source_summary_lines"]))
-            progress_lines = "\n".join(str(call.args[0]) for call in agent_progress.call_args_list if call.args)
-            self.assertIn("组生成 agent 本轮执行文档工具 1 次，累计变更=0001_rewritten_chapter。", progress_lines)
-            self.assertIn("组生成 agent 提交阶段结果：generated_files=0001_rewritten_chapter", progress_lines)
-            self.assertIn("组审查 agent 本轮执行文档工具 1 次，累计变更=0001_rewritten_chapter。", progress_lines)
-            self.assertIn("组审查 agent 提交审核结论：通过；返修章节=无；返修目标=无；阻塞问题=0 项。", progress_lines)
+            self.assertGreaterEqual(review_call.call_count, 1)
 
 
 class RevisionPlanTests(unittest.TestCase):
@@ -973,47 +960,33 @@ class ReviewFixLoopTests(unittest.TestCase):
                 passed=True,
                 review_md="通过。",
             )
-            fix_operation = rewrite_workflow.document_ops.DocumentOperationCallResult(
-                mode="edit",
-                response_id="resp_fix",
-                status="completed",
-                output_types=["function_call"],
-                preview="fix",
-                raw_body_text="",
-                raw_json={},
-                edit_payload=rewrite_workflow.document_ops.DocumentEditPayload(
-                    files=[
-                        rewrite_workflow.document_ops.DocumentEditFile(
-                            file_key="rewritten_chapter",
-                            edits=[
-                                rewrite_workflow.document_ops.DocumentEditEdit(
-                                    old_text="0001 原正文问题。",
-                                    new_text="0001 修复后的正文。",
-                                )
-                            ],
-                        )
-                    ]
-                ),
-            )
+            def fake_agent_stage(*args, **kwargs):
+                agent_label = kwargs["agent_label"]
+                if agent_label == "章级审核返修 agent":
+                    _write_text(paths["rewritten_chapter"], "0001 修复后的正文。\n")
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(summary="返修完成。"),
+                        "resp_fix",
+                        applications=[_agent_application("submit_document_edits", ["rewritten_chapter"])],
+                    )
+                if fake_agent_stage.review_count == 0:
+                    fake_agent_stage.review_count += 1
+                    return _rewrite_agent_stage_result(failed_review, "resp_review_1")
+                fake_agent_stage.review_count += 1
+                return _rewrite_agent_stage_result(passed_review, "resp_review_2")
+
+            fake_agent_stage.review_count = 0
 
             with (
                 patch.object(
-                    rewrite_workflow,
-                    "call_chapter_review_response",
-                    side_effect=[
-                        (failed_review, "resp_review_1", Mock(response_id="resp_review_1")),
-                        (passed_review, "resp_review_2", Mock(response_id="resp_review_2")),
-                    ],
-                ) as review_call,
-                patch.object(
-                    rewrite_workflow.llm_runtime,
-                    "call_function_tools",
-                    return_value=_multi_tool_from_operation(fix_operation),
-                ) as fix_call,
+                    chapter_runner_module,
+                    "_run_chapter_agent_stage",
+                    side_effect=fake_agent_stage,
+                ) as agent_call,
                 patch.object(rewrite_workflow, "call_chapter_text_revision_response", side_effect=AssertionError("should not restart text phase")),
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
-                rewrite_workflow.run_chapter_workflow(
+                chapter_runner_module.run_chapter_workflow(
                     client=Mock(),
                     model="test-model",
                     rewrite_manifest=manifest,
@@ -1022,9 +995,12 @@ class ReviewFixLoopTests(unittest.TestCase):
                 )
 
             state = rewrite_workflow.get_chapter_state(manifest, "001", "0001")
-            self.assertEqual(review_call.call_count, 2)
-            fix_call.assert_called_once()
-            self.assertEqual(fix_call.call_args.kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
+            self.assertEqual(agent_call.call_count, 3)
+            self.assertEqual(
+                [call.kwargs["agent_label"] for call in agent_call.call_args_list],
+                ["章级审核 agent", "章级审核返修 agent", "章级审核 agent"],
+            )
+            self.assertTrue(all("transcript_state" not in call.kwargs for call in agent_call.call_args_list))
             self.assertEqual(state["status"], "passed")
             self.assertEqual(state["pending_phases"], [])
             self.assertIn("修复后的正文", paths["rewritten_chapter"].read_text(encoding="utf-8"))
@@ -1049,26 +1025,27 @@ class ReviewFixLoopTests(unittest.TestCase):
                 blocking_issues=["正文仍需修复"],
                 rewrite_targets=["chapter_text"],
             )
-            applied_fix = _applied_fix("rewritten_chapter", paths["rewritten_chapter"])
+            def fake_agent_stage(*args, **kwargs):
+                agent_label = kwargs["agent_label"]
+                if agent_label == "章级审核返修 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(summary="返修完成。"),
+                        f"resp_fix_{fake_agent_stage.fix_count + 1}",
+                        applications=[_agent_application("submit_document_edits", ["rewritten_chapter"])],
+                    )
+                fake_agent_stage.review_count += 1
+                return _rewrite_agent_stage_result(failed_review, f"resp_review_{fake_agent_stage.review_count}")
+
+            fake_agent_stage.review_count = 0
+            fake_agent_stage.fix_count = 0
 
             with (
                 self.assertRaisesRegex(ValueError, "连续 5 次审核"),
                 patch.object(
                     chapter_runner_module,
-                    "call_chapter_review_response",
-                    side_effect=[
-                        (failed_review, f"resp_review_{index}", Mock(response_id=f"resp_review_{index}"))
-                        for index in range(1, 6)
-                    ],
-                ) as review_call,
-                patch.object(
-                    chapter_runner_module,
-                    "apply_review_fix_with_repair",
-                    side_effect=[
-                        (applied_fix, f"resp_fix_{index}", [f"resp_fix_{index}"])
-                        for index in range(1, 5)
-                    ],
-                ) as fix_call,
+                    "_run_chapter_agent_stage",
+                    side_effect=fake_agent_stage,
+                ) as agent_call,
                 patch.object(chapter_runner_module, "print_request_context_summary"),
             ):
                 chapter_runner_module.run_chapter_workflow(
@@ -1082,9 +1059,10 @@ class ReviewFixLoopTests(unittest.TestCase):
             state = rewrite_workflow.get_chapter_state(manifest, "001", "0001")
             self.assertEqual(rewrite_workflow.MAX_CHAPTER_REVIEW_ATTEMPTS, 5)
             self.assertEqual(rewrite_workflow.MAX_CHAPTER_REVIEW_FIX_ATTEMPTS, 4)
-            self.assertEqual(review_call.call_count, 5)
-            self.assertEqual(fix_call.call_count, 4)
-            self.assertEqual(review_call.call_args_list[4].kwargs["previous_response_id"], "resp_fix_4")
+            review_calls = [call for call in agent_call.call_args_list if call.kwargs["agent_label"] == "章级审核 agent"]
+            fix_calls = [call for call in agent_call.call_args_list if call.kwargs["agent_label"] == "章级审核返修 agent"]
+            self.assertEqual(len(review_calls), 5)
+            self.assertEqual(len(fix_calls), 4)
             self.assertEqual(state["status"], "failed")
 
     def test_chapter_review_resume_uses_previous_stage_response_id(self) -> None:
@@ -1118,13 +1096,13 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             with (
                 patch.object(
-                    rewrite_workflow,
-                    "call_chapter_review_response",
-                    return_value=(passed_review, "resp_review", Mock(response_id="resp_review")),
-                ) as review_call,
+                    chapter_runner_module,
+                    "_run_chapter_agent_stage",
+                    return_value=_rewrite_agent_stage_result(passed_review, "resp_review"),
+                ) as agent_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
-                rewrite_workflow.run_chapter_workflow(
+                chapter_runner_module.run_chapter_workflow(
                     client=Mock(),
                     model="test-model",
                     rewrite_manifest=manifest,
@@ -1132,10 +1110,246 @@ class ReviewFixLoopTests(unittest.TestCase):
                     chapter_number="0001",
                 )
 
-            review_call.assert_called_once()
-            self.assertEqual(review_call.call_args.kwargs["previous_response_id"], "resp_support")
+            agent_call.assert_called_once()
+            self.assertEqual(agent_call.call_args.kwargs["previous_response_id"], "resp_support")
             payload = rewrite_workflow.load_chapter_stage_manifest_payload(paths["chapter_stage_manifest"])
             self.assertEqual(payload["last_response_id"], "resp_review")
+            self.assertEqual(payload["response_ids"], ["resp_outline", "resp_text", "resp_support", "resp_review"])
+
+    def test_missing_chapter_artifacts_rewind_stale_pending_phase_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material(["0001"])
+            _seed_group_plan(project_root, [["0001"]])
+            volume_paths = rewrite_workflow.rewrite_paths(project_root, "001")
+            paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
+            _write_text(volume_paths["volume_outline"], "# 卷级大纲\n")
+            rewrite_workflow.update_chapter_state(
+                manifest,
+                "001",
+                "0001",
+                status="failed",
+                pending_phases=[rewrite_workflow.PHASE3_REVIEW],
+            )
+            rewrite_workflow.write_chapter_stage_snapshot(
+                paths["chapter_stage_manifest"],
+                volume_number="001",
+                chapter_number="0001",
+                status="failed",
+                note="旧断点停在审核阶段。",
+                attempt=1,
+                last_phase=rewrite_workflow.PHASE3_REVIEW,
+                response_ids=["old_outline", "old_text", "old_support"],
+            )
+            seen_calls: list[tuple[str, str | None]] = []
+
+            def fake_agent_stage(*args, **kwargs):
+                agent_label = kwargs["agent_label"]
+                seen_calls.append((agent_label, kwargs.get("previous_response_id")))
+                if agent_label == "章纲生成 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(content_md="# 0001 新章纲\n"),
+                        "resp_outline",
+                    )
+                if agent_label == "正文生成 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(chapter_txt="0001 新正文。\n"),
+                        "resp_text",
+                    )
+                if agent_label == "状态文档更新 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(summary="状态文档无需更新。"),
+                        "resp_support",
+                    )
+                if agent_label == "章级审核 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(passed=True, review_md="通过。"),
+                        "resp_review",
+                    )
+                raise AssertionError(f"unexpected agent label: {agent_label}")
+
+            with (
+                patch.object(
+                    chapter_runner_module,
+                    "_run_chapter_agent_stage",
+                    side_effect=fake_agent_stage,
+                ),
+                patch.object(chapter_runner_module, "print_request_context_summary"),
+            ):
+                chapter_runner_module.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+            self.assertEqual(
+                seen_calls,
+                [
+                    ("章纲生成 agent", None),
+                    ("正文生成 agent", "resp_outline"),
+                    ("状态文档更新 agent", "resp_text"),
+                    ("章级审核 agent", "resp_support"),
+                ],
+            )
+            payload = rewrite_workflow.load_chapter_stage_manifest_payload(paths["chapter_stage_manifest"])
+            self.assertEqual(payload["response_ids"], ["resp_outline", "resp_text", "resp_support", "resp_review"])
+            self.assertEqual(payload["status"], "passed")
+            self.assertIn("新章纲", paths["chapter_outline"].read_text(encoding="utf-8"))
+            self.assertIn("新正文", paths["rewritten_chapter"].read_text(encoding="utf-8"))
+
+    def test_chapter_workflow_uses_true_source_text_from_loaded_volume_material(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir) / "project"
+            source_volume = Path(temp_dir) / "source" / "001"
+            source_volume.mkdir(parents=True)
+            source_text = "第一行标题\n这是参考源正文。"
+            _write_text(source_volume / "0001.txt", source_text)
+            _write_text(source_volume / "补充.txt", "补充资料。")
+            manifest = _manifest(project_root)
+            manifest["source_root"] = str(source_volume.parent)
+            _seed_group_plan(project_root, [["0001"]])
+            volume_paths = rewrite_workflow.rewrite_paths(project_root, "001")
+            _write_text(volume_paths["volume_outline"], "# 卷级大纲\n")
+            volume_material = {**rewrite_workflow.load_volume_material(source_volume), "project_root": str(project_root)}
+            captured_user_inputs: list[str] = []
+
+            def fake_agent_stage(*args, **kwargs):
+                captured_user_inputs.append(str(kwargs["user_input"]))
+                agent_label = kwargs["agent_label"]
+                if agent_label == "章纲生成 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(content_md="# 0001 章纲\n"),
+                        "resp_outline",
+                    )
+                if agent_label == "正文生成 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(chapter_txt="0001 新正文。\n"),
+                        "resp_text",
+                    )
+                if agent_label == "状态文档更新 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(summary="状态文档无需更新。"),
+                        "resp_support",
+                    )
+                if agent_label == "章级审核 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(passed=True, review_md="通过。"),
+                        "resp_review",
+                    )
+                raise AssertionError(f"unexpected agent label: {agent_label}")
+
+            with (
+                patch.object(
+                    chapter_runner_module,
+                    "_run_chapter_agent_stage",
+                    side_effect=fake_agent_stage,
+                ),
+                patch.object(chapter_runner_module, "print_request_context_summary"),
+            ):
+                chapter_runner_module.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+            self.assertIn("这是参考源正文。", captured_user_inputs[0])
+            self.assertIn(f'"source_char_count": {len(source_text)}', captured_user_inputs[0])
+
+    def test_chapter_workflow_fails_if_current_source_chapter_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir) / "project"
+            source_volume = Path(temp_dir) / "source" / "001"
+            source_volume.mkdir(parents=True)
+            _write_text(source_volume / "0001.txt", "")
+            manifest = _manifest(project_root)
+            volume_material = {**rewrite_workflow.load_volume_material(source_volume), "project_root": str(project_root)}
+
+            with self.assertRaisesRegex(ValueError, "参考源正文为空"):
+                chapter_runner_module.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+    def test_chapter_phases_rebuild_payloads_without_cross_phase_transcript_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            volume_material = _volume_material(["0001"])
+            _seed_group_plan(project_root, [["0001"]])
+            volume_paths = rewrite_workflow.rewrite_paths(project_root, "001")
+            paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
+            _write_text(volume_paths["volume_outline"], "# 卷级大纲\n")
+            seen_calls: list[tuple[str, object | None, str | None]] = []
+
+            def fake_agent_stage(*args, **kwargs):
+                agent_label = kwargs["agent_label"]
+                seen_calls.append(
+                    (
+                        agent_label,
+                        kwargs.get("transcript_state"),
+                        kwargs.get("previous_response_id"),
+                    )
+                )
+                if agent_label == "章纲生成 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(content_md="# 0001 章纲\n"),
+                        "resp_outline",
+                        transcript_state="ts_outline",
+                    )
+                if agent_label == "正文生成 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(chapter_txt="0001 新正文。\n"),
+                        "resp_text",
+                        transcript_state="ts_text",
+                    )
+                if agent_label == "状态文档更新 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(summary="状态文档已更新。"),
+                        "resp_support",
+                        transcript_state="ts_support",
+                    )
+                if agent_label == "章级审核 agent":
+                    return _rewrite_agent_stage_result(
+                        rewrite_workflow.WorkflowSubmissionPayload(passed=True, review_md="通过。"),
+                        "resp_review",
+                        transcript_state="ts_review",
+                    )
+                raise AssertionError(f"unexpected agent label: {agent_label}")
+
+            with (
+                patch.object(
+                    chapter_runner_module,
+                    "_run_chapter_agent_stage",
+                    side_effect=fake_agent_stage,
+                ),
+                patch.object(chapter_runner_module, "print_request_context_summary"),
+            ):
+                chapter_runner_module.run_chapter_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_number="0001",
+                )
+
+            self.assertEqual(
+                seen_calls,
+                [
+                    ("章纲生成 agent", None, None),
+                    ("正文生成 agent", None, "resp_outline"),
+                    ("状态文档更新 agent", None, "resp_text"),
+                    ("章级审核 agent", None, "resp_support"),
+                ],
+            )
+            payload = rewrite_workflow.load_chapter_stage_manifest_payload(paths["chapter_stage_manifest"])
             self.assertEqual(payload["response_ids"], ["resp_outline", "resp_text", "resp_support", "resp_review"])
 
     def test_group_review_failure_repairs_in_review_phase(self) -> None:
@@ -1203,7 +1417,7 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
             self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
             self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_group_review_1")
-            self.assertNotIn("group_outline", agent_call.call_args_list[0].kwargs["allowed_files"])
+            self.assertIn("group_review", agent_call.call_args_list[0].kwargs["allowed_files"])
             self.assertEqual(group_state["status"], "passed")
             self.assertEqual(group_state["last_response_id"], "resp_group_review_2")
             self.assertEqual(
@@ -1211,6 +1425,64 @@ class ReviewFixLoopTests(unittest.TestCase):
                 ["resp_group_fix", "resp_group_review_1", "resp_group_review_2"],
             )
             self.assertNotEqual(chapter_state.get("status"), "needs_revision")
+
+    def test_group_review_injects_only_current_group_source_chapters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002"]
+            volume_material = _volume_material(["0001", "0002", "0003"])
+            _seed_rewrite_files(project_root, chapter_numbers)
+            passed_review = rewrite_workflow.WorkflowSubmissionPayload(
+                passed=True,
+                review_md="组审查通过。",
+            )
+
+            with (
+                patch.object(
+                    chapter_review_module,
+                    "run_agent_stage",
+                    return_value=_rewrite_agent_stage_result(passed_review, "resp_group_review"),
+                ) as agent_call,
+                patch.object(rewrite_workflow, "print_request_context_summary"),
+            ):
+                passed = rewrite_workflow.run_five_chapter_review(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    chapter_numbers=chapter_numbers,
+                )
+
+            self.assertTrue(passed)
+            user_input = agent_call.call_args.kwargs["user_input"]
+            self.assertIn("current_range_source_bundle", user_input)
+            self.assertIn("[章节文件 0001.txt]", user_input)
+            self.assertIn("参考源章节 0001。", user_input)
+            self.assertIn("[章节文件 0002.txt]", user_input)
+            self.assertIn("参考源章节 0002。", user_input)
+            self.assertNotIn("[章节文件 0003.txt]", user_input)
+            self.assertNotIn("参考源章节 0003。", user_input)
+
+    def test_group_review_fails_if_current_group_source_chapter_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002"]
+            volume_material = _volume_material(chapter_numbers)
+            volume_material["chapters"][1]["text"] = ""
+            _seed_rewrite_files(project_root, chapter_numbers)
+
+            with patch.object(chapter_review_module, "run_agent_stage") as agent_call:
+                with self.assertRaisesRegex(ValueError, "第 001 卷第 0002 章组审查参考源正文为空"):
+                    rewrite_workflow.run_five_chapter_review(
+                        client=Mock(),
+                        model="test-model",
+                        rewrite_manifest=manifest,
+                        volume_material=volume_material,
+                        chapter_numbers=chapter_numbers,
+                    )
+                agent_call.assert_not_called()
 
     def test_group_review_resume_uses_persisted_response_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -31,6 +31,7 @@ class AgentStageResult:
     response_id: str | None
     response_ids: list[str] = field(default_factory=list)
     applications: list[AgentToolApplication] = field(default_factory=list)
+    transcript_state: "AgentTranscriptState | None" = None
 
     @property
     def changed_keys(self) -> list[str]:
@@ -42,6 +43,14 @@ class AgentStageResult:
                 if key not in keys:
                     keys.append(key)
         return keys
+
+
+@dataclass
+class AgentTranscriptState:
+    protocol: str
+    chat_messages: list[dict[str, Any]] | None = None
+    responses_transcript: list[dict[str, Any]] | None = None
+    current_response_id: str | None = None
 
 
 def document_operation_from_tool_result(
@@ -142,6 +151,22 @@ def _document_tool_output(
         )
 
 
+def _workflow_submission_tool_output(result: llm_runtime.MultiFunctionToolResult) -> str:
+    submission = WorkflowSubmissionPayload.model_validate(result.parsed)
+    return _tool_output_json(
+        {
+            "ok": True,
+            "tool": result.tool_name,
+            "summary": submission.summary,
+            "generated_files": submission.generated_files,
+            "passed": submission.passed,
+            "blocking_issues": submission.blocking_issues,
+            "rewrite_targets": submission.rewrite_targets,
+            "chapters_to_revise": submission.chapters_to_revise,
+        }
+    )
+
+
 def _append_chat_tool_messages(
     messages: list[dict[str, Any]],
     result: llm_runtime.MultiFunctionToolResult,
@@ -180,13 +205,10 @@ def _responses_tool_output_item(
     result: llm_runtime.MultiFunctionToolResult,
     output: str,
 ) -> dict[str, Any]:
-    if not result.call_id:
-        raise llm_runtime.ModelOutputError(
-            "Responses 函数工具调用缺少 call_id，无法按官方协议回传 function_call_output。"
-        )
+    call_id = _responses_call_id(result)
     return {
         "type": "function_call_output",
-        "call_id": result.call_id,
+        "call_id": call_id,
         "output": output,
     }
 
@@ -194,19 +216,20 @@ def _responses_tool_output_item(
 def _responses_function_call_item(
     result: llm_runtime.MultiFunctionToolResult,
 ) -> dict[str, Any]:
-    if not result.call_id:
-        raise llm_runtime.ModelOutputError(
-            "Responses 函数工具调用缺少 call_id，无法按官方协议回传 function_call_output。"
-        )
+    call_id = _responses_call_id(result)
     raw_arguments = result.raw_arguments
     if not raw_arguments:
         raw_arguments = result.parsed.model_dump_json()
     return {
         "type": "function_call",
-        "call_id": result.call_id,
+        "call_id": call_id,
         "name": result.tool_name,
         "arguments": raw_arguments,
     }
+
+
+def _responses_call_id(result: llm_runtime.MultiFunctionToolResult) -> str:
+    return result.call_id or f"call_{result.response_id or result.tool_name}"
 
 
 def _responses_user_message(text: str) -> dict[str, Any]:
@@ -234,6 +257,7 @@ def run_agent_stage(
     retry_delay_seconds: int = llm_runtime.DEFAULT_RETRY_DELAY_SECONDS,
     max_iterations: int = 40,
     on_tool_result: Callable[[AgentToolApplication], None] | None = None,
+    transcript_state: AgentTranscriptState | None = None,
 ) -> AgentStageResult:
     protocol = llm_runtime.runtime_protocol(client)
     tool_specs = unified_workflow_tool_specs()
@@ -243,7 +267,23 @@ def run_agent_stage(
     current_input: Any = user_input
     chat_messages: list[dict[str, Any]] | None = None
     responses_transcript: list[dict[str, Any]] | None = None
-    if protocol == llm_runtime.PROTOCOL_OPENAI_COMPATIBLE:
+    if transcript_state is not None:
+        if transcript_state.protocol != protocol:
+            raise llm_runtime.ModelOutputError(
+                "agent transcript 协议与当前客户端协议不一致，无法继续复用本地 transcript。"
+            )
+        current_response_id = transcript_state.current_response_id or previous_response_id
+        if protocol == llm_runtime.PROTOCOL_OPENAI_COMPATIBLE:
+            chat_messages = [dict(message) for message in (transcript_state.chat_messages or [])]
+            if not chat_messages:
+                chat_messages = [{"role": "system", "content": instructions}]
+            chat_messages.append({"role": "user", "content": user_input})
+            current_input = ""
+        else:
+            responses_transcript = [dict(item) for item in (transcript_state.responses_transcript or [])]
+            responses_transcript.append(_responses_user_message(user_input))
+            current_input = list(responses_transcript)
+    elif protocol == llm_runtime.PROTOCOL_OPENAI_COMPATIBLE:
         chat_messages = [
             {"role": "system", "content": instructions},
             {"role": "user", "content": user_input},
@@ -280,11 +320,34 @@ def run_agent_stage(
             response_ids.append(str(result.response_id))
 
         if result.tool_name == WORKFLOW_SUBMISSION_TOOL_NAME:
+            submission_output = _workflow_submission_tool_output(result)
+            if protocol == llm_runtime.PROTOCOL_OPENAI_COMPATIBLE:
+                assert chat_messages is not None
+                _append_chat_tool_messages(chat_messages, result, submission_output)
+                final_transcript = AgentTranscriptState(
+                    protocol=protocol,
+                    chat_messages=chat_messages,
+                    current_response_id=current_response_id,
+                )
+            else:
+                assert responses_transcript is not None
+                responses_transcript.extend(
+                    [
+                        _responses_function_call_item(result),
+                        _responses_tool_output_item(result, submission_output),
+                    ]
+                )
+                final_transcript = AgentTranscriptState(
+                    protocol=protocol,
+                    responses_transcript=responses_transcript,
+                    current_response_id=current_response_id,
+                )
             return AgentStageResult(
                 submission=WorkflowSubmissionPayload.model_validate(result.parsed),
                 response_id=result.response_id,
                 response_ids=response_ids,
                 applications=applications,
+                transcript_state=final_transcript,
             )
 
         application = _document_tool_output(result, allowed_files=allowed_files)
@@ -314,6 +377,7 @@ def run_agent_stage(
 __all__ = [
     "AgentToolApplication",
     "AgentStageResult",
+    "AgentTranscriptState",
     "document_operation_from_tool_result",
     "run_agent_stage",
 ]

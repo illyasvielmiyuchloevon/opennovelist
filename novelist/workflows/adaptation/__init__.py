@@ -7,7 +7,6 @@ from . import materials as materials
 from . import prompts as prompts
 from . import document_generation as document_generation
 from . import review as review
-from . import group_outlines as group_outlines
 from . import runner as runner
 
 _MODULES = [
@@ -17,7 +16,6 @@ _MODULES = [
     prompts,
     document_generation,
     review,
-    group_outlines,
     runner,
 ]
 
