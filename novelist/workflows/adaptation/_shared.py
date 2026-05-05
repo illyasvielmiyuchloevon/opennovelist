@@ -48,8 +48,8 @@ GROUP_ROOT_DIRNAME = "group_injection"
 GROUP_DIR_SUFFIX = "_group_injection"
 REWRITTEN_ROOT_DIRNAME = "rewritten_novel"
 CHAPTER_GROUP_PLAN_MANIFEST_NAME = "00_chapter_group_plan.md"
-TARGET_CHAPTER_GROUP_SOURCE_CHARS = 24_000
-MAX_CHAPTERS_PER_GROUP = 8
+TARGET_CHAPTER_GROUP_SOURCE_CHARS = 20_000
+MAX_CHAPTERS_PER_GROUP = 7
 GLOBAL_FILE_NAMES = {
     # Compatibility alias: the former world_design document is now merged into
     # the canonical world_model document.

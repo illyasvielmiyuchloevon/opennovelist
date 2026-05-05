@@ -48,6 +48,9 @@ def process_volume_workflow(
                     continue
                 return ("group", next_group_after(volume_material, rewrite_manifest, target_group))
 
+            if run_mode == RUN_MODE_CHAPTER:
+                return ("chapter", None)
+
             if not all_chapters_passed(rewrite_manifest, volume_material):
                 fail(f"第 {volume_material['volume_number']} 卷仍有章节未完成，但未识别到可处理章节。")
             if not run_due_five_chapter_reviews(
@@ -77,6 +80,9 @@ def process_volume_workflow(
             volume_material=volume_material,
             chapter_number=next_chapter,
         )
+
+        if run_mode == RUN_MODE_CHAPTER:
+            return ("chapter", select_next_chapter(rewrite_manifest, volume_material))
 
         if not run_due_five_chapter_reviews(
             client=client,

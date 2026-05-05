@@ -165,6 +165,7 @@ def resolve_rewrite_run_mode(args: argparse.Namespace) -> str:
     return prompt_choice(
         "选择 novel_chapter_rewrite 的运行方式",
         [
+            (rewrite_workflow.RUN_MODE_CHAPTER, "按章节运行"),
             (rewrite_workflow.RUN_MODE_GROUP, "按章节组运行"),
             (rewrite_workflow.RUN_MODE_VOLUME, "按卷运行"),
         ],

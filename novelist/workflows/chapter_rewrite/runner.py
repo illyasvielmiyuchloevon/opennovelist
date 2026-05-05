@@ -108,7 +108,8 @@ def main() -> int:
             print_progress(
                 f"已加载第 {current_volume.name} 卷真实参考源："
                 f"{len(volume_material['chapters'])} 个章节文件，"
-                f"{len(volume_material['extras'])} 个补充文件；"
+                f"{len(volume_material['extras'])} 个非章节补充文件；"
+                "章节/组参考源只注入对应章节正文，补充文件不随章节工作流注入；"
                 "章节组仅作为运行范围；组内回到单章工作流逐章生成与审核。"
             )
             completed_scope, next_target = process_volume_workflow(
@@ -122,6 +123,20 @@ def main() -> int:
             requested_chapter = None
             if args.workflow_controlled:
                 print_progress("当前重写范围已完成，统一工作流将接管后续调度。")
+                return 0
+
+            if completed_scope == "chapter":
+                chapter_action = prompt_next_chapter(next_target)
+                if chapter_action == CHAPTER_AFTER_ACTION_NEXT and next_target is not None:
+                    requested_volume = current_volume.name
+                    requested_chapter = next_target
+                    continue
+                if chapter_action == CHAPTER_AFTER_ACTION_RESELECT_MODE:
+                    run_mode = prompt_rewrite_run_mode()
+                    print_progress(f"本次运行模式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
+                    requested_volume = current_volume.name
+                    requested_chapter = None
+                    continue
                 return 0
 
             if completed_scope == "group":

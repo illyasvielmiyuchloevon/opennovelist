@@ -377,12 +377,12 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             rewrite_workflow.RUN_MODE_VOLUME,
         )
 
-    def test_legacy_chapter_rewrite_run_mode_maps_to_group(self) -> None:
+    def test_chapter_rewrite_run_mode_is_a_real_entry(self) -> None:
         args = self.build_args()
         args.rewrite_run_mode = rewrite_workflow.RUN_MODE_CHAPTER
         self.assertEqual(
             workflow_entry.resolve_rewrite_run_mode(args),
-            rewrite_workflow.RUN_MODE_GROUP,
+            rewrite_workflow.RUN_MODE_CHAPTER,
         )
 
     def test_startup_mode_labels_cover_config_only(self) -> None:

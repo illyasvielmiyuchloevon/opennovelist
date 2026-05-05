@@ -9,6 +9,7 @@ from novelist.core.files import write_markdown_data
 from novelist.workflows import novel_chapter_rewrite as rewrite_workflow
 from novelist.workflows.chapter_rewrite import _shared as chapter_shared_module
 from novelist.workflows.chapter_rewrite import chapter_runner as chapter_runner_module
+from novelist.workflows.chapter_rewrite import project as chapter_project_module
 from novelist.workflows.chapter_rewrite import responses as chapter_responses_module
 from novelist.workflows.chapter_rewrite import review as chapter_review_module
 from novelist.workflows.chapter_rewrite import volume_runner as volume_runner_module
@@ -545,6 +546,9 @@ class GroupModeWorkflowTests(unittest.TestCase):
             self.assertIn("参考源正文 0002", chapter["text"])
             self.assertEqual(chapter["source_title"], "0002 标题")
             self.assertIn("参考源正文 0002", source_bundle)
+            self.assertNotIn("volume_note.md", source_bundle)
+            self.assertNotIn("补充资料", source_bundle)
+            self.assertEqual(source_char_count, len(source_bundle))
             self.assertGreater(source_char_count, len(chapter["text"]))
 
     def test_dynamic_groups_come_from_chapter_group_plan(self) -> None:
@@ -642,6 +646,77 @@ class GroupModeWorkflowTests(unittest.TestCase):
             ["0001", "0002", "0003"],
         )
         self.assertEqual(review.call_args.kwargs["target_group"], ["0001", "0002", "0003"])
+
+    def test_process_volume_chapter_mode_stops_after_one_chapter(self) -> None:
+        chapter_numbers = ["0001", "0002", "0003"]
+        volume_material = _volume_material(chapter_numbers)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            _seed_group_plan(project_root, [chapter_numbers])
+
+            def fake_chapter_workflow(*args, **kwargs):
+                chapter_number = kwargs["chapter_number"]
+                paths = volume_runner_module.rewrite_paths(project_root, "001", chapter_number)
+                _write_text(paths["chapter_outline"], f"# {chapter_number} 章纲\n")
+                _write_text(paths["rewritten_chapter"], f"{chapter_number} 仿写正文。\n")
+                _write_text(paths["chapter_review"], f"# {chapter_number} 章级审核\n\n通过。\n")
+                volume_runner_module.update_chapter_state(
+                    manifest,
+                    "001",
+                    chapter_number,
+                    status="passed",
+                    last_stage=volume_runner_module.PHASE3_REVIEW,
+                    pending_phases=[],
+                )
+
+            with (
+                patch.object(volume_runner_module, "run_chapter_workflow", side_effect=fake_chapter_workflow) as chapter_workflow,
+                patch.object(volume_runner_module, "run_due_five_chapter_reviews", return_value=True) as review,
+                patch.object(volume_runner_module, "print_progress"),
+            ):
+                completed_scope, next_target = volume_runner_module.process_volume_workflow(
+                    client=Mock(),
+                    model="test-model",
+                    rewrite_manifest=manifest,
+                    volume_material=volume_material,
+                    run_mode=rewrite_workflow.RUN_MODE_CHAPTER,
+                    requested_chapter="0001",
+                )
+
+        self.assertEqual((completed_scope, next_target), ("chapter", "0002"))
+        self.assertEqual(
+            [call.kwargs["chapter_number"] for call in chapter_workflow.call_args_list],
+            ["0001"],
+        )
+        review.assert_not_called()
+
+    def test_prompt_next_chapter_offers_next_mode_and_exit(self) -> None:
+        class TtyInput:
+            def isatty(self) -> bool:
+                return True
+
+        with (
+            patch.object(chapter_project_module.sys, "stdin", TtyInput()),
+            patch.object(
+                chapter_project_module,
+                "prompt_choice",
+                return_value=chapter_project_module.CHAPTER_AFTER_ACTION_RESELECT_MODE,
+            ) as prompt_choice,
+        ):
+            action = chapter_project_module.prompt_next_chapter("0002")
+
+        self.assertEqual(action, chapter_project_module.CHAPTER_AFTER_ACTION_RESELECT_MODE)
+        choices = prompt_choice.call_args.args[1]
+        self.assertEqual(
+            [choice[0] for choice in choices],
+            [
+                chapter_project_module.CHAPTER_AFTER_ACTION_NEXT,
+                chapter_project_module.CHAPTER_AFTER_ACTION_RESELECT_MODE,
+                chapter_project_module.CHAPTER_AFTER_ACTION_EXIT,
+            ],
+        )
 
     def test_process_volume_runs_single_chapters_then_group_review(self) -> None:
         chapter_numbers = ["0001", "0002", "0003", "0004", "0005"]
@@ -1259,6 +1334,8 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             self.assertIn("这是参考源正文。", captured_user_inputs[0])
             self.assertIn(f'"source_char_count": {len(source_text)}', captured_user_inputs[0])
+            self.assertNotIn("补充.txt", captured_user_inputs[0])
+            self.assertNotIn("补充资料", captured_user_inputs[0])
 
     def test_chapter_workflow_fails_if_current_source_chapter_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1432,6 +1509,14 @@ class ReviewFixLoopTests(unittest.TestCase):
             manifest = _manifest(project_root)
             chapter_numbers = ["0001", "0002"]
             volume_material = _volume_material(["0001", "0002", "0003"])
+            volume_material["extras"] = [
+                {
+                    "file_name": "简介.txt",
+                    "file_path": "source/001/简介.txt",
+                    "label": "简介",
+                    "text": "第一卷参考源简介，不应注入组审查。",
+                }
+            ]
             _seed_rewrite_files(project_root, chapter_numbers)
             passed_review = rewrite_workflow.WorkflowSubmissionPayload(
                 passed=True,
@@ -1463,6 +1548,8 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertIn("参考源章节 0002。", user_input)
             self.assertNotIn("[章节文件 0003.txt]", user_input)
             self.assertNotIn("参考源章节 0003。", user_input)
+            self.assertNotIn("简介.txt", user_input)
+            self.assertNotIn("第一卷参考源简介", user_input)
 
     def test_group_review_fails_if_current_group_source_chapter_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

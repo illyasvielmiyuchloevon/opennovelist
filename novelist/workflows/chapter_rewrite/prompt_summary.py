@@ -26,7 +26,7 @@ def chapter_shared_prefix_summary_lines(
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前章：{chapter_number}。"
         ),
         f"固定工作流规则：章节工作流规则 {5} 条。",
-        f"固定参考源文件清单：补充文件 {len(volume_material['extras'])} 个 + 当前源章节 1 个（{chapter['file_name']}）。",
+        f"固定参考源文件清单：当前源章节 1 个（{chapter['file_name']}）；卷内补充文件不注入章节工作流。",
         f"固定参考源原文：当前章 source bundle，字符数约 {source_char_count}。",
     ]
 
@@ -50,7 +50,7 @@ def group_review_shared_prefix_summary_lines(
             f"{chapter_numbers[0]}-{chapter_numbers[-1]}。"
         ),
         f"固定工作流规则：{FIVE_CHAPTER_REVIEW_NAME}规则 3 条。",
-        f"固定参考源输入：当前组 source bundle 字符数约 {source_char_count}，包含当前组参考源章节和补充文件。",
+        f"固定参考源输入：当前组 source bundle 字符数约 {source_char_count}，只包含当前组参考源章节。",
         f"固定已生成章节清单：当前组待审章节 {len(rewritten_chapters)} 章。",
     ]
 
@@ -311,21 +311,15 @@ def five_chapter_review_source_summary_lines(
         f"当前区间参考源总字符数约 {source_char_count}。",
         f"当前区间已生成章节数：{len(rewritten_chapters)}，正文总字符数约 {rewritten_total}。",
     ]
-    extra_names = [str(extra["file_name"]) for extra in volume_material.get("extras", [])]
-    for index, chunk in enumerate(_chunk_text_items(extra_names, 8), start=1):
-        lines.append(f"补充文件[{index}]：{chunk}")
     return lines
 
 def chapter_source_summary_lines(volume_material: dict[str, Any], chapter_number: str, source_char_count: int) -> list[str]:
     chapter = get_chapter_material(volume_material, chapter_number)
     lines = [
         f"当前源章节：{chapter['file_name']}（标题：{chapter['source_title']}，字符数约 {len(chapter['text'])}）",
-        f"当前卷补充文件：{len(volume_material['extras'])} 个，当前请求会一并注入。",
+        "当前请求只注入当前源章节；卷内补充文件不注入章节工作流。",
         f"当前章节参考源总字符数约 {source_char_count}。",
     ]
-    extra_names = [str(extra["file_name"]) for extra in volume_material["extras"]]
-    for index, chunk in enumerate(_chunk_text_items(extra_names, 8), start=1):
-        lines.append(f"补充文件[{index}]：{chunk}")
     lines.append("未输入的来源章节：同卷其他章节当前不注入。")
     return lines
 

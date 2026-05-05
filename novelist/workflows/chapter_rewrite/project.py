@@ -22,8 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chapter", help="指定处理某一章，例如 0001。")
     parser.add_argument(
         "--run-mode",
-        metavar="{group,volume}",
-        help="运行模式：group=按章节组运行，volume=按卷运行；旧值 chapter 会兼容为 group。",
+        metavar="{chapter,group,volume}",
+        help="运行模式：chapter=按章节运行，group=按章节组运行，volume=按卷运行。",
     )
     parser.add_argument(
         "--dry-run",
@@ -119,16 +119,20 @@ def resolve_project_input(
         )
     return project_root, source_root, manifest
 
-def resolve_run_mode(args: argparse.Namespace) -> str:
-    if args.run_mode:
-        return normalize_rewrite_run_mode(args.run_mode)
+def prompt_rewrite_run_mode() -> str:
     return prompt_choice(
         "请选择运行方式",
         [
+            (RUN_MODE_CHAPTER, "按章节运行"),
             (RUN_MODE_GROUP, "按章节组运行"),
             (RUN_MODE_VOLUME, "按卷运行"),
         ],
     )
+
+def resolve_run_mode(args: argparse.Namespace) -> str:
+    if args.run_mode:
+        return normalize_rewrite_run_mode(args.run_mode)
+    return prompt_rewrite_run_mode()
 
 def assess_volume_readiness(project_root: Path, source_root: Path, volume_number: str) -> dict[str, Any]:
     paths = rewrite_paths(project_root, volume_number)
@@ -204,6 +208,21 @@ def select_volume_to_process(
             return None
         return volume_dir
     return None
+
+def prompt_next_chapter(next_chapter: str | None) -> str:
+    if not sys.stdin or not sys.stdin.isatty():
+        print_progress("当前章节已完成；当前环境无法交互确认，程序将退出。")
+        return CHAPTER_AFTER_ACTION_EXIT
+    choices = [
+        (CHAPTER_AFTER_ACTION_RESELECT_MODE, "重新选择运行方式"),
+        (CHAPTER_AFTER_ACTION_EXIT, "退出程序"),
+    ]
+    if next_chapter is not None:
+        choices.insert(0, (CHAPTER_AFTER_ACTION_NEXT, f"继续下一章（{next_chapter}）"))
+        prompt = f"当前章节已完成。下一章是 {next_chapter}。请选择后续操作"
+    else:
+        prompt = "当前章节已完成。当前卷没有新的待处理章节。请选择后续操作"
+    return prompt_choice(prompt, choices)
 
 def prompt_next_volume(next_volume: Path | None) -> bool:
     if next_volume is None:
@@ -287,11 +306,13 @@ __all__ = [
     'manifest_matches_source_root',
     'find_existing_project_for_source',
     'resolve_project_input',
+    'prompt_rewrite_run_mode',
     'resolve_run_mode',
     'assess_volume_readiness',
     'print_volume_readiness_summary',
     'ensure_source_volumes_stable_for_rewrite',
     'select_volume_to_process',
+    'prompt_next_chapter',
     'prompt_next_volume',
     'prompt_next_group',
     'find_next_volume_after',

@@ -1076,7 +1076,32 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
         self.assertEqual(plan["status"], "ready")
         self.assertEqual(
             [group["chapter_numbers"] for group in plan["groups"]],
-            [["0001", "0002", "0003", "0004", "0005", "0006"], ["0007", "0008", "0009"]],
+            [["0001", "0002", "0003", "0004", "0005"], ["0006", "0007", "0008", "0009"]],
+        )
+        self.assertEqual(plan["target_group_source_chars"], 20_000)
+        self.assertEqual(plan["max_chapters_per_group"], 7)
+
+    def test_adaptive_chapter_group_plan_caps_groups_at_seven_chapters(self) -> None:
+        volume_material = {
+            **_volume_material("001"),
+            "chapters": [
+                {
+                    "chapter_number": f"{index:04d}",
+                    "text": "x",
+                }
+                for index in range(1, 16)
+            ],
+        }
+
+        groups = adaptation_workflow.build_adaptive_chapter_group_plan(volume_material)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            [group["chapter_numbers"] for group in groups],
+            [
+                ["0001", "0002", "0003", "0004", "0005", "0006", "0007"],
+                ["0008", "0009", "0010", "0011", "0012", "0013", "0014"],
+                ["0015"],
+            ],
         )
 
     def test_review_payload_for_later_volume_includes_existing_style_guide(self) -> None:

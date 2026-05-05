@@ -37,8 +37,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rewrite-run-mode",
-        metavar="{group,volume}",
-        help="novel_chapter_rewrite 的运行方式：group=按章节组运行，volume=按卷运行；旧值 chapter 会兼容为 group。",
+        metavar="{chapter,group,volume}",
+        help="novel_chapter_rewrite 的运行方式：chapter=按章节运行，group=按章节组运行，volume=按卷运行。",
     )
     parser.add_argument("--adaptation-volume", help="只让 novel_adaptation 处理指定卷，例如 001。")
     parser.add_argument("--rewrite-volume", help="只让 novel_chapter_rewrite 处理指定卷，例如 001。")

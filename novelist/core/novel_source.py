@@ -233,28 +233,12 @@ def build_chapter_source_bundle(
     chapter_number: str,
 ) -> tuple[str, int]:
     chapter = get_chapter_material(volume_material, chapter_number)
-    blocks: list[str] = []
-
-    for extra in volume_material["extras"]:
-        blocks.append(
-            "\n".join(
-                [
-                    f"[补充文件 {extra['file_name']}]",
-                    f"文件路径：{extra['file_path']}",
-                    extra["text"],
-                ]
-            )
-        )
-
-    blocks.append(
-        "\n".join(
-            [
-                f"[章节文件 {chapter['file_name']}]",
-                f"章节编号：{chapter['chapter_number']}",
-                f"文件路径：{chapter['file_path']}",
-                chapter["text"],
-            ]
-        )
+    source_bundle = "\n".join(
+        [
+            f"[章节文件 {chapter['file_name']}]",
+            f"章节编号：{chapter['chapter_number']}",
+            f"文件路径：{chapter['file_path']}",
+            chapter["text"],
+        ]
     )
-    source_bundle = "\n\n".join(blocks)
     return source_bundle, len(source_bundle)

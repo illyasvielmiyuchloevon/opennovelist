@@ -271,17 +271,7 @@ def source_context_inventory(
     chapter_number: str,
 ) -> list[dict[str, Any]]:
     chapter = get_chapter_material(volume_material, chapter_number)
-    inventory: list[dict[str, Any]] = []
-    for extra in volume_material["extras"]:
-        inventory.append(
-            {
-                "type": "extra",
-                "file_name": extra["file_name"],
-                "file_path": extra["file_path"],
-                "char_count": len(extra["text"]),
-            }
-        )
-    inventory.append(
+    return [
         {
             "type": "chapter",
             "file_name": chapter["file_name"],
@@ -290,8 +280,7 @@ def source_context_inventory(
             "source_title": chapter["source_title"],
             "char_count": len(chapter["text"]),
         }
-    )
-    return inventory
+    ]
 
 def build_chapter_shared_prompt(
     *,
@@ -371,17 +360,6 @@ def build_five_chapter_source_bundle(
 ) -> tuple[str, int]:
     selected = {item.zfill(4) for item in chapter_numbers}
     blocks: list[str] = []
-
-    for extra in volume_material["extras"]:
-        blocks.append(
-            "\n".join(
-                [
-                    f"[补充文件 {extra['file_name']}]",
-                    f"文件路径：{extra['file_path']}",
-                    extra["text"],
-                ]
-            )
-        )
 
     for chapter in volume_material["chapters"]:
         if chapter["chapter_number"] not in selected:
