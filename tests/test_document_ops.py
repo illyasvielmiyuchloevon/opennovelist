@@ -304,6 +304,88 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertIn("林玄进入天海道院。", updated)
             self.assertNotIn("不存在的人名", updated)
 
+    def test_apply_document_operation_rejects_full_text_edit_replacement_for_protected_chapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            chapter_path = root / "0008.txt"
+            current = "第一段原文。\n\n第二段原文。\n\n第三段原文。\n"
+            chapter_path.write_text(current, encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_full_replace",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=document_ops.DocumentEditPayload(
+                    files=[
+                        document_ops.DocumentEditFile(
+                            file_key="rewritten_chapter",
+                            edits=[
+                                document_ops.DocumentEditEdit(
+                                    old_text=current,
+                                    new_text="删到只剩一小段。\n",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with self.assertRaisesRegex(ValueError, "禁止把整章全文作为单个 old_text 直接整体替换"):
+                document_ops.apply_document_operation(
+                    operation,
+                    allowed_files={
+                        "rewritten_chapter": document_ops.protected_rewritten_chapter_target(chapter_path),
+                    },
+                )
+
+    def test_apply_document_operation_rejects_excessive_shrink_for_protected_chapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            chapter_path = root / "0009.txt"
+            current = (
+                "第一段原文很长很长。\n" * 20
+                + "\n"
+                + "第二段原文很长很长。\n" * 20
+                + "\n"
+                + "第三段原文很长很长。\n" * 20
+            )
+            chapter_path.write_text(current, encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="edit",
+                response_id="resp_shrink",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                edit_payload=document_ops.DocumentEditPayload(
+                    files=[
+                        document_ops.DocumentEditFile(
+                            file_key="rewritten_chapter",
+                            edits=[
+                                document_ops.DocumentEditEdit(
+                                    old_text="第二段原文很长很长。\n" * 20 + "\n" + "第三段原文很长很长。\n" * 20,
+                                    new_text="第二三段被压成一句话。\n",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with self.assertRaisesRegex(ValueError, "低于受保护正文允许的最小比例"):
+                document_ops.apply_document_operation(
+                    operation,
+                    allowed_files={
+                        "rewritten_chapter": document_ops.protected_rewritten_chapter_target(chapter_path),
+                    },
+                )
+
     def test_document_edit_payload_accepts_external_field_names(self) -> None:
         payload = document_ops.DocumentEditPayload.model_validate(
             {

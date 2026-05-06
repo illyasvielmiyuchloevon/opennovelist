@@ -206,6 +206,8 @@ def maybe_configure_openai(
         )
         print_progress(f"统一入口已重新写入 base_url：{settings['base_url']}")
         print_progress(f"统一入口已重新写入模型：{settings['model']}")
+        for line in openai_config.openai_compatible_cache_summary_lines(settings):
+            print_progress(line)
         return
 
     _, global_config = openai_config.resolve_api_key(
@@ -229,6 +231,8 @@ def maybe_configure_openai(
     )
     print_progress(f"统一入口已写入 base_url：{settings['base_url']}")
     print_progress(f"统一入口已写入模型：{settings['model']}")
+    for line in openai_config.openai_compatible_cache_summary_lines(settings):
+        print_progress(line)
 
 def remember_workflow_input(input_path: Path) -> None:
     global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)

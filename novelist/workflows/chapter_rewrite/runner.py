@@ -87,11 +87,14 @@ def main() -> int:
         print_progress(f"本次使用 base_url：{openai_settings['base_url']}")
         print_progress(f"本次使用模型：{openai_settings['model']}")
         print_progress(f"本次使用协议：{openai_settings.get('protocol', 'responses')}")
+        for line in openai_config.openai_compatible_cache_summary_lines(openai_settings):
+            print_progress(line)
         client = openai_config.create_openai_client(
             api_key=api_key,
             base_url=openai_settings["base_url"],
             protocol=openai_settings.get("protocol", openai_config.PROTOCOL_RESPONSES),
             provider=openai_settings.get("provider", openai_config.PROVIDER_OPENAI),
+            openai_compatible_options=openai_settings.get("openai_compatible_options"),
         )
 
         requested_volume = target_volume.name

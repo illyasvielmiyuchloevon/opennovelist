@@ -136,6 +136,16 @@
 
 章节重写按单章会话组织：章纲、正文、状态文档、章级审核连续使用同一个章节缓存键。组审查和卷级审核使用各自审核缓存键，并在失败返修后沿用审核状态中的 response id。
 
+`Responses` 协议会直接发送 `prompt_cache_key`。`OpenAI Compatible` 协议没有统一缓存标准，因此运行时改为支持 provider-specific 透传：
+
+- `openai_compatible_extra_body`
+- `openai_compatible_extra_headers`
+- `openai_compatible_cache_read_paths`
+- `openai_compatible_cache_write_paths`
+- `openai_compatible_transport`
+
+前两项用于把 `{{prompt_cache_key}}` 或其他兼容服务要求的参数塞进 `chat.completions.create(...)` 请求；中间两项用于把兼容服务自定义的 `usage` 字段映射回统一的 `缓存命中 / 缓存写入` 统计；`openai_compatible_transport` 用于控制 Chat Completions 走 `nonstream` 还是 `stream`。当前工作流默认 `nonstream`，因为我们只需要最终工具结果，这更接近 opencode 的 `doGenerate` 路径；如果上游确实需要 SSE，再显式切到 `stream`。
+
 ## 7. 兼容原则
 
 - 旧工程已经完成资料适配的卷直接进入章节重写候选。

@@ -312,6 +312,29 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertNotIn("writing_skill_reference", payload)
         self.assertIn("review_skill_reference", payload)
 
+    def test_group_review_does_not_include_chapter_review_skill_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manifest = _manifest(project_root)
+            chapter_numbers = ["0001", "0002"]
+            volume_material = _volume_material(["0001", "0002"])
+            _seed_rewrite_files(project_root, chapter_numbers)
+            catalog = rewrite_workflow.read_doc_catalog(project_root, "001", "0001")
+
+            payload, _, _ = rewrite_workflow.build_five_chapter_review_payload(
+                project_root=project_root,
+                volume_material=volume_material,
+                chapter_numbers=chapter_numbers,
+                catalog=catalog,
+                rewritten_chapters=rewrite_workflow.build_rewritten_chapters_payload(project_root, "001", chapter_numbers),
+                source_bundle="参考源章节 0001。\n\n参考源章节 0002。",
+            )
+
+        self.assertNotIn("review_skill_reference", payload)
+        self.assertTrue(
+            all("chapter_review skill" not in str(item) for item in payload.get("requirements", []))
+        )
+
     def test_phase2_chapter_text_revision_payload_uses_existing_chapter_context(self) -> None:
         volume_material = {
             "volume_number": "001",
@@ -346,7 +369,13 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertEqual(payload["update_target_files"][0]["preferred_mode"], "edit_or_patch")
         self.assertEqual(payload["update_target_files"][0]["write_policy"], "no_write_if_exists")
         self.assertIn("按修改意图选择工具", payload["update_target_files"][0]["tool_selection_policy"])
+        self.assertNotIn("current_content", payload["update_target_files"][0])
+        self.assertEqual(payload["update_target_files"][0]["current_char_count"], len("这是现有章节正文。"))
         self.assertEqual(payload["current_generated_chapter"]["content"], "这是现有章节正文。")
+        key_order = list(payload.keys())
+        self.assertLess(key_order.index("rolling_injected_global_docs"), key_order.index("stable_injected_chapter_docs"))
+        self.assertLess(key_order.index("stable_injected_chapter_docs"), key_order.index("current_generated_chapter"))
+        self.assertLess(key_order.index("current_generated_chapter"), key_order.index("document_request"))
 
 
 class ChapterStageToolContractTests(unittest.TestCase):
@@ -972,8 +1001,8 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertIn("必须调用 submit_workflow_result", payload["latest_work_target"]["instruction"])
 
         self.assertEqual(list(fix_payload.keys())[-1], "latest_work_target")
-        self.assertEqual(fix_payload["latest_work_target"]["forbidden_tool"], rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
-        self.assertIn("必须调用 write/edit/patch", fix_payload["latest_work_target"]["instruction"])
+        self.assertEqual(fix_payload["latest_work_target"]["required_tool"], rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
+        self.assertIn("必须先调用 write/edit/patch", fix_payload["latest_work_target"]["instruction"])
 
         self.assertEqual(list(repair_payload.keys())[-1], "latest_work_target")
         self.assertEqual(repair_payload["latest_work_target"]["forbidden_tool"], rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
@@ -1010,6 +1039,28 @@ class ReviewFixLoopTests(unittest.TestCase):
             call_tools.assert_not_called()
             self.assertTrue(debug_path.exists())
             self.assertIn("未返回可修复目标", debug_path.read_text(encoding="utf-8"))
+
+    def test_review_fix_target_paths_protect_rewritten_chapter_from_whole_file_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            paths = rewrite_workflow.rewrite_paths(project_root, "001", "0001")
+            _write_text(paths["rewritten_chapter"], "原正文。\n")
+
+            chapter_targets = rewrite_workflow.chapter_review_fix_target_paths(paths)
+            group_targets = rewrite_workflow.multi_chapter_review_fix_target_paths(
+                project_root,
+                "001",
+                ["0001"],
+            )
+
+            chapter_target = chapter_targets["rewritten_chapter"]
+            group_target = group_targets["0001_rewritten_chapter"]
+            self.assertIsInstance(chapter_target, rewrite_workflow.document_ops.DocumentTarget)
+            self.assertIsInstance(group_target, rewrite_workflow.document_ops.DocumentTarget)
+            self.assertTrue(chapter_target.reject_full_content_replacement)
+            self.assertTrue(group_target.reject_full_content_replacement)
+            self.assertEqual(chapter_target.min_output_char_ratio_on_update, 0.5)
+            self.assertEqual(group_target.min_output_char_ratio_on_update, 0.5)
 
     def test_chapter_review_failure_repairs_without_restarting_generation_phases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1450,20 +1501,17 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             def fake_group_agent(*args, **kwargs):
                 if fake_group_agent.call_count == 0:
-                    _write_text(
-                        rewrite_workflow.rewrite_paths(project_root, "001", "0003")["rewritten_chapter"],
-                        "0003 组审修复后的正文。",
-                    )
                     fake_group_agent.call_count += 1
                     return _rewrite_agent_stage_result(
                         failed_review,
                         "resp_group_review_1",
-                        ["resp_group_fix", "resp_group_review_1"],
+                        transcript_state="ts_group_review_1",
                     )
                 fake_group_agent.call_count += 1
                 return _rewrite_agent_stage_result(passed_review, "resp_group_review_2")
 
             fake_group_agent.call_count = 0
+            fixed_path = rewrite_workflow.rewrite_paths(project_root, "001", "0003")["rewritten_chapter"]
 
             with (
                 patch.object(
@@ -1471,9 +1519,18 @@ class ReviewFixLoopTests(unittest.TestCase):
                     "run_agent_stage",
                     side_effect=fake_group_agent,
                 ) as agent_call,
+                patch.object(
+                    chapter_review_module,
+                    "apply_review_fix_with_repair",
+                    return_value=(
+                        _applied_fix("0003_rewritten_chapter", fixed_path),
+                        "resp_group_fix",
+                        ["resp_group_fix"],
+                    ),
+                ) as fix_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
             ):
-                passed = rewrite_workflow.run_five_chapter_review(
+                passed = chapter_review_module.run_five_chapter_review(
                     client=Mock(),
                     model="test-model",
                     rewrite_manifest=manifest,
@@ -1493,13 +1550,20 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(agent_call.call_args_list[0].kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
             self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
             self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
-            self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_group_review_1")
+            self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_group_fix")
             self.assertIn("group_review", agent_call.call_args_list[0].kwargs["allowed_files"])
+            fix_call.assert_called_once()
+            fix_review = fix_call.call_args.kwargs["review"]
+            self.assertFalse(fix_review.passed)
+            self.assertEqual(fix_review.chapters_to_revise, ["0003"])
+            self.assertEqual(fix_review.rewrite_targets, ["0003:chapter_text"])
+            self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_group_review_1")
+            self.assertEqual(fix_call.call_args.kwargs["review_transcript_state"], "ts_group_review_1")
             self.assertEqual(group_state["status"], "passed")
             self.assertEqual(group_state["last_response_id"], "resp_group_review_2")
             self.assertEqual(
                 group_state["response_ids"],
-                ["resp_group_fix", "resp_group_review_1", "resp_group_review_2"],
+                ["resp_group_review_1", "resp_group_fix", "resp_group_review_2"],
             )
             self.assertNotEqual(chapter_state.get("status"), "needs_revision")
 
@@ -1541,7 +1605,14 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             self.assertTrue(passed)
             user_input = agent_call.call_args.kwargs["user_input"]
+            shared_context, dynamic_request = user_input.split("## Dynamic Request", 1)
+            self.assertIn("source_files", shared_context)
+            self.assertIn("rewritten_chapter_inventory", shared_context)
+            self.assertNotIn("参考源章节 0001。", shared_context)
+            self.assertNotIn("0001 原正文问题。", shared_context)
             self.assertIn("current_range_source_bundle", user_input)
+            self.assertIn("参考源章节 0001。", dynamic_request)
+            self.assertIn("0001 原正文问题。", dynamic_request)
             self.assertIn("[章节文件 0001.txt]", user_input)
             self.assertIn("参考源章节 0001。", user_input)
             self.assertIn("[章节文件 0002.txt]", user_input)
@@ -1653,6 +1724,21 @@ class ReviewFixLoopTests(unittest.TestCase):
                         for index in range(1, 11)
                     ],
                 ) as agent_call,
+                patch.object(
+                    chapter_review_module,
+                    "apply_review_fix_with_repair",
+                    side_effect=[
+                        (
+                            _applied_fix(
+                                "0003_rewritten_chapter",
+                                rewrite_workflow.rewrite_paths(project_root, "001", "0003")["rewritten_chapter"],
+                            ),
+                            f"resp_group_fix_{index}",
+                            [f"resp_group_fix_{index}"],
+                        )
+                        for index in range(1, 10)
+                    ],
+                ) as fix_call,
                 patch.object(chapter_review_module, "print_request_context_summary"),
             ):
                 chapter_review_module.run_five_chapter_review(
@@ -1672,7 +1758,8 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(rewrite_workflow.MAX_GROUP_REVIEW_ATTEMPTS, 10)
             self.assertEqual(rewrite_workflow.MAX_GROUP_REVIEW_FIX_ATTEMPTS, 9)
             self.assertEqual(agent_call.call_count, 10)
-            self.assertEqual(agent_call.call_args_list[9].kwargs["previous_response_id"], "resp_group_review_9")
+            self.assertEqual(fix_call.call_count, 9)
+            self.assertEqual(agent_call.call_args_list[9].kwargs["previous_response_id"], "resp_group_fix_9")
             self.assertEqual(group_state["status"], "failed")
             self.assertEqual(group_state["attempts"], 10)
 
@@ -1697,26 +1784,17 @@ class ReviewFixLoopTests(unittest.TestCase):
 
             def fake_volume_agent(*args, **kwargs):
                 if fake_volume_agent.call_count == 0:
-                    _write_text(
-                        rewrite_workflow.rewrite_paths(project_root, "001", "0002")["rewritten_chapter"],
-                        "0002 卷审修复后的正文。",
-                    )
                     fake_volume_agent.call_count += 1
                     return _rewrite_agent_stage_result(
                         failed_review,
                         "resp_volume_review_1",
-                        ["resp_volume_fix", "resp_volume_review_1"],
-                        applications=[
-                            _agent_application(
-                                "submit_document_edits",
-                                ["0002_rewritten_chapter"],
-                            )
-                        ],
+                        transcript_state="ts_volume_review_1",
                     )
                 fake_volume_agent.call_count += 1
                 return _rewrite_agent_stage_result(passed_review, "resp_volume_review_2")
 
             fake_volume_agent.call_count = 0
+            fixed_path = rewrite_workflow.rewrite_paths(project_root, "001", "0002")["rewritten_chapter"]
 
             with (
                 patch.object(
@@ -1724,11 +1802,20 @@ class ReviewFixLoopTests(unittest.TestCase):
                     "run_agent_stage",
                     side_effect=fake_volume_agent,
                 ) as agent_call,
+                patch.object(
+                    chapter_review_module,
+                    "apply_review_fix_with_repair",
+                    return_value=(
+                        _applied_fix("0002_rewritten_chapter", fixed_path),
+                        "resp_volume_fix",
+                        ["resp_volume_fix"],
+                    ),
+                ) as fix_call,
                 patch.object(rewrite_workflow, "print_request_context_summary"),
                 patch.object(rewrite_workflow, "print_progress"),
                 patch.object(chapter_shared_module, "print_progress") as agent_progress,
             ):
-                passed = rewrite_workflow.run_volume_review(
+                passed = chapter_review_module.run_volume_review(
                     client=Mock(),
                     model="test-model",
                     rewrite_manifest=manifest,
@@ -1742,21 +1829,24 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(agent_call.call_args_list[0].kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
             self.assertEqual(agent_call.call_args_list[1].kwargs["instructions"], rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
             self.assertIsNone(agent_call.call_args_list[0].kwargs["previous_response_id"])
-            self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_volume_review_1")
+            self.assertEqual(agent_call.call_args_list[1].kwargs["previous_response_id"], "resp_volume_fix")
             self.assertIn("volume_review", agent_call.call_args_list[0].kwargs["allowed_files"])
+            fix_call.assert_called_once()
+            fix_review = fix_call.call_args.kwargs["review"]
+            self.assertFalse(fix_review.passed)
+            self.assertEqual(fix_review.chapters_to_revise, ["0002"])
+            self.assertEqual(fix_review.rewrite_targets, ["0002:chapter_text"])
+            self.assertEqual(fix_call.call_args.kwargs["previous_response_id"], "resp_volume_review_1")
+            self.assertEqual(fix_call.call_args.kwargs["review_transcript_state"], "ts_volume_review_1")
             self.assertEqual(volume_state["status"], "passed")
             self.assertEqual(volume_state["last_response_id"], "resp_volume_review_2")
             self.assertEqual(
                 volume_state["response_ids"],
-                ["resp_volume_fix", "resp_volume_review_1", "resp_volume_review_2"],
+                ["resp_volume_review_1", "resp_volume_fix", "resp_volume_review_2"],
             )
             self.assertIn("001", manifest["processed_volumes"])
             self.assertNotEqual(chapter_state.get("status"), "needs_revision")
             progress_lines = "\n".join(str(call.args[0]) for call in agent_progress.call_args_list if call.args)
-            self.assertIn(
-                "卷级审核 agent 本轮执行文档工具 1 次，累计变更=0002_rewritten_chapter。",
-                progress_lines,
-            )
             self.assertIn(
                 "卷级审核 agent 提交审核结论：未通过；返修章节=0002；返修目标=0002:chapter_text；阻塞问题=1 项。",
                 progress_lines,
@@ -1843,6 +1933,21 @@ class ReviewFixLoopTests(unittest.TestCase):
                         for index in range(1, 11)
                     ],
                 ) as agent_call,
+                patch.object(
+                    chapter_review_module,
+                    "apply_review_fix_with_repair",
+                    side_effect=[
+                        (
+                            _applied_fix(
+                                "0002_rewritten_chapter",
+                                rewrite_workflow.rewrite_paths(project_root, "001", "0002")["rewritten_chapter"],
+                            ),
+                            f"resp_volume_fix_{index}",
+                            [f"resp_volume_fix_{index}"],
+                        )
+                        for index in range(1, 10)
+                    ],
+                ) as fix_call,
                 patch.object(chapter_review_module, "print_request_context_summary"),
             ):
                 chapter_review_module.run_volume_review(
@@ -1856,7 +1961,8 @@ class ReviewFixLoopTests(unittest.TestCase):
             self.assertEqual(rewrite_workflow.MAX_VOLUME_REVIEW_ATTEMPTS, 10)
             self.assertEqual(rewrite_workflow.MAX_VOLUME_REVIEW_FIX_ATTEMPTS, 9)
             self.assertEqual(agent_call.call_count, 10)
-            self.assertEqual(agent_call.call_args_list[9].kwargs["previous_response_id"], "resp_volume_review_9")
+            self.assertEqual(fix_call.call_count, 9)
+            self.assertEqual(agent_call.call_args_list[9].kwargs["previous_response_id"], "resp_volume_fix_9")
             self.assertEqual(volume_state["status"], "failed")
             self.assertEqual(volume_state["attempts"], 10)
 
@@ -1925,11 +2031,17 @@ class SupportUpdateScopeTests(unittest.TestCase):
         self.assertIn("current_generated_chapter", support_payload)
         self.assertIn("current_generated_chapter", review_payload)
         existing_target = next(
-            item for item in support_payload["update_target_files"] if item["current_content"].strip()
+            item for item in support_payload["update_target_files"] if item["current_char_count"] > 0
         )
         self.assertEqual(existing_target["preferred_mode"], "edit_or_patch")
         self.assertEqual(existing_target["write_policy"], "no_write_if_exists")
         self.assertIn("改已有条目", existing_target["tool_selection_policy"])
+        self.assertNotIn("current_content", existing_target)
+        self.assertGreater(existing_target["current_char_count"], 0)
+        support_key_order = list(support_payload.keys())
+        self.assertLess(support_key_order.index("rolling_injected_global_docs"), support_key_order.index("stable_injected_chapter_docs"))
+        self.assertLess(support_key_order.index("stable_injected_chapter_docs"), support_key_order.index("current_generated_chapter"))
+        self.assertLess(support_key_order.index("current_generated_chapter"), support_key_order.index("document_request"))
 
 
 class StableGlobalInjectionOrderingTests(unittest.TestCase):

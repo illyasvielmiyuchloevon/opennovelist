@@ -567,6 +567,75 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             openai_config.PROTOCOL_OPENAI_COMPATIBLE,
         )
 
+    def test_resolve_openai_settings_loads_openai_compatible_options_from_global_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / ".novel_adaptation" / "config.json"
+            global_config = {
+                "last_provider": openai_config.PROVIDER_OPENAI_COMPATIBLE,
+                "last_protocol": openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+                "last_base_url": "https://integrate.api.nvidia.com/v1",
+                "last_model": "nvidia/test-model",
+                openai_config.OPENAI_COMPATIBLE_EXTRA_BODY_CONFIG_KEY: {
+                    "prompt_cache_key": "{{prompt_cache_key}}",
+                },
+                openai_config.OPENAI_COMPATIBLE_CACHE_READ_PATHS_CONFIG_KEY: [
+                    "nim_cache.hit_tokens",
+                ],
+            }
+
+            settings, _ = openai_config.resolve_openai_settings(
+                cli_provider=openai_config.PROVIDER_OPENAI_COMPATIBLE,
+                cli_protocol=openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+                cli_base_url=None,
+                cli_model=None,
+                global_config=global_config,
+                config_path=config_path,
+            )
+
+        self.assertEqual(settings["base_url"], "https://integrate.api.nvidia.com/v1")
+        self.assertEqual(
+            settings["openai_compatible_options"]["extra_body"],
+            {"prompt_cache_key": "{{prompt_cache_key}}"},
+        )
+        self.assertEqual(
+            settings["openai_compatible_options"]["cache_read_paths"],
+            [["nim_cache", "hit_tokens"]],
+        )
+
+    def test_openai_compatible_cache_summary_lines_without_provider_specific_config(self) -> None:
+        settings = {
+            "provider": openai_config.PROVIDER_OPENAI_COMPATIBLE,
+            "protocol": openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+        }
+
+        lines = openai_config.openai_compatible_cache_summary_lines(settings)
+
+        self.assertEqual(len(lines), 3)
+        self.assertIn("未配置 provider-specific 缓存参数", lines[0])
+        self.assertIn("未配置自定义 usage 路径", lines[1])
+        self.assertIn("默认使用非流式", lines[2])
+
+    def test_openai_compatible_cache_summary_lines_with_prompt_cache_passthrough_and_custom_usage(self) -> None:
+        settings = {
+            "provider": openai_config.PROVIDER_OPENAI_COMPATIBLE,
+            "protocol": openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+            "openai_compatible_options": {
+                "extra_body": {"prompt_cache_key": "{{prompt_cache_key}}"},
+                "extra_headers": {"x-cache-key": "{{prompt_cache_key}}"},
+                "cache_read_paths": [["nim_cache", "hit_tokens"]],
+                "cache_write_paths": [["nim_cache", "write_tokens"]],
+            },
+        }
+
+        lines = openai_config.openai_compatible_cache_summary_lines(settings)
+
+        self.assertEqual(len(lines), 3)
+        self.assertIn("透传 {{prompt_cache_key}}", lines[0])
+        self.assertIn("read=1", lines[1])
+        self.assertIn("write=1", lines[1])
+        self.assertIn("默认使用非流式", lines[2])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from openai import OpenAI
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from .files import (
     convert_to_line_ending,
@@ -20,12 +20,14 @@ from . import responses_runtime as llm_runtime
 
 
 DOCUMENT_WRITE_TOOL_NAME = "submit_document_writes"
+DOCUMENT_WRITE_TOOL_COMPATIBLE_ALIAS = "write"
 DOCUMENT_WRITE_TOOL_DESCRIPTION = (
     "提交一个或多个完整目标文件正文，目标文件可以是章节正文 txt、Markdown 状态文档或其他工作流文件。"
     "仅在首次创建文件、文件为空、或确实需要完整新建文档结构时使用。"
     "如果目标文件已经存在且只需要修改已有内容，优先改用 edit 工具；如果需要插入、追加或按标题调整结构，优先改用 patch 工具。"
 )
 DOCUMENT_EDIT_TOOL_NAME = "submit_document_edits"
+DOCUMENT_EDIT_TOOL_COMPATIBLE_ALIAS = "edit"
 DOCUMENT_EDIT_TOOL_DESCRIPTION = (
     "提交一个或多个目标文件的精确编辑计划，目标文件可以是章节正文 txt、Markdown 状态文档或其他工作流文件。"
     "适用于已有文件中的某一段、某一条记录、某几行或某个已有块的局部修改。"
@@ -33,6 +35,7 @@ DOCUMENT_EDIT_TOOL_DESCRIPTION = (
     "如果只是修改已有内容本身，优先使用 edit 工具，而不是大块 patch 替换。"
 )
 DOCUMENT_PATCH_TOOL_NAME = "submit_document_patches"
+DOCUMENT_PATCH_TOOL_COMPATIBLE_ALIAS = "patch"
 DOCUMENT_PATCH_TOOL_DESCRIPTION = (
     "提交一个或多个目标文件的增量 patch 计划，目标文件可以是章节正文 txt、Markdown 状态文档或其他工作流文件。"
     "一次调用可以更新多个文件，每个文件可以包含多个编辑块。"
@@ -65,6 +68,29 @@ class DocumentWritePayload(BaseModel):
     files: list[DocumentWriteFile] = Field(default_factory=list, description="需要整篇写入的文件列表。")
     note: str = Field("", description="本次写入的简短说明。")
 
+    @model_validator(mode="before")
+    @classmethod
+    def wrap_single_file_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if isinstance(value.get("files"), list):
+            return value
+        file_path = value.get("file_path", value.get("filePath", ""))
+        content = value.get("content")
+        file_key = value.get("file_key", value.get("fileKey", ""))
+        if content is None or (not file_path and not file_key):
+            return value
+        return {
+            "files": [
+                {
+                    "file_key": file_key,
+                    "file_path": file_path,
+                    "content": content,
+                }
+            ],
+            "note": value.get("note", ""),
+        }
+
 
 class DocumentEditEdit(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -94,6 +120,37 @@ class DocumentEditFile(BaseModel):
 class DocumentEditPayload(BaseModel):
     files: list[DocumentEditFile] = Field(default_factory=list, description="需要进行精确编辑的文件列表。")
     note: str = Field("", description="本次编辑的简短说明。")
+
+    @model_validator(mode="before")
+    @classmethod
+    def wrap_single_file_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if isinstance(value.get("files"), list):
+            return value
+        file_path = value.get("file_path", value.get("filePath", ""))
+        file_key = value.get("file_key", value.get("fileKey", ""))
+        old_text = value.get("old_text", value.get("oldString"))
+        new_text = value.get("new_text", value.get("newString"))
+        if old_text is None or new_text is None or (not file_path and not file_key):
+            return value
+        return {
+            "files": [
+                {
+                    "file_key": file_key,
+                    "file_path": file_path,
+                    "edits": [
+                        {
+                            "old_text": old_text,
+                            "new_text": new_text,
+                            "replace_all": value.get("replace_all", value.get("replaceAll", False)),
+                            "description": value.get("description", ""),
+                        }
+                    ],
+                }
+            ],
+            "note": value.get("note", ""),
+        }
 
 
 class DocumentPatchEdit(BaseModel):
@@ -145,6 +202,38 @@ class DocumentPatchPayload(BaseModel):
     files: list[DocumentPatchFile] = Field(default_factory=list, description="需要 patch 的文件列表。")
     note: str = Field("", description="本次 patch 的简短说明。")
 
+    @model_validator(mode="before")
+    @classmethod
+    def wrap_single_file_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if isinstance(value.get("files"), list):
+            return value
+        file_path = value.get("file_path", value.get("filePath", ""))
+        file_key = value.get("file_key", value.get("fileKey", ""))
+        action = value.get("action")
+        new_text = value.get("new_text", value.get("newString"))
+        if action is None or new_text is None or (not file_path and not file_key):
+            return value
+        return {
+            "files": [
+                {
+                    "file_key": file_key,
+                    "file_path": file_path,
+                    "edits": [
+                        {
+                            "action": action,
+                            "match_text": value.get("match_text", value.get("matchText", value.get("oldString", ""))),
+                            "new_text": new_text,
+                            "replace_all": value.get("replace_all", value.get("replaceAll", False)),
+                            "description": value.get("description", ""),
+                        }
+                    ],
+                }
+            ],
+            "note": value.get("note", ""),
+        }
+
 
 @dataclass
 class DocumentOperationCallResult:
@@ -188,6 +277,82 @@ class AppliedDocumentOperation:
 class DocumentTarget:
     path: Path
     allow_write_on_existing: bool = False
+    reject_full_content_replacement: bool = False
+    min_output_char_ratio_on_update: float | None = None
+
+
+def protected_rewritten_chapter_target(path: Path) -> DocumentTarget:
+    return DocumentTarget(
+        path=path,
+        reject_full_content_replacement=True,
+        min_output_char_ratio_on_update=0.5,
+    )
+
+
+def _normalized_nonempty_text(value: str) -> str:
+    return normalize_line_endings(value).strip()
+
+
+def _looks_like_full_content_replacement_for_edit(
+    current: str,
+    edits: list[DocumentEditEdit],
+) -> bool:
+    normalized_current = _normalized_nonempty_text(current)
+    if not normalized_current:
+        return False
+    for edit in edits:
+        if _normalized_nonempty_text(edit.old_text) != normalized_current:
+            continue
+        if _normalized_nonempty_text(edit.new_text) == normalized_current:
+            continue
+        return True
+    return False
+
+
+def _looks_like_full_content_replacement_for_patch(
+    current: str,
+    edits: list[DocumentPatchEdit],
+) -> bool:
+    normalized_current = _normalized_nonempty_text(current)
+    if not normalized_current:
+        return False
+    for edit in edits:
+        if edit.action != "replace":
+            continue
+        if _normalized_nonempty_text(edit.match_text) != normalized_current:
+            continue
+        if _normalized_nonempty_text(edit.new_text) == normalized_current:
+            continue
+        return True
+    return False
+
+
+def _validate_protected_target_update(
+    *,
+    target: DocumentTarget,
+    resolved_key: str,
+    current: str,
+    updated: str,
+    mode: Literal["edit", "patch"],
+    edit_payload: list[DocumentEditEdit] | None = None,
+    patch_payload: list[DocumentPatchEdit] | None = None,
+) -> None:
+    normalized_current = _normalized_nonempty_text(current)
+    normalized_updated = _normalized_nonempty_text(updated)
+    if not normalized_current:
+        return
+    if target.reject_full_content_replacement:
+        if mode == "edit" and _looks_like_full_content_replacement_for_edit(current, edit_payload or []):
+            raise ValueError(f"{resolved_key} 当前为受保护正文，禁止把整章全文作为单个 old_text 直接整体替换。")
+        if mode == "patch" and _looks_like_full_content_replacement_for_patch(current, patch_payload or []):
+            raise ValueError(f"{resolved_key} 当前为受保护正文，禁止通过 replace patch 直接整体替换整章全文。")
+    ratio = target.min_output_char_ratio_on_update
+    if ratio is not None and normalized_updated:
+        if len(normalized_updated) < int(len(normalized_current) * ratio):
+            raise ValueError(
+                f"{resolved_key} 修改后正文长度从 {len(normalized_current)} 降到 {len(normalized_updated)}，"
+                "低于受保护正文允许的最小比例，疑似把局部返修误改成整章重写。"
+            )
 
 
 def _same_resolved_path(left: Path, right: Path) -> bool:
@@ -236,16 +401,19 @@ def document_tool_specs() -> list[llm_runtime.FunctionToolSpec[Any]]:
             model=DocumentWritePayload,
             name=DOCUMENT_WRITE_TOOL_NAME,
             description=DOCUMENT_WRITE_TOOL_DESCRIPTION,
+            compatible_aliases=(DOCUMENT_WRITE_TOOL_COMPATIBLE_ALIAS,),
         ),
         llm_runtime.FunctionToolSpec(
             model=DocumentEditPayload,
             name=DOCUMENT_EDIT_TOOL_NAME,
             description=DOCUMENT_EDIT_TOOL_DESCRIPTION,
+            compatible_aliases=(DOCUMENT_EDIT_TOOL_COMPATIBLE_ALIAS,),
         ),
         llm_runtime.FunctionToolSpec(
             model=DocumentPatchPayload,
             name=DOCUMENT_PATCH_TOOL_NAME,
             description=DOCUMENT_PATCH_TOOL_DESCRIPTION,
+            compatible_aliases=(DOCUMENT_PATCH_TOOL_COMPATIBLE_ALIAS,),
         ),
     ]
 
@@ -514,6 +682,14 @@ def apply_document_operation(
                     edit.new_text,
                     replace_all=edit.replace_all,
                 )
+            _validate_protected_target_update(
+                target=target,
+                resolved_key=resolved_key,
+                current=current,
+                updated=updated,
+                mode="edit",
+                edit_payload=item.edits,
+            )
             changed = write_text_if_changed(path, updated)
             file_results.append(
                 AppliedDocumentFile(
@@ -538,6 +714,14 @@ def apply_document_operation(
         path = target.path
         current = read_text_if_exists(path)
         updated = apply_patch_edits_to_text(current, item.edits)
+        _validate_protected_target_update(
+            target=target,
+            resolved_key=resolved_key,
+            current=current,
+            updated=updated,
+            mode="patch",
+            patch_payload=item.edits,
+        )
         changed = write_text_if_changed(path, updated)
         file_results.append(
             AppliedDocumentFile(

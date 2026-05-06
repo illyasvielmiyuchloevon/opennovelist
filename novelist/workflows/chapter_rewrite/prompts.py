@@ -4,6 +4,7 @@ from ._shared import *  # noqa: F401,F403
 
 
 def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> list[dict[str, Any]]:
+    current_content = current_text.strip()
     return [
         {
             "file_key": "rewritten_chapter",
@@ -23,7 +24,7 @@ def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> 
                 "不要把整章当成全新生成任务推倒重写。",
                 "未变化段落应尽量保留，优先只修改受审核意见影响的局部。",
             ],
-            "current_content": current_text.strip(),
+            "current_char_count": len(current_content),
         }
     ]
 
@@ -65,10 +66,51 @@ def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, An
                 "template": rule.get("template", []),
                 "section_policy": rule.get("section_policy", []),
                 "update_rules": rule.get("update_rules", []),
-                "current_content": current_content,
+                "current_char_count": len(current_content),
             }
         )
     return inventory
+
+
+def current_generated_chapter_payload(
+    *,
+    project_root: Path,
+    volume_number: str,
+    chapter_number: str,
+    chapter_text: str,
+) -> dict[str, Any]:
+    return {
+        "label": "当前章节正文",
+        "file_name": f"{chapter_number}.txt",
+        "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
+        "content": chapter_text.strip(),
+    }
+
+
+def chapter_cache_prefix_fields(
+    *,
+    stable_global_docs: dict[str, dict[str, Any]],
+    stable_volume_docs: dict[str, dict[str, Any]],
+    rolling_global_docs: dict[str, dict[str, Any]],
+    rolling_volume_docs: dict[str, dict[str, Any]],
+    five_chapter_review_docs: list[dict[str, Any]],
+    stable_chapter_docs: dict[str, dict[str, Any]],
+    current_generated_chapter: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "stable_injected_global_docs": stable_global_docs,
+        "stable_injected_volume_docs": stable_volume_docs,
+        "rolling_injected_global_docs": rolling_global_docs,
+        "rolling_injected_volume_docs": rolling_volume_docs,
+        "rolling_injected_group_docs": five_chapter_review_docs,
+        # Keep the heavier long-lived docs ahead of chapter-born artifacts so a
+        # newly produced outline/review file does not cut off cache reuse for
+        # the larger shared context that already existed before this phase.
+        "stable_injected_chapter_docs": stable_chapter_docs,
+    }
+    if current_generated_chapter is not None:
+        fields["current_generated_chapter"] = current_generated_chapter
+    return fields
 
 def latest_work_target(
     instruction: str,
@@ -149,11 +191,14 @@ def build_phase_request_payload(
 
     if phase_key == "phase1_outline":
         payload = build_payload_with_cache_layers(
-            shared_prefix_fields={
-                "stable_injected_global_docs": stable_global_docs,
-                "stable_injected_volume_docs": stable_volume_docs,
-                "stable_injected_chapter_docs": stable_chapter_docs,
-            },
+            shared_prefix_fields=chapter_cache_prefix_fields(
+                stable_global_docs=stable_global_docs,
+                stable_volume_docs=stable_volume_docs,
+                rolling_global_docs=rolling_global_docs,
+                rolling_volume_docs=rolling_volume_docs,
+                five_chapter_review_docs=five_chapter_review_docs,
+                stable_chapter_docs=stable_chapter_docs,
+            ),
             request_fields={
                 "document_request": {
                     "phase": phase_key,
@@ -174,10 +219,7 @@ def build_phase_request_payload(
                 ],
             },
             trailing_doc_fields={
-                "rolling_injected_global_docs": rolling_global_docs,
-                "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
-                "rolling_injected_group_docs": five_chapter_review_docs,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：只生成当前章的章纲 Markdown。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -189,12 +231,22 @@ def build_phase_request_payload(
     if phase_key == "phase2_chapter_text":
         writing_skill = load_chapter_writing_skill_reference()
         if chapter_text_revision:
+            current_generated_chapter = current_generated_chapter_payload(
+                project_root=project_root,
+                volume_number=volume_number,
+                chapter_number=chapter_number,
+                chapter_text=chapter_text,
+            )
             payload = build_payload_with_cache_layers(
-                shared_prefix_fields={
-                    "stable_injected_global_docs": stable_global_docs,
-                    "stable_injected_volume_docs": stable_volume_docs,
-                    "stable_injected_chapter_docs": stable_chapter_docs,
-                },
+                shared_prefix_fields=chapter_cache_prefix_fields(
+                    stable_global_docs=stable_global_docs,
+                    stable_volume_docs=stable_volume_docs,
+                    rolling_global_docs=rolling_global_docs,
+                    rolling_volume_docs=rolling_volume_docs,
+                    five_chapter_review_docs=five_chapter_review_docs,
+                    stable_chapter_docs=stable_chapter_docs,
+                    current_generated_chapter=current_generated_chapter,
+                ),
                 request_fields={
                     "document_request": {
                         "phase": phase_key,
@@ -223,20 +275,11 @@ def build_phase_request_payload(
                     ],
                 },
                 trailing_doc_fields={
-                    "rolling_injected_global_docs": rolling_global_docs,
-                    "rolling_injected_volume_docs": rolling_volume_docs,
                     "rolling_injected_chapter_docs": rolling_chapter_docs,
-                    "rolling_injected_group_docs": five_chapter_review_docs,
                     "update_target_files": chapter_text_target_inventory(
                         rewrite_paths(project_root, volume_number, chapter_number),
                         chapter_text,
                     ),
-                    "current_generated_chapter": {
-                        "label": "当前章节正文",
-                        "file_name": f"{chapter_number}.txt",
-                        "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
-                        "content": chapter_text.strip(),
-                    },
                     "latest_work_target": latest_work_target(
                         "这是本次请求的最新工作目标：对当前章现有正文做增量修订。必须先调用 write/edit/patch 文档工具落盘修订，然后调用 submit_workflow_result 提交阶段完成摘要。",
                         required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -245,11 +288,14 @@ def build_phase_request_payload(
             )
             return payload, included_docs, omitted_docs
         payload = build_payload_with_cache_layers(
-            shared_prefix_fields={
-                "stable_injected_global_docs": stable_global_docs,
-                "stable_injected_volume_docs": stable_volume_docs,
-                "stable_injected_chapter_docs": stable_chapter_docs,
-            },
+            shared_prefix_fields=chapter_cache_prefix_fields(
+                stable_global_docs=stable_global_docs,
+                stable_volume_docs=stable_volume_docs,
+                rolling_global_docs=rolling_global_docs,
+                rolling_volume_docs=rolling_volume_docs,
+                five_chapter_review_docs=five_chapter_review_docs,
+                stable_chapter_docs=stable_chapter_docs,
+            ),
             request_fields={
                 "document_request": {
                     "phase": phase_key,
@@ -275,10 +321,7 @@ def build_phase_request_payload(
                 ],
             },
             trailing_doc_fields={
-                "rolling_injected_global_docs": rolling_global_docs,
-                "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
-                "rolling_injected_group_docs": five_chapter_review_docs,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：只生成当前章的完整仿写章节正文。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -288,12 +331,22 @@ def build_phase_request_payload(
         return payload, included_docs, omitted_docs
 
     if phase_key == "phase2_support_updates":
+        current_generated_chapter = current_generated_chapter_payload(
+            project_root=project_root,
+            volume_number=volume_number,
+            chapter_number=chapter_number,
+            chapter_text=chapter_text,
+        )
         payload = build_payload_with_cache_layers(
-            shared_prefix_fields={
-                "stable_injected_global_docs": stable_global_docs,
-                "stable_injected_volume_docs": stable_volume_docs,
-                "stable_injected_chapter_docs": stable_chapter_docs,
-            },
+            shared_prefix_fields=chapter_cache_prefix_fields(
+                stable_global_docs=stable_global_docs,
+                stable_volume_docs=stable_volume_docs,
+                rolling_global_docs=rolling_global_docs,
+                rolling_volume_docs=rolling_volume_docs,
+                five_chapter_review_docs=five_chapter_review_docs,
+                stable_chapter_docs=stable_chapter_docs,
+                current_generated_chapter=current_generated_chapter,
+            ),
             request_fields={
                 "document_request": {
                     "phase": phase_key,
@@ -313,17 +366,8 @@ def build_phase_request_payload(
                 ],
             },
             trailing_doc_fields={
-                "rolling_injected_global_docs": rolling_global_docs,
-                "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
-                "rolling_injected_group_docs": five_chapter_review_docs,
                 "update_target_files": support_update_target_inventory(paths),
-                "current_generated_chapter": {
-                    "label": "当前章节正文",
-                    "file_name": f"{chapter_number}.txt",
-                    "file_path": str(paths["rewritten_chapter"]),
-                    "content": chapter_text.strip(),
-                },
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：根据刚写完的章节按需更新配套状态文档。若有必要更新，必须先调用 write/edit/patch 文档工具落盘；随后调用 submit_workflow_result 提交阶段完成摘要。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -334,12 +378,22 @@ def build_phase_request_payload(
 
     if phase_key == "phase3_review":
         review_skill = load_chapter_review_skill_reference()
+        current_generated_chapter = current_generated_chapter_payload(
+            project_root=project_root,
+            volume_number=volume_number,
+            chapter_number=chapter_number,
+            chapter_text=chapter_text,
+        )
         payload = build_payload_with_cache_layers(
-            shared_prefix_fields={
-                "stable_injected_global_docs": stable_global_docs,
-                "stable_injected_volume_docs": stable_volume_docs,
-                "stable_injected_chapter_docs": stable_chapter_docs,
-            },
+            shared_prefix_fields=chapter_cache_prefix_fields(
+                stable_global_docs=stable_global_docs,
+                stable_volume_docs=stable_volume_docs,
+                rolling_global_docs=rolling_global_docs,
+                rolling_volume_docs=rolling_volume_docs,
+                five_chapter_review_docs=five_chapter_review_docs,
+                stable_chapter_docs=stable_chapter_docs,
+                current_generated_chapter=current_generated_chapter,
+            ),
             request_fields={
                 "document_request": {
                     "phase": phase_key,
@@ -365,17 +419,8 @@ def build_phase_request_payload(
                 ],
             },
             trailing_doc_fields={
-                "rolling_injected_global_docs": rolling_global_docs,
-                "rolling_injected_volume_docs": rolling_volume_docs,
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
-                "rolling_injected_group_docs": five_chapter_review_docs,
                 "review_skill_reference": review_skill,
-                "current_generated_chapter": {
-                    "label": "当前章节正文",
-                    "file_name": f"{chapter_number}.txt",
-                    "file_path": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
-                    "content": chapter_text.strip(),
-                },
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：审核当前章全部产物并提交章级审核结果。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -457,8 +502,8 @@ def build_five_chapter_review_payload(
     chapter_numbers: list[str],
     catalog: dict[str, dict[str, Any]],
     rewritten_chapters: dict[str, dict[str, Any]],
+    source_bundle: str = "",
 ) -> tuple[dict[str, Any], list[str], list[str]]:
-    review_skill = load_chapter_review_skill_reference()
     current_batch_id = five_chapter_batch_id(chapter_numbers)
     current_batch_doc_name = f"{current_batch_id}_group_review.md"
     current_review_path = five_chapter_review_path(project_root, volume_material["volume_number"], chapter_numbers)
@@ -514,7 +559,6 @@ def build_five_chapter_review_payload(
                 "required_file": current_batch_doc_name,
             },
             "requirements": [
-                "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                 "重点检查最近这组章节之间是否前后矛盾、逻辑是否通畅。",
                 "重点检查剧情是否和参考源、卷纲、全书大纲、世界模型发生重大偏移。",
                 "组审依据为当前组参考源、卷级/全局注入和已生成正文。",
@@ -527,7 +571,12 @@ def build_five_chapter_review_payload(
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
             "rolling_injected_group_docs": five_chapter_review_docs,
-            "review_skill_reference": review_skill,
+            "current_range_source_bundle": {
+                "label": f"当前组参考源原文（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
+                "file_name": "",
+                "file_path": "",
+                "content": source_bundle.strip(),
+            },
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
                 f"这是本次请求的最新工作目标：审核当前组区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。当前组只包含 {len(chapter_numbers)} 章，不得涉及下一卷章节。可以先调用 write/edit/patch 原地修复允许目标，最终必须调用 submit_workflow_result 提交组审查结果。",

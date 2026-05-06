@@ -27,6 +27,8 @@ DEFAULT_REASONING_EFFORT = "medium"
 PROTOCOL_RESPONSES = "responses"
 PROTOCOL_OPENAI_COMPATIBLE = "openai_compatible"
 COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD = 120000
+COMPATIBLE_CHAT_TRANSPORT_STREAM = "stream"
+COMPATIBLE_CHAT_TRANSPORT_NONSTREAM = "nonstream"
 DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENAI_CONNECT_TIMEOUT_SECONDS", "30"))
 DEFAULT_OPENAI_READ_TIMEOUT_SECONDS = float(os.getenv("OPENAI_READ_TIMEOUT_SECONDS", "600"))
 DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS = float(os.getenv("OPENAI_WRITE_TIMEOUT_SECONDS", "30"))
@@ -35,6 +37,7 @@ DEFAULT_RESPONSE_POLL_TIMEOUT_SECONDS = float(os.getenv("OPENAI_RESPONSE_POLL_TI
 DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS = float(os.getenv("OPENAI_RESPONSE_POLL_INTERVAL_SECONDS", "2"))
 IN_PROGRESS_RESPONSE_STATUSES = {"queued", "in_progress"}
 LOCAL_BASE_URL_HOSTS = {"localhost"}
+COMPAT_TEMPLATE_OMIT = object()
 
 
 class ApiRequestError(RuntimeError):
@@ -275,6 +278,98 @@ def runtime_protocol(client: OpenAI) -> str:
     return PROTOCOL_RESPONSES
 
 
+def openai_compatible_options(client: OpenAI) -> dict[str, Any]:
+    options = getattr(client, "_codex_openai_compatible_options", None)
+    return dict(options) if isinstance(options, dict) else {}
+
+
+def _render_openai_compatible_template(value: Any, context: dict[str, str | None]) -> Any:
+    if isinstance(value, str):
+        rendered = value
+        used_placeholder = False
+        for key, replacement in context.items():
+            token = f"{{{{{key}}}}}"
+            if token not in rendered:
+                continue
+            used_placeholder = True
+            if replacement is None:
+                if rendered.strip() == token:
+                    return COMPAT_TEMPLATE_OMIT
+                rendered = rendered.replace(token, "")
+            else:
+                rendered = rendered.replace(token, replacement)
+        if used_placeholder and not rendered.strip():
+            return COMPAT_TEMPLATE_OMIT
+        return rendered
+    if isinstance(value, list):
+        rendered_list: list[Any] = []
+        for item in value:
+            rendered_item = _render_openai_compatible_template(item, context)
+            if rendered_item is COMPAT_TEMPLATE_OMIT:
+                continue
+            rendered_list.append(rendered_item)
+        return rendered_list
+    if isinstance(value, dict):
+        rendered_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            rendered_item = _render_openai_compatible_template(item, context)
+            if rendered_item is COMPAT_TEMPLATE_OMIT:
+                continue
+            rendered_dict[str(key)] = rendered_item
+        return rendered_dict
+    return value
+
+
+def resolve_openai_compatible_request_extras(
+    client: OpenAI,
+    *,
+    prompt_cache_key: str | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    options = openai_compatible_options(client)
+    context = {
+        "prompt_cache_key": str(prompt_cache_key).strip() or None,
+    }
+    extra_body = _render_openai_compatible_template(options.get("extra_body"), context)
+    extra_headers = _render_openai_compatible_template(options.get("extra_headers"), context)
+    normalized_body = extra_body if isinstance(extra_body, dict) else {}
+    normalized_headers = (
+        {str(key): str(value) for key, value in extra_headers.items()}
+        if isinstance(extra_headers, dict)
+        else {}
+    )
+    return normalized_body, normalized_headers
+
+
+def compatible_usage_extra_paths(
+    client: OpenAI,
+) -> tuple[list[tuple[str, ...]], list[tuple[str, ...]]]:
+    options = openai_compatible_options(client)
+
+    def normalize(raw_value: Any) -> list[tuple[str, ...]]:
+        if not isinstance(raw_value, list):
+            return []
+        normalized: list[tuple[str, ...]] = []
+        for item in raw_value:
+            parts: list[str] = []
+            if isinstance(item, str):
+                parts = [segment.strip() for segment in item.split(".") if segment.strip()]
+            elif isinstance(item, list):
+                parts = [str(segment).strip() for segment in item if str(segment).strip()]
+            if parts:
+                normalized.append(tuple(parts))
+        return normalized
+
+    return normalize(options.get("cache_read_paths")), normalize(options.get("cache_write_paths"))
+
+
+def compatible_chat_transport_mode(client: OpenAI) -> str:
+    options = openai_compatible_options(client)
+    mode = str(options.get("transport") or "").strip().lower()
+    if mode in {COMPATIBLE_CHAT_TRANSPORT_STREAM, COMPATIBLE_CHAT_TRANSPORT_NONSTREAM}:
+        return mode
+    return COMPATIBLE_CHAT_TRANSPORT_NONSTREAM
+
+
 def to_plain_data(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -340,7 +435,12 @@ def first_token_value(mapping: Any, paths: list[tuple[str, ...]]) -> int:
     return 0
 
 
-def extract_token_usage(raw_json: Any) -> TokenUsage:
+def extract_token_usage(
+    raw_json: Any,
+    *,
+    extra_cache_read_paths: list[tuple[str, ...]] | None = None,
+    extra_cache_write_paths: list[tuple[str, ...]] | None = None,
+) -> TokenUsage:
     plain = to_plain_data(raw_json)
     if not isinstance(plain, dict):
         return TokenUsage(total=0, input=0, input_total=0, output=0, reasoning=0, cache_read=0, cache_write=0)
@@ -390,6 +490,7 @@ def extract_token_usage(raw_json: Any) -> TokenUsage:
             ("cachedInputTokens",),
             ("cache_read_input_tokens",),
             ("cacheReadInputTokens",),
+            *((extra_cache_read_paths or [])),
         ],
     )
     cache_write = first_token_value(
@@ -404,6 +505,7 @@ def extract_token_usage(raw_json: Any) -> TokenUsage:
             ("cacheWriteInputTokens",),
             ("cache_creation_input_tokens",),
             ("cacheCreationInputTokens",),
+            *((extra_cache_write_paths or [])),
         ],
     )
     total = first_token_value(
@@ -549,6 +651,39 @@ def response_followup_error_details(raw_json: Any) -> str:
     return "；".join(details)
 
 
+def observed_tool_call_details(raw_json: Any) -> str:
+    plain = to_plain_data(raw_json)
+    if not isinstance(plain, dict):
+        return ""
+    details: list[str] = []
+    choices = plain.get("choices")
+    if not isinstance(choices, list):
+        return ""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                name = str(function.get("name") or "").strip() or "<unknown>"
+                arguments = clip_error_detail(function.get("arguments") or "", limit=160)
+                details.append(f"{name} args={arguments}")
+        function_call = message.get("function_call")
+        if isinstance(function_call, dict):
+            name = str(function_call.get("name") or "").strip() or "<unknown>"
+            arguments = clip_error_detail(function_call.get("arguments") or "", limit=160)
+            details.append(f"{name} args={arguments}")
+    return "；".join(details[:3])
+
+
 def build_extraction_error_message(
     *,
     target_label: str,
@@ -568,6 +703,9 @@ def build_extraction_error_message(
         message = f"模型响应状态未知，未能从{target_label}中提取所需字段。"
     else:
         message = f"模型响应状态为 {normalized_status}，但未能从{target_label}中提取所需字段。"
+    tool_details = observed_tool_call_details(raw_json)
+    if tool_details:
+        message += f" 观测到的工具调用：{tool_details}。"
     return (
         message
         + f" response_id={response_id},"
@@ -854,16 +992,20 @@ def collect_stream_response(
 def build_chat_completion_tools(tool_specs: list["FunctionToolSpec[Any]"]) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     for spec in tool_specs:
-        tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "parameters": spec.model.model_json_schema(),
-                },
-            }
-        )
+        for tool_name in spec.chat_completion_names():
+            description = spec.description
+            if tool_name != spec.name:
+                description = f"{spec.description} 这是 {spec.name} 的兼容别名。"
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "description": description,
+                        "parameters": to_strict_json_schema(spec.model),
+                    },
+                }
+            )
     return tools
 
 
@@ -923,6 +1065,28 @@ def should_retry_without_chat_stream_options(error: Exception) -> bool:
         return False
     text = str(error)
     return "stream_options" in text or "include_usage" in text
+
+
+def should_fallback_to_nonstream_chat_completion(
+    error: Exception,
+    *,
+    request_chars: int,
+) -> bool:
+    if request_chars < COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD:
+        return False
+    if isinstance(error, openai.APIConnectionError):
+        return True
+    if isinstance(error, openai.InternalServerError):
+        text = str(error).lower()
+        return "502" in text or "bad gateway" in text or "upstream" in text or "gateway" in text
+    return False
+
+
+def build_nonstream_chat_completion_request(request_params: dict[str, Any]) -> dict[str, Any]:
+    nonstream = dict(request_params)
+    nonstream.pop("stream_options", None)
+    nonstream["stream"] = False
+    return nonstream
 
 
 def collect_chat_completion_stream_response(
@@ -1037,6 +1201,29 @@ def collect_chat_completion_stream_response(
         status="completed",
         output=[],
         output_text="".join(content_parts).strip(),
+    )
+    raw_body_text = json.dumps(response_payload, ensure_ascii=False)
+    return synthetic_response, raw_body_text, response_payload
+
+
+def collect_chat_completion_response(
+    client: OpenAI,
+    *,
+    request_params: dict[str, Any],
+) -> tuple[Any, str, Any]:
+    completion = client.chat.completions.create(**request_params)
+    payload = to_plain_data(completion)
+    if isinstance(payload, dict):
+        response_payload = dict(payload)
+    else:
+        response_payload = {}
+    response_payload.setdefault("status", "completed")
+    response_payload["_codex_transport"] = "chat.completion.nonstream"
+    synthetic_response = SimpleNamespace(
+        id=str(response_payload.get("id", "") or ""),
+        status=str(response_payload.get("status", "") or "completed"),
+        output=[],
+        output_text="",
     )
     raw_body_text = json.dumps(response_payload, ensure_ascii=False)
     return synthetic_response, raw_body_text, response_payload
@@ -1273,6 +1460,27 @@ class FunctionToolSpec(Generic[T]):
     model: type[T]
     name: str
     description: str
+    compatible_aliases: tuple[str, ...] = ()
+
+    def chat_completion_names(self) -> list[str]:
+        names = [self.name]
+        for alias in self.compatible_aliases:
+            cleaned = str(alias or "").strip()
+            if cleaned and cleaned not in names:
+                names.append(cleaned)
+        return names
+
+
+def build_tool_spec_lookup(
+    tool_specs: list[FunctionToolSpec[Any]],
+) -> tuple[dict[str, FunctionToolSpec[Any]], dict[str, str]]:
+    tool_specs_by_lookup: dict[str, FunctionToolSpec[Any]] = {}
+    canonical_name_by_lookup: dict[str, str] = {}
+    for spec in tool_specs:
+        for tool_name in spec.chat_completion_names():
+            tool_specs_by_lookup[tool_name] = spec
+            canonical_name_by_lookup[tool_name] = spec.name
+    return tool_specs_by_lookup, canonical_name_by_lookup
 
 
 @dataclass
@@ -1388,6 +1596,7 @@ def _coerce_any_function_tool_arguments(
     response: Any,
     tool_specs_by_name: dict[str, FunctionToolSpec[Any]],
     *,
+    canonical_name_by_lookup: dict[str, str] | None = None,
     raw_body_text: str = "",
     raw_json: Any = None,
 ) -> tuple[BaseModel | None, str, str, str, str]:
@@ -1404,13 +1613,14 @@ def _coerce_any_function_tool_arguments(
             spec = tool_specs_by_name.get(item_name)
             if spec is None:
                 continue
+            canonical_name = (canonical_name_by_lookup or {}).get(item_name, spec.name)
             call_id = str(item.get("call_id") or item.get("id") or "")
             parsed_arguments = item.get("parsed_arguments")
             if isinstance(parsed_arguments, spec.model):
-                return parsed_arguments, item_name, "function_call.parsed_arguments", call_id, ""
+                return parsed_arguments, canonical_name, "function_call.parsed_arguments", call_id, ""
             if parsed_arguments is not None:
                 try:
-                    return spec.model.model_validate(parsed_arguments), item_name, "function_call.parsed_arguments", call_id, json.dumps(parsed_arguments, ensure_ascii=False)
+                    return spec.model.model_validate(parsed_arguments), canonical_name, "function_call.parsed_arguments", call_id, json.dumps(parsed_arguments, ensure_ascii=False)
                 except Exception:
                     pass
             arguments = item.get("arguments")
@@ -1418,7 +1628,7 @@ def _coerce_any_function_tool_arguments(
                 loaded = safe_json_loads(arguments)
                 if isinstance(loaded, dict):
                     try:
-                        return spec.model.model_validate(loaded), item_name, "function_call.arguments", call_id, arguments
+                        return spec.model.model_validate(loaded), canonical_name, "function_call.arguments", call_id, arguments
                     except Exception:
                         pass
 
@@ -1437,13 +1647,14 @@ def _coerce_any_function_tool_arguments(
                 spec = tool_specs_by_name.get(item_name)
                 if spec is None:
                     continue
+                canonical_name = (canonical_name_by_lookup or {}).get(item_name, spec.name)
                 call_id = str(item.get("call_id") or item.get("id") or "")
                 arguments = item.get("arguments")
                 if isinstance(arguments, str):
                     loaded = safe_json_loads(arguments)
                     if isinstance(loaded, dict):
                         try:
-                            return spec.model.model_validate(loaded), item_name, "raw_json.output.function_call.arguments", call_id, arguments
+                            return spec.model.model_validate(loaded), canonical_name, "raw_json.output.function_call.arguments", call_id, arguments
                         except Exception:
                             pass
 
@@ -1470,13 +1681,14 @@ def _coerce_any_function_tool_arguments(
                     spec = tool_specs_by_name.get(item_name)
                     if spec is None:
                         continue
+                    canonical_name = (canonical_name_by_lookup or {}).get(item_name, spec.name)
                     call_id = str(tool_call.get("id") or "")
                     arguments = function.get("arguments")
                     if isinstance(arguments, str):
                         loaded = safe_json_loads(arguments)
                         if isinstance(loaded, dict):
                             try:
-                                return spec.model.model_validate(loaded), item_name, "raw_json.choices.message.tool_calls.arguments", call_id, arguments
+                                return spec.model.model_validate(loaded), canonical_name, "raw_json.choices.message.tool_calls.arguments", call_id, arguments
                             except Exception:
                                 pass
 
@@ -1703,7 +1915,7 @@ def call_function_tools(
     last_error: Exception | None = None
     if not tool_specs:
         raise ValueError("tool_specs 不能为空。")
-    tool_specs_by_name = {spec.name: spec for spec in tool_specs}
+    tool_specs_by_name, canonical_name_by_lookup = build_tool_spec_lookup(tool_specs)
     protocol = runtime_protocol(client)
     request_chars = estimate_request_text_chars(instructions, user_input)
 
@@ -1716,6 +1928,11 @@ def call_function_tools(
             activity.start()
             activity.set_status("生成中")
             if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+                extra_body, extra_headers = resolve_openai_compatible_request_extras(
+                    client,
+                    prompt_cache_key=prompt_cache_key,
+                )
+                transport_mode = compatible_chat_transport_mode(client)
                 base_request_params = {
                     "model": model,
                     "messages": chat_messages
@@ -1725,28 +1942,62 @@ def call_function_tools(
                         {"role": "user", "content": user_input},
                     ],
                     "tools": build_chat_completion_tools(tool_specs),
-                    "stream": True,
                 }
+                if extra_body:
+                    base_request_params["extra_body"] = extra_body
+                if extra_headers:
+                    base_request_params["extra_headers"] = extra_headers
                 last_compatible_error: Exception | None = None
                 for chat_tool_choice in build_chat_tool_choice_candidates(tool_choice):
-                    for include_usage in (True, False):
+                    if transport_mode == COMPATIBLE_CHAT_TRANSPORT_STREAM:
+                        for include_usage in (True, False):
+                            request_params = dict(base_request_params)
+                            request_params["tool_choice"] = chat_tool_choice
+                            request_params["stream"] = True
+                            if include_usage:
+                                request_params["stream_options"] = {"include_usage": True}
+                            try:
+                                response, raw_body_text, raw_json = collect_chat_completion_stream_response(
+                                    client,
+                                    request_params=request_params,
+                                )
+                                last_compatible_error = None
+                                break
+                            except Exception as compatible_error:
+                                if should_fallback_to_nonstream_chat_completion(
+                                    compatible_error,
+                                    request_chars=request_chars,
+                                ):
+                                    fallback_request_params = build_nonstream_chat_completion_request(request_params)
+                                    try:
+                                        response, raw_body_text, raw_json = collect_chat_completion_response(
+                                            client,
+                                            request_params=fallback_request_params,
+                                        )
+                                        last_compatible_error = None
+                                        break
+                                    except Exception as fallback_error:
+                                        compatible_error = fallback_error
+                                last_compatible_error = compatible_error
+                                if include_usage and should_retry_without_chat_stream_options(compatible_error):
+                                    continue
+                                if should_retry_legacy_chat_tool_choice(compatible_error):
+                                    break
+                                raise
+                    else:
                         request_params = dict(base_request_params)
                         request_params["tool_choice"] = chat_tool_choice
-                        if include_usage:
-                            request_params["stream_options"] = {"include_usage": True}
+                        request_params["stream"] = False
                         try:
-                            response, raw_body_text, raw_json = collect_chat_completion_stream_response(
+                            response, raw_body_text, raw_json = collect_chat_completion_response(
                                 client,
                                 request_params=request_params,
                             )
                             last_compatible_error = None
-                            break
                         except Exception as compatible_error:
                             last_compatible_error = compatible_error
-                            if include_usage and should_retry_without_chat_stream_options(compatible_error):
-                                continue
                             if should_retry_legacy_chat_tool_choice(compatible_error):
-                                break
+                                continue
                             raise
                     if last_compatible_error is None:
                         break
@@ -1828,10 +2079,19 @@ def call_function_tools(
         else:
             output_types = response_output_types(response, raw_json)
             preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
-        token_usage = extract_token_usage(raw_json)
+        extra_cache_read_paths: list[tuple[str, ...]] = []
+        extra_cache_write_paths: list[tuple[str, ...]] = []
+        if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+            extra_cache_read_paths, extra_cache_write_paths = compatible_usage_extra_paths(client)
+        token_usage = extract_token_usage(
+            raw_json,
+            extra_cache_read_paths=extra_cache_read_paths,
+            extra_cache_write_paths=extra_cache_write_paths,
+        )
         parsed_payload, parsed_tool_name, extraction_source, call_id, raw_arguments = _coerce_any_function_tool_arguments(
             response,
             tool_specs_by_name,
+            canonical_name_by_lookup=canonical_name_by_lookup,
             raw_body_text=raw_body_text,
             raw_json=raw_json,
         )

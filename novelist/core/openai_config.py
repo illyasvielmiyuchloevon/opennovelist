@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,16 @@ PROTOCOL_LABELS = {
     PROTOCOL_RESPONSES: "OpenAI Responses API",
     PROTOCOL_OPENAI_COMPATIBLE: "OpenAI Compatible（兼容 OpenAI 接口）",
 }
+OPENAI_COMPATIBLE_EXTRA_BODY_CONFIG_KEY = "openai_compatible_extra_body"
+OPENAI_COMPATIBLE_EXTRA_HEADERS_CONFIG_KEY = "openai_compatible_extra_headers"
+OPENAI_COMPATIBLE_CACHE_READ_PATHS_CONFIG_KEY = "openai_compatible_cache_read_paths"
+OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_CONFIG_KEY = "openai_compatible_cache_write_paths"
+OPENAI_COMPATIBLE_TRANSPORT_CONFIG_KEY = "openai_compatible_transport"
+OPENAI_COMPATIBLE_EXTRA_BODY_ENV = "NOVELIST_OPENAI_COMPATIBLE_EXTRA_BODY_JSON"
+OPENAI_COMPATIBLE_EXTRA_HEADERS_ENV = "NOVELIST_OPENAI_COMPATIBLE_EXTRA_HEADERS_JSON"
+OPENAI_COMPATIBLE_CACHE_READ_PATHS_ENV = "NOVELIST_OPENAI_COMPATIBLE_CACHE_READ_PATHS_JSON"
+OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_ENV = "NOVELIST_OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_JSON"
+OPENAI_COMPATIBLE_TRANSPORT_ENV = "NOVELIST_OPENAI_COMPATIBLE_TRANSPORT"
 
 
 def provider_default_protocol(provider: str) -> str:
@@ -50,6 +61,157 @@ def ordered_choice_options(
     prioritized = [item for item in options if item[0] == preferred_key]
     rest = [item for item in options if item[0] != preferred_key]
     return [*prioritized, *rest]
+
+
+def _parse_json_config_value(raw_value: Any, *, expected_type: type, label: str) -> Any:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, expected_type):
+        return raw_value
+    if isinstance(raw_value, str):
+        stripped = raw_value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            print_progress(f"已忽略无效的 {label}：不是合法 JSON。")
+            return None
+        if isinstance(parsed, expected_type):
+            return parsed
+    print_progress(f"已忽略无效的 {label}：期望 {expected_type.__name__}。")
+    return None
+
+
+def _normalize_usage_path_list(raw_value: Any, *, label: str) -> list[list[str]]:
+    if raw_value is None:
+        return []
+    parsed = _parse_json_config_value(raw_value, expected_type=list, label=label)
+    if parsed is None:
+        return []
+    normalized: list[list[str]] = []
+    for item in parsed:
+        parts: list[str] = []
+        if isinstance(item, str):
+            parts = [segment.strip() for segment in item.split(".") if segment.strip()]
+        elif isinstance(item, list):
+            parts = [str(segment).strip() for segment in item if str(segment).strip()]
+        if parts:
+            normalized.append(parts)
+    return normalized
+
+
+def _normalize_openai_compatible_transport(raw_value: Any) -> str:
+    text = str(raw_value or "").strip().lower()
+    if text in {"stream", "nonstream"}:
+        return text
+    return "nonstream"
+
+
+def load_openai_compatible_options(global_config: dict[str, Any]) -> dict[str, Any]:
+    extra_body_raw = os.getenv(OPENAI_COMPATIBLE_EXTRA_BODY_ENV, "").strip() or global_config.get(
+        OPENAI_COMPATIBLE_EXTRA_BODY_CONFIG_KEY
+    )
+    extra_headers_raw = os.getenv(OPENAI_COMPATIBLE_EXTRA_HEADERS_ENV, "").strip() or global_config.get(
+        OPENAI_COMPATIBLE_EXTRA_HEADERS_CONFIG_KEY
+    )
+    cache_read_paths_raw = os.getenv(OPENAI_COMPATIBLE_CACHE_READ_PATHS_ENV, "").strip() or global_config.get(
+        OPENAI_COMPATIBLE_CACHE_READ_PATHS_CONFIG_KEY
+    )
+    cache_write_paths_raw = os.getenv(OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_ENV, "").strip() or global_config.get(
+        OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_CONFIG_KEY
+    )
+    transport_raw = os.getenv(OPENAI_COMPATIBLE_TRANSPORT_ENV, "").strip() or global_config.get(
+        OPENAI_COMPATIBLE_TRANSPORT_CONFIG_KEY
+    )
+
+    extra_body = _parse_json_config_value(
+        extra_body_raw,
+        expected_type=dict,
+        label=f"{OPENAI_COMPATIBLE_EXTRA_BODY_CONFIG_KEY}/{OPENAI_COMPATIBLE_EXTRA_BODY_ENV}",
+    )
+    extra_headers = _parse_json_config_value(
+        extra_headers_raw,
+        expected_type=dict,
+        label=f"{OPENAI_COMPATIBLE_EXTRA_HEADERS_CONFIG_KEY}/{OPENAI_COMPATIBLE_EXTRA_HEADERS_ENV}",
+    )
+    cache_read_paths = _normalize_usage_path_list(
+        cache_read_paths_raw,
+        label=f"{OPENAI_COMPATIBLE_CACHE_READ_PATHS_CONFIG_KEY}/{OPENAI_COMPATIBLE_CACHE_READ_PATHS_ENV}",
+    )
+    cache_write_paths = _normalize_usage_path_list(
+        cache_write_paths_raw,
+        label=f"{OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_CONFIG_KEY}/{OPENAI_COMPATIBLE_CACHE_WRITE_PATHS_ENV}",
+    )
+    transport = _normalize_openai_compatible_transport(transport_raw)
+
+    options: dict[str, Any] = {}
+    if extra_body:
+        options["extra_body"] = extra_body
+    if extra_headers:
+        options["extra_headers"] = {str(key): str(value) for key, value in extra_headers.items()}
+    if cache_read_paths:
+        options["cache_read_paths"] = cache_read_paths
+    if cache_write_paths:
+        options["cache_write_paths"] = cache_write_paths
+    options["transport"] = transport
+    return options
+
+
+def _contains_prompt_cache_key_placeholder(value: Any) -> bool:
+    if isinstance(value, str):
+        return "{{prompt_cache_key}}" in value
+    if isinstance(value, list):
+        return any(_contains_prompt_cache_key_placeholder(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_prompt_cache_key_placeholder(item) for item in value.values())
+    return False
+
+
+def openai_compatible_cache_summary_lines(settings: dict[str, Any]) -> list[str]:
+    if str(settings.get("protocol") or "").strip() != PROTOCOL_OPENAI_COMPATIBLE:
+        return []
+
+    options = settings.get("openai_compatible_options")
+    compatible_options = dict(options) if isinstance(options, dict) else {}
+    extra_body = compatible_options.get("extra_body")
+    extra_headers = compatible_options.get("extra_headers")
+    cache_read_paths = compatible_options.get("cache_read_paths")
+    cache_write_paths = compatible_options.get("cache_write_paths")
+    transport = str(compatible_options.get("transport") or "nonstream").strip().lower() or "nonstream"
+    has_provider_extras = isinstance(extra_body, dict) and bool(extra_body) or isinstance(extra_headers, dict) and bool(extra_headers)
+    passes_prompt_cache_key = _contains_prompt_cache_key_placeholder(extra_body) or _contains_prompt_cache_key_placeholder(
+        extra_headers
+    )
+
+    lines: list[str] = []
+    if passes_prompt_cache_key:
+        lines.append("OpenAI Compatible 缓存：已通过 provider-specific extra_body/extra_headers 透传 {{prompt_cache_key}}。")
+    elif has_provider_extras:
+        lines.append(
+            "OpenAI Compatible 缓存：已配置 provider-specific 额外参数，但未引用 {{prompt_cache_key}}；是否命中取决于上游兼容服务。"
+        )
+    else:
+        lines.append(
+            "OpenAI Compatible 缓存：当前未配置 provider-specific 缓存参数；兼容协议本身没有统一的 prompt cache 请求字段。"
+        )
+
+    custom_usage_paths: list[str] = []
+    if isinstance(cache_read_paths, list) and cache_read_paths:
+        custom_usage_paths.append(f"read={len(cache_read_paths)}")
+    if isinstance(cache_write_paths, list) and cache_write_paths:
+        custom_usage_paths.append(f"write={len(cache_write_paths)}")
+    if custom_usage_paths:
+        lines.append(
+            "OpenAI Compatible 缓存统计：已启用 provider-specific usage 路径解析（" + "，".join(custom_usage_paths) + "）。"
+        )
+    else:
+        lines.append("OpenAI Compatible 缓存统计：未配置自定义 usage 路径，将只识别标准缓存字段。")
+    if transport == "stream":
+        lines.append("OpenAI Compatible 传输：已显式使用流式 chat.completions；更依赖兼容网关的 SSE 稳定性。")
+    else:
+        lines.append("OpenAI Compatible 传输：默认使用非流式 chat.completions，更接近 opencode 的 doGenerate 路径。")
+    return lines
 
 
 def resolve_provider_protocol_metadata(
@@ -174,7 +336,7 @@ def force_reconfigure_openai(
     api_key_prompt: str = "重新输入 OpenAI API Key（明文显示）",
     base_url_prompt: str = "重新输入 OpenAI base_url",
     model_prompt: str = "重新输入模型名称",
-) -> tuple[str, dict[str, str], dict[str, Any]]:
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     provider, protocol = resolve_provider_protocol_metadata(
         cli_provider=cli_provider,
         cli_protocol=cli_protocol,
@@ -217,7 +379,17 @@ def force_reconfigure_openai(
             "last_protocol": protocol,
         },
     )
-    return api_key, {"base_url": base_url, "model": model, "provider": provider, "protocol": protocol}, updated_config
+    settings: dict[str, Any] = {
+        "base_url": base_url,
+        "model": model,
+        "provider": provider,
+        "protocol": protocol,
+    }
+    if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+        compatible_options = load_openai_compatible_options(updated_config)
+        if compatible_options:
+            settings["openai_compatible_options"] = compatible_options
+    return api_key, settings, updated_config
 
 
 def resolve_openai_settings(
@@ -231,7 +403,7 @@ def resolve_openai_settings(
     legacy_settings: dict[str, Any] | None = None,
     base_url_prompt: str = "输入 OpenAI base_url",
     model_prompt: str = "输入模型名称",
-) -> tuple[dict[str, str], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     legacy_settings = legacy_settings or {}
     provider, protocol = resolve_provider_protocol_metadata(
         cli_provider=cli_provider,
@@ -289,12 +461,17 @@ def resolve_openai_settings(
             "last_protocol": protocol,
         },
     )
-    return {
+    settings: dict[str, Any] = {
         "base_url": base_url,
         "model": model,
         "provider": provider,
         "protocol": protocol,
-    }, updated_config
+    }
+    if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+        compatible_options = load_openai_compatible_options(updated_config)
+        if compatible_options:
+            settings["openai_compatible_options"] = compatible_options
+    return settings, updated_config
 
 
 def create_openai_client(
@@ -303,8 +480,11 @@ def create_openai_client(
     base_url: str,
     protocol: str = PROTOCOL_RESPONSES,
     provider: str = PROVIDER_OPENAI,
+    openai_compatible_options: dict[str, Any] | None = None,
 ) -> OpenAI:
     client = build_openai_client(api_key=api_key, base_url=base_url)
     setattr(client, "_codex_protocol", protocol)
     setattr(client, "_codex_provider", provider)
+    if openai_compatible_options:
+        setattr(client, "_codex_openai_compatible_options", dict(openai_compatible_options))
     return client

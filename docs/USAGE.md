@@ -35,6 +35,36 @@ pip install openai pydantic
 
 旧配置目录 `%USERPROFILE%\.novel_adaptation_cli\config.json` 会自动迁移。
 
+如果使用 `OpenAI Compatible` 协议并且上游兼容服务支持提示词缓存，还可以在同一个全局配置文件里补充 provider-specific 参数：
+
+```json
+{
+  "openai_compatible_extra_body": {
+    "prompt_cache_key": "{{prompt_cache_key}}"
+  },
+  "openai_compatible_extra_headers": {
+    "x-prompt-cache-key": "{{prompt_cache_key}}"
+  },
+  "openai_compatible_cache_read_paths": [
+    "prompt_tokens_details.cached_tokens",
+    "nim_cache.hit_tokens"
+  ],
+  "openai_compatible_cache_write_paths": [
+    "input_tokens_details.cache_write_tokens",
+    "nim_cache.write_tokens"
+  ],
+  "openai_compatible_transport": "nonstream"
+}
+```
+
+说明：
+
+- `OpenAI Compatible` 协议本身没有统一的提示词缓存请求字段，是否支持缓存取决于上游兼容服务。
+- `openai_compatible_extra_body` / `openai_compatible_extra_headers` 会原样并入 Chat Completions 请求；其中 `{{prompt_cache_key}}` 会在运行时替换成当前章节或审核阶段的缓存键。
+- `openai_compatible_cache_read_paths` / `openai_compatible_cache_write_paths` 用于告诉 CLI 去哪里读取兼容提供商返回的缓存命中和缓存写入 token 统计。
+- `openai_compatible_transport` 可选 `nonstream` 或 `stream`。默认是 `nonstream`，更适合当前工作流这种“只关心最终工具结果”的调用；如果某个兼容服务只在 SSE 下表现正常，再显式切回 `stream`。
+- 如果不配置这些字段，兼容服务只有在本身返回标准缓存 usage 字段时，CLI 才能显示非 0 的缓存命中。
+
 ## 3. 统一入口
 
 推荐直接运行：

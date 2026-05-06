@@ -416,6 +416,7 @@ def build_five_chapter_review_shared_prompt(
     source_bundle: str,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> str:
+    selected = {item.zfill(4) for item in chapter_numbers}
     payload = {
         "project": {
             "new_book_title": manifest["new_book_title"],
@@ -429,8 +430,27 @@ def build_five_chapter_review_shared_prompt(
             "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅、剧情是否偏离参考源、卷纲与全书大纲。",
             "如果审核不通过，必须明确指出需要返工的章节编号。",
         ],
-        "current_range_source_bundle": source_bundle,
-        "rewritten_chapters": rewritten_chapters,
+        "source_files": [
+            {
+                "type": "chapter",
+                "file_name": chapter["file_name"],
+                "file_path": chapter["file_path"],
+                "chapter_number": chapter["chapter_number"],
+                "source_title": chapter["source_title"],
+                "char_count": len(chapter["text"]),
+            }
+            for chapter in volume_material["chapters"]
+            if chapter["chapter_number"] in selected
+        ],
+        "source_char_count": len(source_bundle),
+        "rewritten_chapter_inventory": [
+            {
+                "chapter_number": chapter_number,
+                "file_name": data["file_name"],
+                "file_path": data["file_path"],
+            }
+            for chapter_number, data in rewritten_chapters.items()
+        ],
     }
     return (
         "## Group Alignment Review Context\n"
