@@ -304,7 +304,7 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertIn("林玄进入天海道院。", updated)
             self.assertNotIn("不存在的人名", updated)
 
-    def test_apply_document_operation_rejects_full_text_edit_replacement_for_protected_chapter(self) -> None:
+    def test_apply_document_operation_allows_full_text_edit_replacement_for_protected_chapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             chapter_path = root / "0008.txt"
@@ -326,7 +326,7 @@ class DocumentOperationTests(unittest.TestCase):
                             edits=[
                                 document_ops.DocumentEditEdit(
                                     old_text=current,
-                                    new_text="删到只剩一小段。\n",
+                                    new_text="第一段改写后仍保留。\n\n第二段改写后仍保留。\n\n第三段改写后仍保留。\n",
                                 )
                             ],
                         )
@@ -334,13 +334,14 @@ class DocumentOperationTests(unittest.TestCase):
                 ),
             )
 
-            with self.assertRaisesRegex(ValueError, "禁止把整章全文作为单个 old_text 直接整体替换"):
-                document_ops.apply_document_operation(
-                    operation,
-                    allowed_files={
-                        "rewritten_chapter": document_ops.protected_rewritten_chapter_target(chapter_path),
-                    },
-                )
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={
+                    "rewritten_chapter": document_ops.protected_rewritten_chapter_target(chapter_path),
+                },
+            )
+            self.assertEqual(applied.changed_keys, ["rewritten_chapter"])
+            self.assertIn("第二段改写后仍保留", chapter_path.read_text(encoding="utf-8"))
 
     def test_apply_document_operation_rejects_excessive_shrink_for_protected_chapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -378,13 +379,14 @@ class DocumentOperationTests(unittest.TestCase):
                 ),
             )
 
-            with self.assertRaisesRegex(ValueError, "低于受保护正文允许的最小比例"):
-                document_ops.apply_document_operation(
-                    operation,
-                    allowed_files={
-                        "rewritten_chapter": document_ops.protected_rewritten_chapter_target(chapter_path),
-                    },
-                )
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={
+                    "rewritten_chapter": document_ops.protected_rewritten_chapter_target(chapter_path),
+                },
+            )
+            self.assertEqual(applied.changed_keys, ["rewritten_chapter"])
+            self.assertIn("第二三段被压成一句话", chapter_path.read_text(encoding="utf-8"))
 
     def test_document_edit_payload_accepts_external_field_names(self) -> None:
         payload = document_ops.DocumentEditPayload.model_validate(

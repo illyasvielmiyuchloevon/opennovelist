@@ -81,7 +81,7 @@ def build_review_fix_payload(
     }
     if original_review_payload is not None:
         payload["original_review_request_context"] = {
-            "source": "上一轮审核使用的 Dynamic Request。返修必须继续以这些审核上下文、注入文档、参考源和已生成正文为依据。",
+            "source": "上一轮审核使用的 Dynamic Request。返修必须继续沿用这些审核上下文、注入文档和已生成正文，不要自行切换审查依据。",
             "payload_without_latest_work_target": {
                 key: value
                 for key, value in original_review_payload.items()
@@ -102,11 +102,15 @@ def build_review_fix_payload(
             "这是审核不通过后的原地修复步骤，不要返回新的审核报告。",
             "必须调用目标文件 write/edit/patch 工具提交修改；已有非空文件按修改意图选择 edit 或 patch，禁止无理由整篇覆盖。",
             "由返修 agent 自行判断修复策略、修改范围和工具调用次数；可以一次工具调用完成，也可以多次工具调用完成。",
-            "替换、改写、删减已有章节正文或状态文档内容时优先使用 edit；插入新段落、追加新记录或按标题补充小节时使用 patch。",
+            "替换、改写、补强已有章节正文或状态文档内容时优先使用 edit；当段落存在冗余、矛盾、重复或确需移除的信息时，也允许删除或重组对应内容；插入新段落、追加新记录或按标题补充小节时使用 patch。",
+            "返修的重点是优化问题段落和内容，修复语言、节奏、逻辑、衔接、信息表达与人物状态，而不是只做机械删减。",
+            "如果问题主要是 AI 感、句式僵硬、节奏不稳、逻辑衔接、信息表达或人物状态不清，优先改写原段、补强衔接、重写句群和修复推进；如果需要删除，也应同步保证对应场景功能、人物动机、关键信息和收尾作用仍然完整。",
             "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
             "如果问题只涉及章节正文，只修改对应章节 txt；如果问题只涉及状态或进度文档，只修改对应文档。",
             "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
             "不要把审核失败降级为重新跑章纲、正文生成或配套文档生成阶段。",
+            "如果返修涉及章节正文，修复后的内容仍必须承接当前章章纲、卷纲、全局大纲、世界模型、文笔写作风格文档与当前状态文档；人物关系、术语、世界观和剧情推进不得偏离这些注入文档。",
+            "如果上一轮审核上下文里提供了 reference_chapter_metrics.target_char_count_range 或 source_char_count，返修后的正文字符数应尽量控制在接近该目标区间的范围内；如果进行了删除或重组，也要保持总体篇幅不要明显缩水或明显扩写。",
             "修复后仍必须符合原审核阶段的风格、连续性、反 AI 痕迹和参考源转换要求。",
             "完成全部必要文件修改后，必须调用 submit_workflow_result 提交返修完成摘要。",
         ],
@@ -124,6 +128,62 @@ def build_review_fix_payload(
         }
     )
     return payload
+
+def _review_fix_support_update_keys(
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> list[str]:
+    support_keys = [
+        "character_status_cards",
+        "character_relationship_graph",
+        "volume_plot_progress",
+        "foreshadowing",
+        "world_state",
+    ]
+    return [key for key in support_keys if key in allowed_files]
+
+def _filter_allowed_files_for_review_fix(
+    review_kind: str,
+    review: WorkflowSubmissionPayload,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+) -> dict[str, Path | document_ops.DocumentTarget]:
+    if review_kind == "chapter":
+        return dict(allowed_files)
+
+    selected_keys: list[str] = []
+
+    def include(key: str) -> None:
+        if key in allowed_files and key not in selected_keys:
+            selected_keys.append(key)
+
+    for chapter_number in review.chapters_to_revise:
+        normalized = "".join(ch for ch in str(chapter_number or "") if ch.isdigit()).zfill(4)
+        include(f"{normalized}_rewritten_chapter")
+
+    for raw_target in review.rewrite_targets:
+        target = str(raw_target or "").strip()
+        if not target:
+            continue
+        parts = target.split(":", 1)
+        if len(parts) == 1:
+            include(parts[0].strip())
+            continue
+        chapter_number = "".join(ch for ch in parts[0] if ch.isdigit()).zfill(4)
+        target_kind = parts[1].strip()
+        if target_kind in {"chapter_text", "rewritten_chapter"}:
+            include(f"{chapter_number}_rewritten_chapter")
+            continue
+        if target_kind == "support_updates":
+            for key in _review_fix_support_update_keys(allowed_files):
+                include(key)
+            continue
+        include(target_kind)
+
+    if not selected_keys:
+        return dict(allowed_files)
+    return {key: allowed_files[key] for key in selected_keys}
+
+def _should_reuse_review_transcript(review_kind: str) -> bool:
+    return review_kind == "chapter"
 
 def _combined_applied_operation(agent_result: Any) -> document_ops.AppliedDocumentOperation:
     files: list[document_ops.AppliedDocumentFile] = []
@@ -157,6 +217,57 @@ def _expected_review_fix_changed_keys(
             expected.append(key)
     return expected
 
+def _missing_review_fix_changed_keys(
+    *,
+    review_kind: str,
+    review: WorkflowSubmissionPayload,
+    allowed_files: dict[str, Path | document_ops.DocumentTarget],
+    applied: document_ops.AppliedDocumentOperation,
+) -> list[str]:
+    expected = _expected_review_fix_changed_keys(review_kind, review, allowed_files)
+    if not expected:
+        return []
+    changed = set(applied.changed_keys)
+    return [key for key in expected if key not in changed]
+
+def _merge_applied_document_operations(
+    *operations: document_ops.AppliedDocumentOperation,
+) -> document_ops.AppliedDocumentOperation:
+    files: list[document_ops.AppliedDocumentFile] = []
+    mode: Literal["write", "edit", "patch"] = "edit"
+    for operation in operations:
+        mode = operation.mode
+        files.extend(operation.files)
+    return document_ops.AppliedDocumentOperation(mode=mode, files=files)
+
+def _review_fix_narrowed_to_missing_targets(
+    review: WorkflowSubmissionPayload,
+    missing_keys: list[str],
+) -> WorkflowSubmissionPayload:
+    missing_set = set(missing_keys)
+    narrowed_targets: list[str] = []
+    for target in review.rewrite_targets:
+        parts = str(target or "").split(":", 1)
+        if len(parts) != 2:
+            continue
+        chapter_number = "".join(ch for ch in parts[0] if ch.isdigit()).zfill(4)
+        target_kind = parts[1].strip()
+        if target_kind not in {"chapter_text", "rewritten_chapter"}:
+            continue
+        key = f"{chapter_number}_rewritten_chapter"
+        if key in missing_set and target not in narrowed_targets:
+            narrowed_targets.append(target)
+    if not narrowed_targets:
+        narrowed_targets = [f"{key.removesuffix('_rewritten_chapter')}:chapter_text" for key in missing_keys]
+    narrowed_chapters = [key.removesuffix("_rewritten_chapter") for key in missing_keys]
+    return WorkflowSubmissionPayload(
+        passed=False,
+        review_md=review.review_md,
+        blocking_issues=list(review.blocking_issues),
+        rewrite_targets=narrowed_targets,
+        chapters_to_revise=narrowed_chapters,
+    )
+
 def _ensure_review_fix_covered_required_targets(
     *,
     review_kind: str,
@@ -166,10 +277,12 @@ def _ensure_review_fix_covered_required_targets(
     debug_path: Path,
 ) -> None:
     expected = _expected_review_fix_changed_keys(review_kind, review, allowed_files)
-    if not expected:
-        return
-    changed = set(applied.changed_keys)
-    missing = [key for key in expected if key not in changed]
+    missing = _missing_review_fix_changed_keys(
+        review_kind=review_kind,
+        review=review,
+        allowed_files=allowed_files,
+        applied=applied,
+    )
     if not missing:
         return
     error_message = (
@@ -234,11 +347,17 @@ def apply_review_fix_with_repair(
             ),
         )
         raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
+    fix_allowed_files = _filter_allowed_files_for_review_fix(review_kind, review, allowed_files)
+    reuse_review_transcript = _should_reuse_review_transcript(review_kind)
     fix_payload = build_review_fix_payload(
         review_kind=review_kind,
         review=review,
-        allowed_files=allowed_files,
-        original_review_payload=None if review_transcript_state is not None else original_review_payload,
+        allowed_files=fix_allowed_files,
+        original_review_payload=(
+            None
+            if (review_transcript_state is not None or not reuse_review_transcript)
+            else original_review_payload
+        ),
     )
     def report_tool(application: Any) -> None:
         if application.applied is None:
@@ -252,11 +371,11 @@ def apply_review_fix_with_repair(
         model=model,
         instructions=review_fix_instructions(review_kind),
         user_input=shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2),
-        allowed_files=allowed_files,
+        allowed_files=fix_allowed_files,
         previous_response_id=previous_response_id,
         prompt_cache_key=prompt_cache_key,
         on_tool_result=report_tool,
-        transcript_state=review_transcript_state,
+        transcript_state=review_transcript_state if reuse_review_transcript else None,
     )
     applied = _combined_applied_operation(agent_result)
     if not applied.emitted_keys or not applied.changed_keys:
@@ -281,14 +400,93 @@ def apply_review_fix_with_repair(
             ),
         )
         raise llm_runtime.ModelOutputError(error_message, preview=agent_result.submission.summary)
+    current_response_id = agent_result.response_id
+    current_response_ids = list(agent_result.response_ids)
+    current_transcript_state = agent_result.transcript_state if reuse_review_transcript else None
+    missing = _missing_review_fix_changed_keys(
+        review_kind=review_kind,
+        review=review,
+        allowed_files=fix_allowed_files,
+        applied=applied,
+    )
+    if missing:
+        print_progress(
+            f"{REVIEW_KIND_LABELS.get(review_kind, '审核')}返修首轮未覆盖全部目标，正在补做遗漏章节："
+            f"{', '.join(key.removesuffix('_rewritten_chapter') for key in missing)}。",
+            error=True,
+        )
+        narrowed_review = _review_fix_narrowed_to_missing_targets(review, missing)
+        narrowed_allowed_files = {
+            key: fix_allowed_files[key]
+            for key in missing
+            if key in fix_allowed_files
+        }
+        retry_payload = build_review_fix_payload(
+            review_kind=review_kind,
+            review=narrowed_review,
+            allowed_files=narrowed_allowed_files,
+            original_review_payload=(
+                None
+                if (current_transcript_state is not None or not reuse_review_transcript)
+                else original_review_payload
+            ),
+        )
+        retry_payload["previous_fix_progress"] = {
+            "source": "上一轮返修未覆盖全部必须修改的章节正文目标。",
+            "already_changed_keys": applied.changed_keys,
+            "missing_required_chapter_targets": missing,
+            "instruction": "本轮只补齐 missing_required_chapter_targets，已完成的文件不要重复改写。",
+        }
+        retry_result = run_agent_stage(
+            client,
+            model=model,
+            instructions=review_fix_instructions(review_kind),
+            user_input=shared_prompt + json.dumps(retry_payload, ensure_ascii=False, indent=2),
+            allowed_files=narrowed_allowed_files,
+            previous_response_id=current_response_id,
+            prompt_cache_key=prompt_cache_key,
+            on_tool_result=report_tool,
+            transcript_state=current_transcript_state,
+        )
+        retry_applied = _combined_applied_operation(retry_result)
+        if not retry_applied.emitted_keys or not retry_applied.changed_keys:
+            error_message = "审核原地返修补做轮未实际修改遗漏目标文件。"
+            write_response_debug_snapshot(
+                debug_path,
+                error_message=error_message,
+                preview=retry_result.submission.summary or retry_result.submission.content_md,
+                raw_body_text=json.dumps(
+                    {
+                        "failed_review_result": {
+                            "passed": review.passed,
+                            "review_md": review.review_md,
+                            "blocking_issues": review.blocking_issues,
+                            "rewrite_targets": review.rewrite_targets,
+                            "chapters_to_revise": review.chapters_to_revise,
+                        },
+                        "missing_required_targets": missing,
+                        "submission": retry_result.submission.model_dump(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+            raise llm_runtime.ModelOutputError(error_message, preview=retry_result.submission.summary)
+        applied = _merge_applied_document_operations(applied, retry_applied)
+        current_response_id = retry_result.response_id
+        for response_id in retry_result.response_ids:
+            value = str(response_id or "").strip()
+            if value and value not in current_response_ids:
+                current_response_ids.append(value)
+        current_transcript_state = retry_result.transcript_state if reuse_review_transcript else None
     _ensure_review_fix_covered_required_targets(
         review_kind=review_kind,
         review=review,
-        allowed_files=allowed_files,
+        allowed_files=fix_allowed_files,
         applied=applied,
         debug_path=debug_path,
     )
-    return applied, agent_result.response_id, agent_result.response_ids
+    return applied, current_response_id, current_response_ids
 
 def _extend_unique_response_ids(response_ids: list[str], new_response_ids: list[str]) -> None:
     for response_id in new_response_ids:
@@ -309,20 +507,11 @@ def run_five_chapter_review(
     batch_id = five_chapter_batch_id(chapter_numbers)
     review_path = five_chapter_review_path(project_root, volume_number, chapter_numbers)
     rewritten_chapters = build_rewritten_chapters_payload(project_root, volume_number, chapter_numbers)
-    for chapter_number in chapter_numbers:
-        source_chapter = get_chapter_material(volume_material, chapter_number)
-        if not str(source_chapter.get("text") or "").strip():
-            fail(
-                f"第 {volume_number} 卷第 {chapter_number} 章组审查参考源正文为空："
-                f"{source_chapter.get('file_path') or source_chapter.get('file_name')}"
-            )
-    source_bundle, source_char_count = build_five_chapter_source_bundle(volume_material, chapter_numbers)
     prompt_cache_key = f"{build_volume_review_session_key(rewrite_manifest, volume_number)}-{batch_id}"
     shared_prompt = build_five_chapter_review_shared_prompt(
         manifest=rewrite_manifest,
         volume_material=volume_material,
         chapter_numbers=chapter_numbers,
-        source_bundle=source_bundle,
         rewritten_chapters=rewritten_chapters,
     )
     review_state = get_five_chapter_review_state(rewrite_manifest, volume_number, batch_id, chapter_numbers)
@@ -358,7 +547,6 @@ def run_five_chapter_review(
             chapter_numbers=chapter_numbers,
             catalog=catalog,
             rewritten_chapters=rewritten_chapters,
-            source_bundle=source_bundle,
         )
         print_progress(
             f"{FIVE_CHAPTER_REVIEW_NAME} 第 {attempt}/{MAX_GROUP_REVIEW_ATTEMPTS} 次调用："
@@ -372,7 +560,6 @@ def run_five_chapter_review(
             source_summary_lines=five_chapter_review_source_summary_lines(
                 volume_material,
                 chapter_numbers,
-                source_char_count,
                 rewritten_chapters,
             ),
             included_docs=included_docs,
@@ -384,7 +571,6 @@ def run_five_chapter_review(
                     rewrite_manifest,
                     volume_material,
                     chapter_numbers,
-                    source_char_count,
                     rewritten_chapters,
                 ),
                 *payload_prefix_doc_summary_lines(payload),

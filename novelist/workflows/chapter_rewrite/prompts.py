@@ -15,7 +15,8 @@ def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> 
             "write_policy": "no_write_if_exists",
             "structure_mode": "existing_chapter_text_revision",
             "tool_selection_policy": (
-                "按修改意图选择工具：替换、改写、删减已有正文段落用 edit；"
+                "按修改意图选择工具：替换、改写、补强已有正文段落用 edit；"
+                "当段落存在冗余、矛盾、重复或确需移除的信息时，也可以删除或重组对应内容，并继续使用 edit；"
                 "插入新段落、移动前后衔接块或追加过渡内容用 patch；"
                 "当前文件为空时才用 write。"
             ),
@@ -38,6 +39,12 @@ def support_update_general_rules() -> list[str]:
         "长期知识文档采用“固定标题 + 可扩展二级标题”的管理方式，不要写成数据库字段表、代码 schema 或过度表格化文档。",
         "一级标题固定；二级标题用于管理不同类型的信息。已有二级标题结构如果已经适合本书，应优先沿用。",
         "每本书的信息类型都可能不同。出现新知识类型时，可以按实际小说内容新增新的二级标题，而不是硬套少数预设分类。",
+        "除卷级剧情进程外，其余滚动文档默认都不是章节回顾、逐章变化日志或剧情流水账，只记录仍然有效的关键变化。",
+        "人物状态卡和人物关系链属于“当前状态快照”，不是章节回顾、逐章变化日志或剧情流水账。",
+        "当人物状态或人物关系发生变化时，应把变化折叠进对应条目的当前描述，直接改写旧结论，不要保留“第00xx章补充 / 推进 / 变化”式累计记录。",
+        "如果旧条目里堆积了大量已经失效、重复或只用于交代章节经过的内容，应在本次更新中主动压缩，只保留当前仍然影响判断的状态、关系、压力和风险。",
+        "世界状态只记录公共世界层面的真实变化；伏笔文档只记录伏笔埋设、关键推进和正式回收，不记录普通章节内容。",
+        "如果人物状态卡、人物关系链、世界状态或伏笔文档里已经堆积了按章节号逐条追加的旧记录，本次更新应主动把它们折叠回文档真实用途：当前状态快照、当前关系快照、公共世界状态或仍然有效的伏笔索引，而不是继续向下续写。",
     ]
 
 def support_update_doc_rules() -> dict[str, dict[str, Any]]:
@@ -186,8 +193,8 @@ def build_phase_request_payload(
     omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_chapters, *omitted_five_reviews]
     reference_chapter = get_chapter_material(volume_material, chapter_number)
     reference_char_count = len(reference_chapter["text"])
-    min_target_chars = max(1, int(reference_char_count * 0.8))
-    max_target_chars = max(min_target_chars, int(reference_char_count * 1.2))
+    min_target_chars = max(1, reference_char_count - 300)
+    max_target_chars = max(min_target_chars, reference_char_count + 300)
 
     if phase_key == "phase1_outline":
         payload = build_payload_with_cache_layers(
@@ -213,9 +220,12 @@ def build_phase_request_payload(
                 },
                 "requirements": [
                     "章纲必须体现与参考源当前章的功能映射关系，但不能照搬原名词。",
+                    "章纲必须先把参考源抽象成剧情功能，再在新书体系下做差异化重建；不能写成参考源桥段的顺序平移或换词版复述。",
                     "章纲要能直接服务后续正文生成与审核返工。",
+                    "章纲标题必须重新命名，不得与参考源标题同构、近义或只做换词式改名。",
+                    "章纲 Markdown 必须显式写出“差异化重建要点”或等价小节，至少列出 3 处主动拉开与参考源距离的设计。",
                     "章纲粒度要贴近参考源当前章，不要为了发挥把单章扩成更多场景、更多推进点或更多转折层次。",
-                    "章纲应尽量对齐参考源当前章的场景数量、冲突层级、叙事节奏与收尾功能。",
+                    "章纲应尽量对齐参考源当前章的场景数量、冲突层级、叙事节奏与收尾功能，但开场切入、冲突载体、信息揭露顺序、收尾挂钩中至少要重建其中 2 项，不能整体镜像参考源。",
                 ],
             },
             trailing_doc_fields={
@@ -255,7 +265,6 @@ def build_phase_request_payload(
                         "required_file": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
                     },
                     "reference_chapter_metrics": {
-                        "source_title": reference_chapter["source_title"],
                         "source_char_count": reference_char_count,
                         "target_char_count_range": [min_target_chars, max_target_chars],
                     },
@@ -264,12 +273,16 @@ def build_phase_request_payload(
                         "必须把注入的写作规范 skill 作为当前章正文修订的主写作规则。",
                         "这是基于现有正文的修订任务，不是从零整篇重写任务。",
                         "如果当前文件已经存在，必须按修改意图使用 edit 或 patch 对现有正文做局部或分段修改；不要用整篇写入覆盖旧正文。",
-                        "替换、改写、删减已有正文段落时优先使用 edit；插入新段落、追加过渡或按块补充内容时使用 patch。",
+                        "替换、改写、补强已有正文段落时优先使用 edit；当段落存在冗余、矛盾、重复或确需移除的信息时，也允许删除或重组对应内容；插入新段落、追加过渡或按块补充内容时使用 patch。",
+                        "正文返修的重点是优化问题段落和内容，修复语言、节奏、逻辑、衔接、信息表达与人物状态，而不是只做机械删减。",
+                        "如果问题主要是语言、节奏、AI 感或表达不稳，优先改写原段、补强衔接、重写句群和调整节奏；如果需要删除，也应同步保证对应场景功能、人物动机、信息揭露和收尾作用仍然完整。",
                         "优先保留未变化段落，只修改受审核意见影响的局部；只有在局部无法修正时，才扩大修改范围。",
-                        "正文修订后仍必须符合全局文笔写作风格文档，不要写解释说明或提纲。",
+                        "正文修订后必须直接采用文笔写作风格文档规定的写作风格来改写，不要写解释说明或提纲。",
                         "修订时不能把参考源的人名、地名、宗门、术语原样照搬。",
-                        "修订后的正文必须能承接章纲、卷纲、全局大纲与当前状态文档。",
-                        f"修订后的正文目标篇幅仍应贴近参考源当前章，通常控制在约 {min_target_chars}-{max_target_chars} 字符；除非审核意见明确要求，不要明显扩写。",
+                        "当前阶段不直接提供参考源原文；修订时必须优先执行章纲中的差异化重建设计，不要自行回退成参考源桥段的近义复述或结构平移。",
+                        "严禁把正文修订成参考源桥段的换名重写；不得出现连续段落的近义复述、场景顺序平移、信息揭露顺序镜像或对话功能一一映射。",
+                        "修订后的正文必须能承接章纲、卷纲、全局大纲、世界模型与当前状态文档，人物关系、术语、世界观和剧情推进不得偏离这些注入文档。",
+                        f"修订后的正文字符数应尽量与参考源当前章接近，通常控制在约 {min_target_chars}-{max_target_chars} 字符；如果进行了删除或重组，也要保持总体篇幅不要明显缩水或明显扩写。",
                         "修订后的正文必须同时贴合文笔写作风格文档中的这些维度：爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式。",
                         "不得沿用参考源的章节标题、人物名、地点名、事件名、物品名、数值体系和具体数值；如果正文出现标题式文本或强识别设定，也必须转换为新书体系下的对应表达。",
                     ],
@@ -304,16 +317,17 @@ def build_phase_request_payload(
                     "required_file": str(rewrite_paths(project_root, volume_number, chapter_number)["rewritten_chapter"]),
                 },
                 "reference_chapter_metrics": {
-                    "source_title": reference_chapter["source_title"],
                     "source_char_count": reference_char_count,
                     "target_char_count_range": [min_target_chars, max_target_chars],
                 },
                 "writing_skill_reference": writing_skill,
                 "requirements": [
                     "必须把注入的写作规范 skill 作为当前章正文仿写的主写作规则。",
-                    "正文必须符合全局文笔写作风格文档，不要写解释说明或提纲。",
+                    "正文必须直接采用文笔写作风格文档规定的写作风格来写，不要写解释说明或提纲。",
                     "不能把参考源的人名、地名、宗门、术语原样照搬。",
-                    "正文必须能承接章纲、卷纲、全局大纲与当前状态文档。",
+                    "当前阶段不直接注入参考源章节原文；正文必须依据章纲中的差异化重建要点、卷纲、全局大纲和状态文档，在新书体系下重建本章。",
+                    "严禁把正文写成参考源桥段的换名重写；不得出现标题近似、连续段落近义复述、场景顺序平移、信息揭露顺序镜像或对话功能一一映射。",
+                    "正文必须能承接章纲、卷纲、全局大纲、世界模型与当前状态文档，人物关系、术语、世界观和剧情推进不得偏离这些注入文档。",
                     f"正文目标篇幅要贴近参考源当前章，通常控制在约 {min_target_chars}-{max_target_chars} 字符；除非审核意见明确要求，不要明显扩写。",
                     "正文必须同时贴合文笔写作风格文档中的这些维度：爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式。",
                     "不得沿用参考源的章节标题、人物名、地点名、事件名、物品名、数值体系和具体数值；如果正文出现标题式文本或强识别设定，也必须转换为新书体系下的对应表达。",
@@ -409,11 +423,16 @@ def build_phase_request_payload(
                 "requirements": [
                     "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                     "重点检查参考源原人名地名是否被照搬，若照搬则不合格。",
+                    "重点检查章纲标题与正文标题是否和参考源标题同构、近义或只做换词式改名；若近似，直接不合格。",
+                    "重点检查正文是否存在近义复述、场景顺序平移、信息揭露顺序镜像、桥段功能一一映射、段落组织机械同构；若明显贴着参考源改写，直接不合格。",
                     "重点检查 AI 感、机械感、逻辑断裂、幻觉错位、风格偏移。",
                     "重点检查是否出现过度修饰的排比、意象堆砌、诗化抒情过量、句式整齐得过头等问题；"
                     "如果语言明显非常符合当前主流大模型常见腔调，例如像 Claude 或 GPT-4 常见的华丽总结式文风，也视为不合格。",
-                    "重点检查正文篇幅是否明显偏离参考源当前章；如果出现接近翻倍的扩写、明显灌水，或远超目标区间，也视为不合格。",
+                    "重点检查正文篇幅是否明显偏离参考源当前章；如果出现接近翻倍的扩写、明显灌水、明显缩水，或远离目标区间，也视为不合格。",
+                    "如果正文为了规避审核而删掉关键场景、人物动机、关键信息揭露或应有收尾作用，哪怕语言问题有所减少，也视为不合格。",
                     "重点检查正文是否真正符合文笔写作风格文档中对爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式的要求；若显著漂移则不合格。",
+                    "如果判定存在标题近似、近义复述或结构平移，review_md 必须明确写出对应标题、场景或段落证据，而不是只给抽象结论。",
+                    "如果相似性问题根源已经进入章纲，rewrite_targets 必须同时包含 chapter_outline 与 chapter_text，不能只要求返工正文。",
                     "如果不通过，rewrite_targets 必须写出需要返工的对象，例如 chapter_text、world_state 等。",
                     *review_output_contract_lines("chapter"),
                 ],
@@ -502,7 +521,6 @@ def build_five_chapter_review_payload(
     chapter_numbers: list[str],
     catalog: dict[str, dict[str, Any]],
     rewritten_chapters: dict[str, dict[str, Any]],
-    source_bundle: str = "",
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     current_batch_id = five_chapter_batch_id(chapter_numbers)
     current_batch_doc_name = f"{current_batch_id}_group_review.md"
@@ -559,9 +577,13 @@ def build_five_chapter_review_payload(
                 "required_file": current_batch_doc_name,
             },
             "requirements": [
-                "重点检查最近这组章节之间是否前后矛盾、逻辑是否通畅。",
-                "重点检查剧情是否和参考源、卷纲、全书大纲、世界模型发生重大偏移。",
-                "组审依据为当前组参考源、卷级/全局注入和已生成正文。",
+                "重点检查剧情连续性与时间线是否顺畅，组内章节承接、事件先后和因果链是否自洽。",
+                "重点检查卷纲/全书大纲对齐，确认当前组推进方向没有偏离当前卷目标和全书主线。",
+                "重点检查人物关系、动机、状态是否稳定，是否与已生成正文和当前注入状态文档保持一致。",
+                "重点检查术语与世界观是否一致，修炼体系、机构称谓、地理势力、规则表达不得互相打架。",
+                "重点检查状态文档一致性；如果人物状态卡、人物关系链、卷级剧情进程、伏笔或世界状态与当前组正文冲突，必须指出。",
+                "重点检查文体风险是否已经影响组通过；只有当语言问题明显破坏阅读流畅度、角色辨识度、叙事稳定性或世界观表达时，才作为组审阻塞项。",
+                "组审依据为卷级/全局注入、相关状态文档和已生成正文，不以参考源贴近度作为通过标准。",
                 "如果不通过，chapters_to_revise 必须只列当前区间内需要返工的章节编号。",
                 "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
                 *review_output_contract_lines("group"),
@@ -571,12 +593,6 @@ def build_five_chapter_review_payload(
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
             "rolling_injected_group_docs": five_chapter_review_docs,
-            "current_range_source_bundle": {
-                "label": f"当前组参考源原文（{chapter_numbers[0]}-{chapter_numbers[-1]}）",
-                "file_name": "",
-                "file_path": "",
-                "content": source_bundle.strip(),
-            },
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
                 f"这是本次请求的最新工作目标：审核当前组区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。当前组只包含 {len(chapter_numbers)} 章，不得涉及下一卷章节。可以先调用 write/edit/patch 原地修复允许目标，最终必须调用 submit_workflow_result 提交组审查结果。",

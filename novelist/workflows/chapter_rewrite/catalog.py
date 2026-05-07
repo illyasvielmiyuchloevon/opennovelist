@@ -287,31 +287,45 @@ def build_chapter_shared_prompt(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
     chapter_number: str,
+    phase_key: str,
     source_bundle: str,
     source_char_count: int,
 ) -> str:
     chapter = get_chapter_material(volume_material, chapter_number)
+    include_source_bundle = chapter_phase_uses_source_bundle(phase_key)
+    workflow_rules = [
+        "当前章节的章纲生成、正文生成、配套文档更新、审核与返工属于同一个章节会话，请沿用同一会话上下文。",
+        "全局注入是每卷每章都要看的资料；卷级注入只限当前卷；章级注入只限当前章。",
+        "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
+        "遇到旧审核意见时要显式吸收并修正，不要重复犯同样的问题。",
+    ]
+    if include_source_bundle:
+        workflow_rules.insert(1, "每一次请求都会重新附带当前章节参考源与本阶段要求注入的全局/卷级/章级文档。")
+        workflow_rules.insert(
+            3,
+            "参考源当前章不仅提供情节功能映射，也提供篇幅、叙事节奏、情节结构、对话密度、句长、段落分割与收尾方式的直接参照；除非审核意见明确要求，不得明显扩写。",
+        )
+    else:
+        workflow_rules.insert(1, "当前阶段不直接注入参考源章节原文。")
+        workflow_rules.insert(
+            2,
+            "正文与状态处理必须以当前章章纲、卷级注入、全局注入和已生成正文（如有）为准进行差异化重建或后续处理，不要自行回退成参考源镜像改写。",
+        )
     payload = {
         "project": {
             "new_book_title": manifest["new_book_title"],
             "target_worldview": manifest.get("target_worldview", ""),
             "current_volume": volume_material["volume_number"],
             "current_chapter": chapter_number,
-            "source_title": chapter["source_title"],
             "rewrite_output_root": manifest["rewrite_output_root"],
         },
-        "workflow_rules": [
-            "当前章节的章纲生成、正文生成、配套文档更新、审核与返工属于同一个章节会话，请沿用同一会话上下文。",
-            "每一次请求都会重新附带当前章节参考源与本阶段要求注入的全局/卷级/章级文档。",
-            "全局注入是每卷每章都要看的资料；卷级注入只限当前卷；章级注入只限当前章。",
-            "严禁把参考源的人名、地名、宗门名、术语名、招式名原样照搬到仿写结果里。",
-            "参考源当前章不仅提供情节功能映射，也提供篇幅、叙事节奏、情节结构、对话密度、句长、段落分割与收尾方式的直接参照；除非审核意见明确要求，不得明显扩写。",
-            "遇到旧审核意见时要显式吸收并修正，不要重复犯同样的问题。",
-        ],
-        "source_files": source_context_inventory(volume_material, chapter_number),
-        "source_char_count": source_char_count,
-        "current_chapter_source_bundle": source_bundle,
+        "workflow_rules": workflow_rules,
     }
+    if include_source_bundle:
+        payload["project"]["source_title"] = chapter["source_title"]
+        payload["source_files"] = source_context_inventory(volume_material, chapter_number)
+        payload["source_char_count"] = source_char_count
+        payload["current_chapter_source_bundle"] = source_bundle
     return (
         "## Chapter Shared Context\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
@@ -413,10 +427,8 @@ def build_five_chapter_review_shared_prompt(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_bundle: str,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> str:
-    selected = {item.zfill(4) for item in chapter_numbers}
     payload = {
         "project": {
             "new_book_title": manifest["new_book_title"],
@@ -427,22 +439,9 @@ def build_five_chapter_review_shared_prompt(
         },
         "workflow_rules": [
             f"当前任务是{FIVE_CHAPTER_REVIEW_NAME}，只审查当前这一个章节组。",
-            "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅、剧情是否偏离参考源、卷纲与全书大纲。",
+            "需要检查最近这组章节之间是否前后矛盾、逻辑是否通畅，并核对剧情推进是否与卷纲、全书大纲和世界模型保持一致。",
             "如果审核不通过，必须明确指出需要返工的章节编号。",
         ],
-        "source_files": [
-            {
-                "type": "chapter",
-                "file_name": chapter["file_name"],
-                "file_path": chapter["file_path"],
-                "chapter_number": chapter["chapter_number"],
-                "source_title": chapter["source_title"],
-                "char_count": len(chapter["text"]),
-            }
-            for chapter in volume_material["chapters"]
-            if chapter["chapter_number"] in selected
-        ],
-        "source_char_count": len(source_bundle),
         "rewritten_chapter_inventory": [
             {
                 "chapter_number": chapter_number,

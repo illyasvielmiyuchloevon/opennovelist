@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
 from novelist.core.agent_runtime import AgentStageResult, run_agent_stage
+from .review_payloads import build_canonical_review_markdown
 
 
 def _append_unique_response_ids(response_ids: list[str], new_response_ids: list[str]) -> None:
@@ -75,6 +76,47 @@ def _submission_content_or_file(
     raise llm_runtime.ModelOutputError(error_message)
 
 
+def _enforce_chapter_review_length_guard(
+    review: WorkflowSubmissionPayload,
+    *,
+    chapter_text: str,
+    reference_char_count: int,
+) -> WorkflowSubmissionPayload:
+    current_chars = len(chapter_text.strip())
+    min_target_chars = max(1, reference_char_count - 300)
+    max_target_chars = max(min_target_chars, reference_char_count + 300)
+    if min_target_chars <= current_chars <= max_target_chars:
+        return review
+
+    issue = (
+        f"正文字符数 {current_chars} 未落在目标区间 {min_target_chars}-{max_target_chars}"
+        f"（参考源约 {reference_char_count} 字），篇幅审核不通过。"
+    )
+    blocking_issues = [str(item) for item in review.blocking_issues]
+    if issue not in blocking_issues:
+        blocking_issues.append(issue)
+    rewrite_targets = [str(item) for item in review.rewrite_targets]
+    if "chapter_text" not in rewrite_targets:
+        rewrite_targets.append("chapter_text")
+    review_md_source = review.review_md.strip() or review.content_md.strip()
+    review_md = build_canonical_review_markdown(
+        review_kind="chapter",
+        passed=False,
+        review_md=review_md_source,
+        blocking_issues=blocking_issues,
+        rewrite_targets=rewrite_targets,
+        chapters_to_revise=[],
+    )
+    return review.model_copy(
+        update={
+            "passed": False,
+            "blocking_issues": blocking_issues,
+            "rewrite_targets": rewrite_targets,
+            "review_md": review_md,
+        }
+    )
+
+
 def run_chapter_workflow(
     *,
     client: OpenAI,
@@ -87,6 +129,7 @@ def run_chapter_workflow(
     source_chapter = get_chapter_material(volume_material, chapter_number)
     if not str(source_chapter.get("text") or "").strip():
         fail(f"第 {chapter_number} 章参考源正文为空：{source_chapter.get('file_path') or source_chapter.get('file_name')}")
+    reference_text_char_count = len(str(source_chapter.get("text") or ""))
     paths = rewrite_paths(project_root, volume_material["volume_number"], chapter_number)
     paths["chapter_dir"].mkdir(parents=True, exist_ok=True)
     paths["rewritten_volume_dir"].mkdir(parents=True, exist_ok=True)
@@ -132,13 +175,32 @@ def run_chapter_workflow(
         else:
             response_ids = []
             previous_response_id = None
-        stage_shared_prompt = build_chapter_shared_prompt(
-            manifest=rewrite_manifest,
-            volume_material=volume_material,
-            chapter_number=chapter_number,
-            source_bundle=source_bundle,
-            source_char_count=source_char_count,
-        )
+        def shared_prompt_for(phase_key: str) -> str:
+            return build_chapter_shared_prompt(
+                manifest=rewrite_manifest,
+                volume_material=volume_material,
+                chapter_number=chapter_number,
+                phase_key=phase_key,
+                source_bundle=source_bundle,
+                source_char_count=source_char_count,
+            )
+
+        def source_summary_for(phase_key: str) -> list[str]:
+            return chapter_source_summary_lines(
+                volume_material,
+                chapter_number,
+                source_char_count,
+                phase_key=phase_key,
+            )
+
+        def shared_prefix_summary_for(phase_key: str) -> list[str]:
+            return chapter_shared_prefix_summary_lines(
+                rewrite_manifest,
+                volume_material,
+                chapter_number,
+                source_char_count,
+                phase_key=phase_key,
+            )
         update_chapter_state(
             rewrite_manifest,
             volume_material["volume_number"],
@@ -163,6 +225,7 @@ def run_chapter_workflow(
             current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
 
             if PHASE1_OUTLINE in phase_plan:
+                phase_shared_prompt = shared_prompt_for(PHASE1_OUTLINE)
                 catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
                 payload, included_docs, omitted_docs = build_phase_request_payload(
                     phase_key=PHASE1_OUTLINE,
@@ -177,29 +240,24 @@ def run_chapter_workflow(
                     request_label="第一阶段：章纲生成",
                     volume_number=volume_material["volume_number"],
                     chapter_number=chapter_number,
-                    source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                    source_summary_lines=source_summary_for(PHASE1_OUTLINE),
                     included_docs=included_docs,
                     omitted_docs=omitted_docs,
                     previous_response_id=previous_response_id,
                     prompt_cache_key=chapter_session_key,
                     shared_prefix_lines=[
-                        *chapter_shared_prefix_summary_lines(
-                            rewrite_manifest,
-                            volume_material,
-                            chapter_number,
-                            source_char_count,
-                        ),
+                        *shared_prefix_summary_for(PHASE1_OUTLINE),
                         *payload_prefix_doc_summary_lines(payload),
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                     payload=payload,
-                    user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                    user_input_char_count=len(phase_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                     session_status_line=(
                         "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
                         "后续阶段重新读取落盘文件并重拼最新 payload。"
                     ),
                 )
-                phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                phase_user_input = phase_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
                 outline_result = _run_chapter_agent_stage(
                     client=client,
                     model=model,
@@ -248,6 +306,7 @@ def run_chapter_workflow(
                 fail(f"第 {chapter_number} 章缺少章纲，无法跳过章纲阶段直接继续后续流程。")
 
             if PHASE2_CHAPTER_TEXT in phase_plan:
+                phase_shared_prompt = shared_prompt_for(PHASE2_CHAPTER_TEXT)
                 chapter_text_revision_mode = bool(current_chapter_text.strip())
                 catalog = read_doc_catalog(project_root, volume_material["volume_number"], chapter_number)
                 payload, included_docs, omitted_docs = build_phase_request_payload(
@@ -268,29 +327,24 @@ def run_chapter_workflow(
                     request_label="第二阶段-第一部分：正文修订" if chapter_text_revision_mode else "第二阶段-第一部分：正文生成",
                     volume_number=volume_material["volume_number"],
                     chapter_number=chapter_number,
-                    source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                    source_summary_lines=source_summary_for(PHASE2_CHAPTER_TEXT),
                     included_docs=included_docs,
                     omitted_docs=omitted_docs,
                     previous_response_id=previous_response_id,
                     prompt_cache_key=chapter_session_key,
                     shared_prefix_lines=[
-                        *chapter_shared_prefix_summary_lines(
-                            rewrite_manifest,
-                            volume_material,
-                            chapter_number,
-                            source_char_count,
-                        ),
+                        *shared_prefix_summary_for(PHASE2_CHAPTER_TEXT),
                         *payload_prefix_doc_summary_lines(payload),
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                     payload=payload,
-                    user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                    user_input_char_count=len(phase_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                     session_status_line=(
                         "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
                         "后续阶段重新读取落盘文件并重拼最新 payload。"
                     ),
                 )
-                phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                phase_user_input = phase_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
                 if chapter_text_revision_mode:
                     chapter_text_result = _run_chapter_agent_stage(
                         client=client,
@@ -359,6 +413,7 @@ def run_chapter_workflow(
                     )
 
             if PHASE2_SUPPORT_UPDATES in phase_plan:
+                phase_shared_prompt = shared_prompt_for(PHASE2_SUPPORT_UPDATES)
                 current_chapter_text = current_chapter_text or read_text_if_exists(paths["rewritten_chapter"]).strip()
                 if not current_chapter_text:
                     fail(f"第 {chapter_number} 章缺少正文，无法执行配套状态文档更新。")
@@ -377,29 +432,24 @@ def run_chapter_workflow(
                     request_label="第二阶段-第二部分：状态文档更新",
                     volume_number=volume_material["volume_number"],
                     chapter_number=chapter_number,
-                    source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                    source_summary_lines=source_summary_for(PHASE2_SUPPORT_UPDATES),
                     included_docs=included_docs,
                     omitted_docs=omitted_docs,
                     previous_response_id=previous_response_id,
                     prompt_cache_key=chapter_session_key,
                     shared_prefix_lines=[
-                        *chapter_shared_prefix_summary_lines(
-                            rewrite_manifest,
-                            volume_material,
-                            chapter_number,
-                            source_char_count,
-                        ),
+                        *shared_prefix_summary_for(PHASE2_SUPPORT_UPDATES),
                         *payload_prefix_doc_summary_lines(payload),
                     ],
                     dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                     payload=payload,
-                    user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                    user_input_char_count=len(phase_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                     session_status_line=(
                         "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
                         "后续阶段重新读取落盘文件并重拼最新 payload。"
                     ),
                 )
-                phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                phase_user_input = phase_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
                 support_result = _run_chapter_agent_stage(
                     client=client,
                     model=model,
@@ -451,6 +501,7 @@ def run_chapter_workflow(
                     )
 
             if PHASE3_REVIEW in phase_plan:
+                review_shared_prompt = shared_prompt_for(PHASE3_REVIEW)
                 for review_cycle in range(1, MAX_CHAPTER_REVIEW_ATTEMPTS + 1):
                     current_chapter_text = read_text_if_exists(paths["rewritten_chapter"]).strip()
                     if not current_chapter_text:
@@ -475,29 +526,24 @@ def run_chapter_workflow(
                         request_label=review_label,
                         volume_number=volume_material["volume_number"],
                         chapter_number=chapter_number,
-                        source_summary_lines=chapter_source_summary_lines(volume_material, chapter_number, source_char_count),
+                        source_summary_lines=source_summary_for(PHASE3_REVIEW),
                         included_docs=included_docs,
                         omitted_docs=omitted_docs,
                         previous_response_id=previous_response_id,
                         prompt_cache_key=chapter_session_key,
                         shared_prefix_lines=[
-                            *chapter_shared_prefix_summary_lines(
-                                rewrite_manifest,
-                                volume_material,
-                                chapter_number,
-                                source_char_count,
-                            ),
+                            *shared_prefix_summary_for(PHASE3_REVIEW),
                             *payload_prefix_doc_summary_lines(payload),
                         ],
                         dynamic_suffix_lines=payload_dynamic_suffix_summary_lines(payload),
                         payload=payload,
-                        user_input_char_count=len(stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
+                        user_input_char_count=len(review_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                         session_status_line=(
                             "会话：本阶段使用独立 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
                             "后续阶段重新读取落盘文件并重拼最新 payload。"
                         ),
                     )
-                    phase_user_input = stage_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
+                    phase_user_input = review_shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)
                     review_result = _run_chapter_agent_stage(
                         client=client,
                         model=model,
@@ -511,6 +557,11 @@ def run_chapter_workflow(
                     previous_response_id = review_result.response_id
                     _append_unique_response_ids(response_ids, review_result.response_ids)
                     chapter_review = finalize_review_payload(review_result.submission, review_kind="chapter")
+                    chapter_review = _enforce_chapter_review_length_guard(
+                        chapter_review,
+                        chapter_text=current_chapter_text,
+                        reference_char_count=reference_text_char_count,
+                    )
                     if chapter_review.passed is None or not chapter_review.review_md.strip():
                         raise llm_runtime.ModelOutputError("章级审核 agent 未通过 submit_workflow_result 返回完整的 passed / review_md。")
                     chapter_review_changed = write_artifact(paths["chapter_review"], chapter_review.review_md)
@@ -614,7 +665,7 @@ def run_chapter_workflow(
                         "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修章级审核指出的问题。必须先调用 write/edit/patch 文档工具提交修改，然后调用 submit_workflow_result 提交返修完成摘要。",
                         required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                     )
-                    fix_user_input = stage_shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2)
+                    fix_user_input = review_shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2)
                     fix_result = _run_chapter_agent_stage(
                         client=client,
                         model=model,

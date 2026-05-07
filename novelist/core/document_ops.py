@@ -282,11 +282,7 @@ class DocumentTarget:
 
 
 def protected_rewritten_chapter_target(path: Path) -> DocumentTarget:
-    return DocumentTarget(
-        path=path,
-        reject_full_content_replacement=True,
-        min_output_char_ratio_on_update=0.5,
-    )
+    return DocumentTarget(path=path)
 
 
 def _normalized_nonempty_text(value: str) -> str:
@@ -347,11 +343,11 @@ def _validate_protected_target_update(
         if mode == "patch" and _looks_like_full_content_replacement_for_patch(current, patch_payload or []):
             raise ValueError(f"{resolved_key} 当前为受保护正文，禁止通过 replace patch 直接整体替换整章全文。")
     ratio = target.min_output_char_ratio_on_update
-    if ratio is not None and normalized_updated:
+    if ratio is not None:
         if len(normalized_updated) < int(len(normalized_current) * ratio):
             raise ValueError(
                 f"{resolved_key} 修改后正文长度从 {len(normalized_current)} 降到 {len(normalized_updated)}，"
-                "低于受保护正文允许的最小比例，疑似把局部返修误改成整章重写。"
+                "低于受保护正文允许的最小比例，疑似通过过度删减来规避正文返修要求。"
             )
 
 

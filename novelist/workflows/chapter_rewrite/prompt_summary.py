@@ -12,9 +12,11 @@ def chapter_shared_prefix_summary_lines(
     volume_material: dict[str, Any],
     chapter_number: str,
     source_char_count: int,
+    *,
+    phase_key: str,
 ) -> list[str]:
     chapter = get_chapter_material(volume_material, chapter_number)
-    return [
+    lines = [
         "共享前缀构造：COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS + build_chapter_shared_prompt()。",
         (
             "固定函数工具："
@@ -25,16 +27,23 @@ def chapter_shared_prefix_summary_lines(
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前章：{chapter_number}。"
         ),
-        f"固定工作流规则：章节工作流规则 {5} 条。",
-        f"固定参考源文件清单：当前源章节 1 个（{chapter['file_name']}）；卷内补充文件不注入章节工作流。",
-        f"固定参考源原文：当前章 source bundle，字符数约 {source_char_count}。",
+        f"固定工作流规则：章节工作流规则 {6} 条。",
     ]
+    if chapter_phase_uses_source_bundle(phase_key):
+        lines.extend(
+            [
+                f"固定参考源文件清单：当前源章节 1 个（{chapter['file_name']}）；卷内补充文件不注入章节工作流。",
+                f"固定参考源原文：当前章 source bundle，字符数约 {source_char_count}。",
+            ]
+        )
+    else:
+        lines.append("固定参考源策略：当前阶段不注入参考源章节原文，改由章纲与注入文档驱动。")
+    return lines
 
 def group_review_shared_prefix_summary_lines(
     manifest: dict[str, Any],
     volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_char_count: int,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> list[str]:
     return [
@@ -50,7 +59,7 @@ def group_review_shared_prefix_summary_lines(
             f"{chapter_numbers[0]}-{chapter_numbers[-1]}。"
         ),
         f"固定工作流规则：{FIVE_CHAPTER_REVIEW_NAME}规则 3 条。",
-        f"固定参考源清单：当前组 source inventory 字符数约 {source_char_count}，正文放在 Dynamic Request 尾部。",
+        "固定审查依据：当前组不注入参考源原文，改由卷级/全局注入、状态文档与已生成正文驱动。",
         f"固定已生成章节清单：当前组待审章节 {len(rewritten_chapters)} 章，正文放在 Dynamic Request 尾部。",
     ]
 
@@ -119,7 +128,6 @@ def payload_dynamic_suffix_summary_lines(payload: dict[str, Any]) -> list[str]:
         "rolling_injected_chapter_docs": "滚动章级注入文档",
         "writing_skill_reference": "写作规范 skill 参考",
         "review_skill_reference": "审核 skill 参考",
-        "current_range_source_bundle": "当前组参考源原文",
         "update_target_files": "待更新目标文件清单",
         "rewritten_chapters": "已生成章节正文清单",
     }
@@ -202,7 +210,6 @@ def payload_actual_input_summary_lines(payload: dict[str, Any]) -> list[str]:
 
     single_doc_fields = {
         "current_generated_chapter": "当前已生成章节正文",
-        "current_range_source_bundle": "当前组参考源原文",
         "writing_skill_reference": "写作规范 skill",
         "review_skill_reference": "审核 skill",
     }
@@ -308,24 +315,32 @@ def print_request_context_summary(
 def five_chapter_review_source_summary_lines(
     volume_material: dict[str, Any],
     chapter_numbers: list[str],
-    source_char_count: int,
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> list[str]:
     rewritten_total = sum(len(data.get("text", "")) for data in rewritten_chapters.values())
     lines = [
         f"当前审查区间：{chapter_numbers[0]}-{chapter_numbers[-1]}。",
-        f"当前区间参考源总字符数约 {source_char_count}。",
+        "当前请求不注入参考源原文；组审改用卷级/全局注入、状态文档与已生成正文。",
         f"当前区间已生成章节数：{len(rewritten_chapters)}，正文总字符数约 {rewritten_total}。",
     ]
     return lines
 
-def chapter_source_summary_lines(volume_material: dict[str, Any], chapter_number: str, source_char_count: int) -> list[str]:
+def chapter_source_summary_lines(
+    volume_material: dict[str, Any],
+    chapter_number: str,
+    source_char_count: int,
+    *,
+    phase_key: str,
+) -> list[str]:
     chapter = get_chapter_material(volume_material, chapter_number)
     lines = [
         f"当前源章节：{chapter['file_name']}（标题：{chapter['source_title']}，字符数约 {len(chapter['text'])}）",
-        "当前请求只注入当前源章节；卷内补充文件不注入章节工作流。",
-        f"当前章节参考源总字符数约 {source_char_count}。",
     ]
+    if chapter_phase_uses_source_bundle(phase_key):
+        lines.append("当前请求只注入当前源章节；卷内补充文件不注入章节工作流。")
+        lines.append(f"当前章节参考源总字符数约 {source_char_count}。")
+    else:
+        lines.append("当前请求不注入源章节原文；正文与状态处理改用章纲、卷级注入和全局注入。")
     lines.append("未输入的来源章节：同卷其他章节当前不注入。")
     return lines
 
