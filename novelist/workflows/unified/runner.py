@@ -81,7 +81,7 @@ def main() -> int:
                     force_reconfigure=True,
                 )
                 if startup_mode == STARTUP_MODE_CONFIG_ONLY:
-                    print_progress("OpenAI 设置已重新配置完成。")
+                    print_progress("Provider 设置已重新配置完成。")
                     if not sys.stdin or not sys.stdin.isatty():
                         return 0
                     next_startup_mode = prompt_next_startup_mode()

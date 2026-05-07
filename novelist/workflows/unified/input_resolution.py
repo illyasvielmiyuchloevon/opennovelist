@@ -186,7 +186,7 @@ def maybe_configure_openai(
     if not should_configure:
         return
 
-    print_progress("开始处理统一入口的 OpenAI 全局设置。")
+    print_progress("开始处理统一入口的 Provider 全局设置。")
     global_config = openai_config.load_global_config(GLOBAL_CONFIG_PATH, legacy_path=LEGACY_GLOBAL_CONFIG_PATH)
     if force_reconfigure:
         _, settings, _ = openai_config.force_reconfigure_openai(
@@ -210,7 +210,7 @@ def maybe_configure_openai(
             print_progress(line)
         return
 
-    _, global_config = openai_config.resolve_api_key(
+    api_key, global_config = openai_config.resolve_api_key(
         cli_api_key=args.api_key,
         global_config=global_config,
         config_path=GLOBAL_CONFIG_PATH,
@@ -220,6 +220,7 @@ def maybe_configure_openai(
         cli_protocol=args.protocol,
         cli_base_url=args.base_url,
         cli_model=args.model,
+        api_key=api_key,
         global_config=global_config,
         config_path=GLOBAL_CONFIG_PATH,
     )

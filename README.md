@@ -38,13 +38,26 @@ python F:\novelist\novel_workflow.py
 pip install openai pydantic
 ```
 
-项目支持 OpenAI Responses API，也支持 OpenAI Compatible 服务。全局配置默认保存在：
+项目支持 OpenAI Responses API，也支持 OpenAI Compatible 服务，并新增了 OpenCode Go 提供商可选项。全局配置默认保存在：
 
 ```text
 %USERPROFILE%\.novel_adaptation\config.json
 ```
 
 旧配置 `%USERPROFILE%\.novel_adaptation_cli\config.json` 会在首次读取时自动迁移。
+
+OpenCode Go 官方文档端点（可直接用于本项目）：
+
+- Chat Completions：`https://opencode.ai/zen/go/v1/chat/completions`
+- 模型列表：`https://opencode.ai/zen/go/v1/models`
+
+选择 `--provider opencode_go` 时，CLI 默认会使用：
+
+- `base_url=https://opencode.ai/zen/go/v1`
+- `protocol=openai_compatible`
+- 默认透传 `prompt_cache_key`（对齐 opencode 的缓存键策略）。
+- 配置 API Key 后会实时请求 `https://opencode.ai/zen/go/v1/models` 并让你从可用模型中选择（拉取失败时回退到内置候选列表）。
+- 官方文档里走 `/messages`（Anthropic 协议）的模型（如 `minimax-m2.5`、`minimax-m2.7`）会在当前运行时中自动隐藏，避免误选到不兼容协议。
 
 ## 典型流程
 

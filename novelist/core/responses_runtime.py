@@ -29,6 +29,7 @@ PROTOCOL_OPENAI_COMPATIBLE = "openai_compatible"
 COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD = 120000
 COMPATIBLE_CHAT_TRANSPORT_STREAM = "stream"
 COMPATIBLE_CHAT_TRANSPORT_NONSTREAM = "nonstream"
+PROVIDER_OPENCODE_GO = "opencode_go"
 DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENAI_CONNECT_TIMEOUT_SECONDS", "30"))
 DEFAULT_OPENAI_READ_TIMEOUT_SECONDS = float(os.getenv("OPENAI_READ_TIMEOUT_SECONDS", "600"))
 DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS = float(os.getenv("OPENAI_WRITE_TIMEOUT_SECONDS", "30"))
@@ -149,13 +150,17 @@ def format_transport_error_message(
     protocol: str,
     request_chars: int,
     abort_retries: bool,
+    compatible_transport_attempts: list[str] | None = None,
 ) -> str:
-    message = f"接口请求失败（{type(error).__name__}，发生在 SDK 预处理或发送阶段）：{error}"
+    message = f"接口请求失败（{type(error).__name__}，发生在请求预处理或发送阶段）：{error}"
     context_limit_error = "context window" in str(error).lower() or "input exceeds" in str(error).lower()
     if context_limit_error:
         message += " 这是上下文窗口超限的确定性错误，已停止继续重试。"
     if protocol == PROTOCOL_OPENAI_COMPATIBLE:
         message += f" 当前协议=openai_compatible，请求文本约 {request_chars} 字符。"
+        attempts = [mode for mode in compatible_transport_attempts or [] if mode]
+        if attempts:
+            message += f" 已尝试传输={' -> '.join(attempts)}。"
         if isinstance(error, openai.BadRequestError):
             message += " 这是请求参数层面的确定性错误，已停止继续重试。"
         if isinstance(error, openai.InternalServerError):
@@ -283,6 +288,163 @@ def openai_compatible_options(client: OpenAI) -> dict[str, Any]:
     return dict(options) if isinstance(options, dict) else {}
 
 
+def openai_compatible_base_url(client: OpenAI) -> str:
+    return str(getattr(client, "_codex_base_url", "") or "").strip()
+
+
+def openai_compatible_api_key(client: OpenAI) -> str:
+    return str(getattr(client, "_codex_api_key", "") or "").strip()
+
+
+def _build_openai_compatible_request_url(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return normalized + "/chat/completions"
+
+
+def _build_openai_compatible_http_client(
+    base_url: str,
+    *,
+    trust_env_override: bool | None = None,
+) -> httpx.Client:
+    timeout = httpx.Timeout(
+        connect=DEFAULT_OPENAI_CONNECT_TIMEOUT_SECONDS,
+        read=DEFAULT_OPENAI_READ_TIMEOUT_SECONDS,
+        write=DEFAULT_OPENAI_WRITE_TIMEOUT_SECONDS,
+        pool=DEFAULT_OPENAI_POOL_TIMEOUT_SECONDS,
+    )
+    return httpx.Client(
+        timeout=timeout,
+        trust_env=_should_trust_environment_http_settings(base_url) if trust_env_override is None else trust_env_override,
+    )
+
+
+def _extract_compatible_error_message(payload: Any, body_text: str, status_code: int) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    if body_text.strip():
+        return body_text.strip()
+    return f"HTTP {status_code}"
+
+
+def _raise_openai_compatible_http_error(response: httpx.Response) -> None:
+    response.read()
+    body_text = response.text
+    payload = safe_json_loads(body_text)
+    message = _extract_compatible_error_message(payload, body_text, response.status_code)
+    status_code = response.status_code
+    if status_code == 400:
+        raise openai.BadRequestError(message, response=response, body=payload)
+    if status_code == 401:
+        raise openai.AuthenticationError(message, response=response, body=payload)
+    if status_code == 403:
+        raise openai.PermissionDeniedError(message, response=response, body=payload)
+    if status_code == 404:
+        raise openai.NotFoundError(message, response=response, body=payload)
+    if status_code == 422:
+        raise openai.UnprocessableEntityError(message, response=response, body=payload)
+    if status_code == 429:
+        raise openai.RateLimitError(message, response=response, body=payload)
+    if status_code >= 500:
+        raise openai.InternalServerError(message, response=response, body=payload)
+    raise openai.APIStatusError(message, response=response, body=payload)
+
+
+def _looks_like_deepseek_v4_model(model: str) -> bool:
+    return "deepseek-v4" in str(model or "").strip().lower()
+
+
+def _is_deepseek_api_base_url(base_url: str) -> bool:
+    host = (urlparse(base_url).hostname or "").strip().lower()
+    return host == "api.deepseek.com"
+
+
+def compatible_reasoning_effort(client: OpenAI, *, model: str) -> str | None:
+    options = openai_compatible_options(client)
+    configured = str(options.get("reasoning_effort") or "").strip().lower()
+    if configured:
+        return configured
+    if _looks_like_deepseek_v4_model(model):
+        return "high"
+    return None
+
+
+def _compatible_default_extra_body(
+    client: OpenAI,
+    *,
+    model: str,
+    reasoning_effort: str | None,
+) -> dict[str, Any]:
+    base_url = openai_compatible_base_url(client)
+    if _is_deepseek_api_base_url(base_url) and _looks_like_deepseek_v4_model(model) and reasoning_effort != "none":
+        return {"thinking": {"type": "enabled"}}
+    return {}
+
+
+def _normalize_reasoning_content_value(value: Any) -> str | None:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        if parts:
+            return "".join(parts)
+    return None
+
+
+def extract_chat_completion_reasoning_content(payload: Any) -> str | None:
+    plain = to_plain_data(payload)
+    if not isinstance(plain, dict):
+        return None
+    choices = plain.get("choices")
+    if not isinstance(choices, list):
+        return None
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        if "reasoning_content" not in message:
+            continue
+        normalized = _normalize_reasoning_content_value(message.get("reasoning_content"))
+        if normalized is not None:
+            return normalized
+        return str(message.get("reasoning_content"))
+    return None
+
+
+def _merge_openai_compatible_extra_body(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(defaults)
+    for key, value in overrides.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[str(key)] = {**existing, **value}
+        else:
+            merged[str(key)] = value
+    return merged
+
+
 def _render_openai_compatible_template(value: Any, context: dict[str, str | None]) -> Any:
     if isinstance(value, str):
         rendered = value
@@ -324,6 +486,8 @@ def resolve_openai_compatible_request_extras(
     client: OpenAI,
     *,
     prompt_cache_key: str | None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     options = openai_compatible_options(client)
     context = {
@@ -337,7 +501,140 @@ def resolve_openai_compatible_request_extras(
         if isinstance(extra_headers, dict)
         else {}
     )
+    default_body = _compatible_default_extra_body(
+        client,
+        model=str(model or ""),
+        reasoning_effort=reasoning_effort,
+    )
+    provider_id = str(getattr(client, "_codex_provider", "") or "").strip().lower()
+    if provider_id == PROVIDER_OPENCODE_GO and context["prompt_cache_key"]:
+        default_body = {
+            **default_body,
+            "prompt_cache_key": context["prompt_cache_key"],
+        }
+    normalized_body = _merge_openai_compatible_extra_body(default_body, normalized_body)
     return normalized_body, normalized_headers
+
+
+def openai_compatible_uses_direct_http(client: OpenAI) -> bool:
+    return bool(openai_compatible_base_url(client) and openai_compatible_api_key(client))
+
+
+def _split_openai_compatible_http_request(request_params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    payload = dict(request_params)
+    extra_body = payload.pop("extra_body", None)
+    extra_headers = payload.pop("extra_headers", None)
+    if isinstance(extra_body, dict) and extra_body:
+        payload = _merge_openai_compatible_extra_body(payload, extra_body)
+    headers = (
+        {str(key): str(value) for key, value in extra_headers.items()}
+        if isinstance(extra_headers, dict)
+        else {}
+    )
+    return payload, headers
+
+
+def _build_openai_compatible_request_headers(
+    api_key: str,
+    *,
+    stream: bool,
+    extra_headers: dict[str, str],
+) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream" if stream else "application/json",
+    }
+    headers.update(extra_headers)
+    return headers
+
+
+def _build_openai_compatible_status_url(base_url: str, request_id: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        normalized = normalized[: -len("/chat/completions")]
+    return f"{normalized}/status/{request_id}"
+
+
+def _extract_openai_compatible_request_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("requestId", "request_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _raise_openai_compatible_pending_error(response: httpx.Response, payload: Any) -> None:
+    message = _extract_compatible_error_message(payload, response.text, response.status_code)
+    if not isinstance(payload, dict):
+        payload = {"message": message}
+    raise openai.APIStatusError(message, response=response, body=payload)
+
+
+def should_retry_openai_compatible_without_env_proxy(
+    error: Exception,
+    *,
+    base_url: str,
+    trust_env: bool,
+) -> bool:
+    if not trust_env:
+        return False
+    if not _should_trust_environment_http_settings(base_url):
+        return False
+    text = str(error).lower()
+    return any(
+        token in text
+        for token in (
+            "decryption failed or bad record mac",
+            "wrong version number",
+            "tlsv1 alert",
+            "unexpected eof while reading",
+        )
+    )
+
+
+def _poll_openai_compatible_pending_response(
+    client: OpenAI,
+    *,
+    pending_response: httpx.Response,
+    extra_headers: dict[str, str],
+    trust_env_override: bool | None = None,
+) -> httpx.Response:
+    pending_response.read()
+    payload = safe_json_loads(pending_response.text)
+    request_id = _extract_openai_compatible_request_id(payload)
+    if not request_id:
+        _raise_openai_compatible_pending_error(pending_response, payload)
+
+    base_url = openai_compatible_base_url(client)
+    api_key = openai_compatible_api_key(client)
+    status_url = _build_openai_compatible_status_url(base_url, request_id)
+    deadline = time.time() + DEFAULT_RESPONSE_POLL_TIMEOUT_SECONDS
+
+    with _build_openai_compatible_http_client(base_url, trust_env_override=trust_env_override) as http_client:
+        headers = _build_openai_compatible_request_headers(
+            api_key,
+            stream=False,
+            extra_headers=extra_headers,
+        )
+        while True:
+            try:
+                response = http_client.get(status_url, headers=headers)
+            except httpx.HTTPError as error:
+                request = getattr(error, "request", None) or httpx.Request("GET", status_url)
+                raise openai.APIConnectionError(request=request) from error
+            if response.status_code == 202:
+                if time.time() >= deadline:
+                    raise openai.APITimeoutError(request=response.request) from TimeoutError(
+                        f"兼容接口轮询超时，request_id={request_id}"
+                    )
+                time.sleep(DEFAULT_RESPONSE_POLL_INTERVAL_SECONDS)
+                continue
+            if response.status_code >= 400:
+                _raise_openai_compatible_http_error(response)
+            return response
 
 
 def compatible_usage_extra_paths(
@@ -367,7 +664,27 @@ def compatible_chat_transport_mode(client: OpenAI) -> str:
     mode = str(options.get("transport") or "").strip().lower()
     if mode in {COMPATIBLE_CHAT_TRANSPORT_STREAM, COMPATIBLE_CHAT_TRANSPORT_NONSTREAM}:
         return mode
-    return COMPATIBLE_CHAT_TRANSPORT_NONSTREAM
+    return COMPATIBLE_CHAT_TRANSPORT_STREAM
+
+
+def alternate_compatible_chat_transport(mode: str) -> str:
+    if mode == COMPATIBLE_CHAT_TRANSPORT_STREAM:
+        return COMPATIBLE_CHAT_TRANSPORT_NONSTREAM
+    return COMPATIBLE_CHAT_TRANSPORT_STREAM
+
+
+def compatible_chat_transport_candidates(
+    client: OpenAI,
+    *,
+    request_chars: int,
+) -> list[str]:
+    preferred = compatible_chat_transport_mode(client)
+    if request_chars < COMPATIBLE_LARGE_REQUEST_CHAR_THRESHOLD:
+        return [preferred]
+    alternate = alternate_compatible_chat_transport(preferred)
+    if alternate == preferred:
+        return [preferred]
+    return [preferred, alternate]
 
 
 def to_plain_data(value: Any) -> Any:
@@ -1061,13 +1378,13 @@ def should_retry_legacy_chat_tool_choice(error: Exception) -> bool:
 
 
 def should_retry_without_chat_stream_options(error: Exception) -> bool:
-    if not isinstance(error, openai.BadRequestError):
+    if not isinstance(error, (openai.BadRequestError, openai.UnprocessableEntityError)):
         return False
     text = str(error)
     return "stream_options" in text or "include_usage" in text
 
 
-def should_fallback_to_nonstream_chat_completion(
+def should_retry_with_alternate_chat_transport(
     error: Exception,
     *,
     request_chars: int,
@@ -1082,6 +1399,14 @@ def should_fallback_to_nonstream_chat_completion(
     return False
 
 
+def should_fallback_to_nonstream_chat_completion(
+    error: Exception,
+    *,
+    request_chars: int,
+) -> bool:
+    return should_retry_with_alternate_chat_transport(error, request_chars=request_chars)
+
+
 def build_nonstream_chat_completion_request(request_params: dict[str, Any]) -> dict[str, Any]:
     nonstream = dict(request_params)
     nonstream.pop("stream_options", None)
@@ -1089,94 +1414,149 @@ def build_nonstream_chat_completion_request(request_params: dict[str, Any]) -> d
     return nonstream
 
 
-def collect_chat_completion_stream_response(
+def request_compatible_chat_completion(
     client: OpenAI,
     *,
     request_params: dict[str, Any],
+    transport_mode: str,
 ) -> tuple[Any, str, Any]:
+    if openai_compatible_uses_direct_http(client):
+        if transport_mode == COMPATIBLE_CHAT_TRANSPORT_STREAM:
+            last_error: Exception | None = None
+            for include_usage in (True, False):
+                stream_request_params = dict(request_params)
+                stream_request_params["stream"] = True
+                if include_usage:
+                    stream_request_params["stream_options"] = {"include_usage": True}
+                try:
+                    return collect_openai_compatible_stream_response_direct(
+                        client,
+                        request_params=stream_request_params,
+                    )
+                except Exception as error:
+                    last_error = error
+                    if include_usage and should_retry_without_chat_stream_options(error):
+                        continue
+                    raise
+            if last_error is not None:
+                raise last_error
+        nonstream_request_params = build_nonstream_chat_completion_request(request_params)
+        return collect_openai_compatible_response_direct(
+            client,
+            request_params=nonstream_request_params,
+        )
+
+    if transport_mode == COMPATIBLE_CHAT_TRANSPORT_STREAM:
+        last_error: Exception | None = None
+        for include_usage in (True, False):
+            stream_request_params = dict(request_params)
+            stream_request_params["stream"] = True
+            if include_usage:
+                stream_request_params["stream_options"] = {"include_usage": True}
+            try:
+                return collect_chat_completion_stream_response(
+                    client,
+                    request_params=stream_request_params,
+                )
+            except Exception as error:
+                last_error = error
+                if include_usage and should_retry_without_chat_stream_options(error):
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+
+    nonstream_request_params = build_nonstream_chat_completion_request(request_params)
+    return collect_chat_completion_response(
+        client,
+        request_params=nonstream_request_params,
+    )
+
+
+def _build_chat_completion_stream_result(chunks: Any) -> tuple[Any, str, Any]:
     response_payload: dict[str, Any] = {}
     tool_calls_by_index: dict[int, dict[str, Any]] = {}
     legacy_function_call: dict[str, str] = {"name": "", "arguments": ""}
     content_parts: list[str] = []
+    reasoning_content_parts: list[str] = []
+    saw_reasoning_content = False
     finish_reason: str | None = None
     role = "assistant"
 
-    stream = client.chat.completions.create(**request_params)
-    close = getattr(stream, "close", None)
-    try:
-        for chunk in stream:
-            plain = to_plain_data(chunk)
-            if not isinstance(plain, dict):
-                continue
-            for key in ("id", "object", "created", "model", "system_fingerprint"):
-                if key in plain and key not in response_payload:
-                    response_payload[key] = plain[key]
-            if isinstance(plain.get("usage"), dict):
-                response_payload["usage"] = plain["usage"]
+    for chunk in chunks:
+        plain = to_plain_data(chunk)
+        if not isinstance(plain, dict):
+            continue
+        for key in ("id", "object", "created", "model", "system_fingerprint"):
+            if key in plain and key not in response_payload:
+                response_payload[key] = plain[key]
+        if isinstance(plain.get("usage"), dict):
+            response_payload["usage"] = plain["usage"]
 
-            choices = plain.get("choices")
-            if not isinstance(choices, list):
-                continue
+        choices = plain.get("choices")
+        if not isinstance(choices, list):
+            continue
 
-            for choice in choices:
-                if not isinstance(choice, dict):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("finish_reason"), str) and choice["finish_reason"]:
+                finish_reason = choice["finish_reason"]
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            if isinstance(delta.get("role"), str) and delta["role"]:
+                role = delta["role"]
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+            if "reasoning_content" in delta:
+                saw_reasoning_content = True
+                reasoning_content = delta.get("reasoning_content")
+                if isinstance(reasoning_content, str):
+                    reasoning_content_parts.append(reasoning_content)
+            function_call = delta.get("function_call")
+            if isinstance(function_call, dict):
+                if isinstance(function_call.get("name"), str) and function_call["name"]:
+                    legacy_function_call["name"] = function_call["name"]
+                if isinstance(function_call.get("arguments"), str) and function_call["arguments"]:
+                    legacy_function_call["arguments"] += function_call["arguments"]
+            tool_calls = delta.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
                     continue
-                if isinstance(choice.get("finish_reason"), str) and choice["finish_reason"]:
-                    finish_reason = choice["finish_reason"]
-                delta = choice.get("delta")
-                if not isinstance(delta, dict):
+                index = tool_call.get("index")
+                if not isinstance(index, int):
+                    index = 0
+                item = tool_calls_by_index.setdefault(
+                    index,
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    },
+                )
+                if isinstance(tool_call.get("id"), str) and tool_call["id"]:
+                    item["id"] = tool_call["id"]
+                if isinstance(tool_call.get("type"), str) and tool_call["type"]:
+                    item["type"] = tool_call["type"]
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
                     continue
-                if isinstance(delta.get("role"), str) and delta["role"]:
-                    role = delta["role"]
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    content_parts.append(content)
-                function_call = delta.get("function_call")
-                if isinstance(function_call, dict):
-                    if isinstance(function_call.get("name"), str) and function_call["name"]:
-                        legacy_function_call["name"] = function_call["name"]
-                    if isinstance(function_call.get("arguments"), str) and function_call["arguments"]:
-                        legacy_function_call["arguments"] += function_call["arguments"]
-                tool_calls = delta.get("tool_calls")
-                if not isinstance(tool_calls, list):
-                    continue
-                for tool_call in tool_calls:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    index = tool_call.get("index")
-                    if not isinstance(index, int):
-                        index = 0
-                    item = tool_calls_by_index.setdefault(
-                        index,
-                        {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        },
-                    )
-                    if isinstance(tool_call.get("id"), str) and tool_call["id"]:
-                        item["id"] = tool_call["id"]
-                    if isinstance(tool_call.get("type"), str) and tool_call["type"]:
-                        item["type"] = tool_call["type"]
-                    function = tool_call.get("function")
-                    if not isinstance(function, dict):
-                        continue
-                    item_function = item.setdefault("function", {"name": "", "arguments": ""})
-                    if isinstance(function.get("name"), str) and function["name"]:
-                        item_function["name"] = function["name"]
-                    if isinstance(function.get("arguments"), str) and function["arguments"]:
-                        item_function["arguments"] = str(item_function.get("arguments") or "") + function["arguments"]
-    finally:
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+                item_function = item.setdefault("function", {"name": "", "arguments": ""})
+                if isinstance(function.get("name"), str) and function["name"]:
+                    item_function["name"] = function["name"]
+                if isinstance(function.get("arguments"), str) and function["arguments"]:
+                    item_function["arguments"] = str(item_function.get("arguments") or "") + function["arguments"]
 
     message: dict[str, Any] = {
         "role": role,
         "content": "".join(content_parts) or None,
     }
+    if saw_reasoning_content:
+        message["reasoning_content"] = "".join(reasoning_content_parts)
     if tool_calls_by_index:
         message["tool_calls"] = [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)]
     elif legacy_function_call["name"] or legacy_function_call["arguments"]:
@@ -1206,19 +1586,27 @@ def collect_chat_completion_stream_response(
     return synthetic_response, raw_body_text, response_payload
 
 
-def collect_chat_completion_response(
+def collect_chat_completion_stream_response(
     client: OpenAI,
     *,
     request_params: dict[str, Any],
 ) -> tuple[Any, str, Any]:
-    completion = client.chat.completions.create(**request_params)
-    payload = to_plain_data(completion)
-    if isinstance(payload, dict):
-        response_payload = dict(payload)
-    else:
-        response_payload = {}
+    stream = client.chat.completions.create(**request_params)
+    close = getattr(stream, "close", None)
+    try:
+        return _build_chat_completion_stream_result(stream)
+    finally:
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _build_chat_completion_nonstream_result(response_payload: dict[str, Any]) -> tuple[Any, str, Any]:
+    response_payload = dict(response_payload)
     response_payload.setdefault("status", "completed")
-    response_payload["_codex_transport"] = "chat.completion.nonstream"
+    response_payload.setdefault("_codex_transport", "chat.completion.nonstream")
     synthetic_response = SimpleNamespace(
         id=str(response_payload.get("id", "") or ""),
         status=str(response_payload.get("status", "") or "completed"),
@@ -1227,6 +1615,173 @@ def collect_chat_completion_response(
     )
     raw_body_text = json.dumps(response_payload, ensure_ascii=False)
     return synthetic_response, raw_body_text, response_payload
+
+
+def collect_chat_completion_response(
+    client: OpenAI,
+    *,
+    request_params: dict[str, Any],
+) -> tuple[Any, str, Any]:
+    completion = client.chat.completions.create(**request_params)
+    payload = to_plain_data(completion)
+    if isinstance(payload, dict):
+        return _build_chat_completion_nonstream_result(dict(payload))
+    return _build_chat_completion_nonstream_result({})
+
+
+def _iter_openai_compatible_sse_events(response: httpx.Response) -> Any:
+    data_lines: list[str] = []
+    for raw_line in response.iter_lines():
+        line = raw_line if isinstance(raw_line, str) else str(raw_line or "")
+        if not line:
+            if data_lines:
+                yield "\n".join(data_lines)
+                data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if data_lines:
+        yield "\n".join(data_lines)
+
+
+def collect_openai_compatible_stream_response_direct(
+    client: OpenAI,
+    *,
+    request_params: dict[str, Any],
+) -> tuple[Any, str, Any]:
+    base_url = openai_compatible_base_url(client)
+    api_key = openai_compatible_api_key(client)
+    request_url = _build_openai_compatible_request_url(base_url)
+    request_payload, extra_headers = _split_openai_compatible_http_request(request_params)
+    trust_env_modes: list[bool | None] = [None]
+    if _should_trust_environment_http_settings(base_url):
+        trust_env_modes.append(False)
+
+    for trust_env_override in trust_env_modes:
+        with _build_openai_compatible_http_client(base_url, trust_env_override=trust_env_override) as http_client:
+            headers = _build_openai_compatible_request_headers(
+                api_key,
+                stream=True,
+                extra_headers=extra_headers,
+            )
+            try:
+                with http_client.stream("POST", request_url, headers=headers, json=request_payload) as response:
+                    if response.status_code == 202:
+                        polled = _poll_openai_compatible_pending_response(
+                            client,
+                            pending_response=response,
+                            extra_headers=extra_headers,
+                            trust_env_override=trust_env_override,
+                        )
+                        try:
+                            payload = safe_json_loads(polled.text)
+                        finally:
+                            polled.close()
+                        if isinstance(payload, dict):
+                            payload.setdefault("_codex_transport", "chat.completion.polled")
+                            return _build_chat_completion_nonstream_result(payload)
+                        return _build_chat_completion_nonstream_result({})
+                    if response.status_code >= 400:
+                        _raise_openai_compatible_http_error(response)
+
+                    content_type = str(response.headers.get("content-type") or "").lower()
+                    if "application/json" in content_type:
+                        response.read()
+                        payload = safe_json_loads(response.text)
+                        if isinstance(payload, dict):
+                            payload.setdefault("_codex_transport", "chat.completion.stream.json")
+                            return _build_chat_completion_nonstream_result(payload)
+                        return _build_chat_completion_nonstream_result({})
+
+                    def stream_chunks() -> Any:
+                        for event_text in _iter_openai_compatible_sse_events(response):
+                            if event_text == "[DONE]":
+                                break
+                            chunk_payload = safe_json_loads(event_text)
+                            if isinstance(chunk_payload, dict):
+                                yield chunk_payload
+
+                    return _build_chat_completion_stream_result(stream_chunks())
+            except httpx.HTTPError as error:
+                if should_retry_openai_compatible_without_env_proxy(
+                    error,
+                    base_url=base_url,
+                    trust_env=trust_env_override is not False,
+                ):
+                    continue
+                request = getattr(error, "request", None) or httpx.Request("POST", request_url)
+                raise openai.APIConnectionError(request=request) from error
+
+    raise openai.APIConnectionError(request=httpx.Request("POST", request_url))
+
+
+def collect_openai_compatible_response_direct(
+    client: OpenAI,
+    *,
+    request_params: dict[str, Any],
+) -> tuple[Any, str, Any]:
+    base_url = openai_compatible_base_url(client)
+    api_key = openai_compatible_api_key(client)
+    request_url = _build_openai_compatible_request_url(base_url)
+    request_payload, extra_headers = _split_openai_compatible_http_request(request_params)
+    trust_env_modes: list[bool | None] = [None]
+    if _should_trust_environment_http_settings(base_url):
+        trust_env_modes.append(False)
+
+    for trust_env_override in trust_env_modes:
+        with _build_openai_compatible_http_client(base_url, trust_env_override=trust_env_override) as http_client:
+            headers = _build_openai_compatible_request_headers(
+                api_key,
+                stream=False,
+                extra_headers=extra_headers,
+            )
+            try:
+                response = http_client.post(request_url, headers=headers, json=request_payload)
+            except httpx.HTTPError as error:
+                if should_retry_openai_compatible_without_env_proxy(
+                    error,
+                    base_url=base_url,
+                    trust_env=trust_env_override is not False,
+                ):
+                    continue
+                request = getattr(error, "request", None) or httpx.Request("POST", request_url)
+                raise openai.APIConnectionError(request=request) from error
+
+            if response.status_code == 202:
+                response = _poll_openai_compatible_pending_response(
+                    client,
+                    pending_response=response,
+                    extra_headers=extra_headers,
+                    trust_env_override=trust_env_override,
+                )
+            if response.status_code >= 400:
+                _raise_openai_compatible_http_error(response)
+
+            content_type = str(response.headers.get("content-type") or "").lower()
+            if "text/event-stream" in content_type:
+                try:
+                    return _build_chat_completion_stream_result(
+                        chunk_payload
+                        for event_text in _iter_openai_compatible_sse_events(response)
+                        if event_text != "[DONE]"
+                        for chunk_payload in [safe_json_loads(event_text)]
+                        if isinstance(chunk_payload, dict)
+                    )
+                finally:
+                    response.close()
+
+            payload = safe_json_loads(response.text)
+            try:
+                if isinstance(payload, dict):
+                    payload.setdefault("_codex_transport", "chat.completion.nonstream")
+                    return _build_chat_completion_nonstream_result(payload)
+                return _build_chat_completion_nonstream_result({})
+            finally:
+                response.close()
+
+    raise openai.APIConnectionError(request=httpx.Request("POST", request_url))
 
 
 def chat_completion_preview(raw_json: Any, *, limit: int = 600) -> str:
@@ -1496,6 +2051,7 @@ class MultiFunctionToolResult:
     token_usage: TokenUsage = field(default_factory=empty_token_usage)
     call_id: str = ""
     raw_arguments: str = ""
+    assistant_reasoning_content: str | None = None
 
 
 def _coerce_function_tool_arguments(
@@ -1865,12 +2421,7 @@ def call_function_tool(
     retries: int = DEFAULT_API_RETRIES,
     retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
 ) -> FunctionToolResult[T]:
-    protocol = runtime_protocol(client)
     tool_choice: Any = {"type": "function", "name": tool_name}
-    if protocol == PROTOCOL_OPENAI_COMPATIBLE:
-        # 兼容服务在强制单工具选择上经常存在参数差异或服务端 bug；
-        # 单工具场景下改用 auto，与 adaptation 文档工具链保持一致。
-        tool_choice = "auto"
     result = call_function_tools(
         client,
         model=model,
@@ -1924,15 +2475,18 @@ def call_function_tools(
         raw_body_text = ""
         raw_json: Any = None
         response: Any = None
+        compatible_transport_attempts: list[str] = []
         try:
             activity.start()
             activity.set_status("生成中")
             if protocol == PROTOCOL_OPENAI_COMPATIBLE:
+                compatible_reasoning = compatible_reasoning_effort(client, model=model)
                 extra_body, extra_headers = resolve_openai_compatible_request_extras(
                     client,
                     prompt_cache_key=prompt_cache_key,
+                    model=model,
+                    reasoning_effort=compatible_reasoning,
                 )
-                transport_mode = compatible_chat_transport_mode(client)
                 base_request_params = {
                     "model": model,
                     "messages": chat_messages
@@ -1943,60 +2497,40 @@ def call_function_tools(
                     ],
                     "tools": build_chat_completion_tools(tool_specs),
                 }
+                if compatible_reasoning:
+                    base_request_params["reasoning_effort"] = compatible_reasoning
                 if extra_body:
                     base_request_params["extra_body"] = extra_body
                 if extra_headers:
                     base_request_params["extra_headers"] = extra_headers
+                transport_candidates = compatible_chat_transport_candidates(
+                    client,
+                    request_chars=request_chars,
+                )
                 last_compatible_error: Exception | None = None
                 for chat_tool_choice in build_chat_tool_choice_candidates(tool_choice):
-                    if transport_mode == COMPATIBLE_CHAT_TRANSPORT_STREAM:
-                        for include_usage in (True, False):
-                            request_params = dict(base_request_params)
-                            request_params["tool_choice"] = chat_tool_choice
-                            request_params["stream"] = True
-                            if include_usage:
-                                request_params["stream_options"] = {"include_usage": True}
-                            try:
-                                response, raw_body_text, raw_json = collect_chat_completion_stream_response(
-                                    client,
-                                    request_params=request_params,
-                                )
-                                last_compatible_error = None
-                                break
-                            except Exception as compatible_error:
-                                if should_fallback_to_nonstream_chat_completion(
-                                    compatible_error,
-                                    request_chars=request_chars,
-                                ):
-                                    fallback_request_params = build_nonstream_chat_completion_request(request_params)
-                                    try:
-                                        response, raw_body_text, raw_json = collect_chat_completion_response(
-                                            client,
-                                            request_params=fallback_request_params,
-                                        )
-                                        last_compatible_error = None
-                                        break
-                                    except Exception as fallback_error:
-                                        compatible_error = fallback_error
-                                last_compatible_error = compatible_error
-                                if include_usage and should_retry_without_chat_stream_options(compatible_error):
-                                    continue
-                                if should_retry_legacy_chat_tool_choice(compatible_error):
-                                    break
-                                raise
-                    else:
-                        request_params = dict(base_request_params)
-                        request_params["tool_choice"] = chat_tool_choice
-                        request_params["stream"] = False
+                    request_params = dict(base_request_params)
+                    request_params["tool_choice"] = chat_tool_choice
+                    for transport_index, candidate_transport in enumerate(transport_candidates):
+                        if candidate_transport not in compatible_transport_attempts:
+                            compatible_transport_attempts.append(candidate_transport)
                         try:
-                            response, raw_body_text, raw_json = collect_chat_completion_response(
+                            response, raw_body_text, raw_json = request_compatible_chat_completion(
                                 client,
                                 request_params=request_params,
+                                transport_mode=candidate_transport,
                             )
                             last_compatible_error = None
+                            break
                         except Exception as compatible_error:
                             last_compatible_error = compatible_error
                             if should_retry_legacy_chat_tool_choice(compatible_error):
+                                break
+                            has_alternate_transport = transport_index + 1 < len(transport_candidates)
+                            if has_alternate_transport and should_retry_with_alternate_chat_transport(
+                                compatible_error,
+                                request_chars=request_chars,
+                            ):
                                 continue
                             raise
                     if last_compatible_error is None:
@@ -2039,6 +2573,7 @@ def call_function_tools(
                     protocol=protocol,
                     request_chars=request_chars,
                     abort_retries=abort_retries,
+                    compatible_transport_attempts=compatible_transport_attempts,
                 )
             )
             if abort_retries or attempt >= retries:
@@ -2079,6 +2614,13 @@ def call_function_tools(
         else:
             output_types = response_output_types(response, raw_json)
             preview = build_response_preview(response, raw_body_text=raw_body_text, raw_json=raw_json)
+        assistant_reasoning_content: str | None = None
+        if protocol == PROTOCOL_OPENAI_COMPATIBLE and _looks_like_deepseek_v4_model(model):
+            assistant_reasoning_content = extract_chat_completion_reasoning_content(raw_json)
+            if assistant_reasoning_content is None:
+                # Keep parity with DeepSeek/OpenCode interleaved-turn expectations:
+                # assistant turns should still carry reasoning_content even when empty.
+                assistant_reasoning_content = ""
         extra_cache_read_paths: list[tuple[str, ...]] = []
         extra_cache_write_paths: list[tuple[str, ...]] = []
         if protocol == PROTOCOL_OPENAI_COMPATIBLE:
@@ -2115,6 +2657,7 @@ def call_function_tools(
                 raw_json=raw_json,
                 call_id=call_id,
                 raw_arguments=raw_arguments,
+                assistant_reasoning_content=assistant_reasoning_content,
             )
 
         last_error = ModelOutputError(

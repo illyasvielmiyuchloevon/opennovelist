@@ -80,7 +80,7 @@
 - 自动识别输入类型
 - 串联 `split_novel -> adaptation -> chapter_rewrite`
 - 检测和续跑断点
-- 统一 OpenAI / Compatible 配置
+- 统一 OpenAI / OpenAI Compatible / OpenCode Go 配置
 
 内部实现位于 `novelist.workflows.unified`。
 
@@ -93,7 +93,7 @@
 - `novelist.core.novel_source`
   卷目录扫描、章节/补充文件读取、source bundle 组装。
 - `novelist.core.openai_config`
-  provider、protocol、api key、base url、model 配置与客户端创建。
+  provider、protocol、api key、base url、model 配置与客户端创建（包含 `opencode_go` 的官方固定 base URL、协议固定、`/models` 模型列表选择、默认 `prompt_cache_key` 透传，以及 `/messages` 协议模型的自动隐藏防误选）。
 - `novelist.core.responses_runtime`
   Responses / Chat Completions 调用、流事件解析、tool call 提取、token usage 标准化和错误重试。
 - `novelist.core.ui`
@@ -143,8 +143,9 @@
 - `openai_compatible_cache_read_paths`
 - `openai_compatible_cache_write_paths`
 - `openai_compatible_transport`
+- `openai_compatible_reasoning_effort`
 
-前两项用于把 `{{prompt_cache_key}}` 或其他兼容服务要求的参数塞进 `chat.completions.create(...)` 请求；中间两项用于把兼容服务自定义的 `usage` 字段映射回统一的 `缓存命中 / 缓存写入` 统计；`openai_compatible_transport` 用于控制 Chat Completions 走 `nonstream` 还是 `stream`。当前工作流默认 `nonstream`，因为我们只需要最终工具结果，这更接近 opencode 的 `doGenerate` 路径；如果上游确实需要 SSE，再显式切到 `stream`。
+前两项用于把 `{{prompt_cache_key}}` 或其他兼容服务要求的参数塞进最终的 `/chat/completions` JSON / header；兼容请求现在直接按 opencode 风格走 HTTP，而不是继续依赖 Python OpenAI SDK 帮忙代发。中间两项用于把兼容服务自定义的 `usage` 字段映射回统一的 `缓存命中 / 缓存写入` 统计；`openai_compatible_transport` 用于控制 Chat Completions 走 `stream` 还是 `nonstream`。当前工作流默认 `stream`，与 opencode 主会话链路一致；如果某个兼容网关的 SSE 明显不稳定，再显式切到 `nonstream`。当大载荷请求在首选 transport 上遇到 `APIConnectionError` / 网关级内部错误时，运行时会按相反 transport 再尝试一次。`openai_compatible_reasoning_effort` 则会直接透传为顶层 `reasoning_effort`，用于 DeepSeek V4 / NIM 这类兼容服务。
 
 ## 7. 兼容原则
 

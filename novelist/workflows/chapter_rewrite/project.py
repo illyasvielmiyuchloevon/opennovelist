@@ -7,7 +7,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "基于 novel_adaptation 产出的工程目录，按章节组逐章生成仿写章节、配套状态文档与审核文档，"
-            "使用 OpenAI Responses API 与 core 运行时。"
+            "使用 OpenAI Responses API / OpenAI Compatible（含 OpenCode Go）与 core 运行时。"
         )
     )
     parser.add_argument(
@@ -15,9 +15,23 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         help="已有小说工程目录路径，或 split_novel 的来源目录路径；不传则启动后提示输入。",
     )
-    parser.add_argument("--base-url", help="OpenAI Responses API 的 base_url。")
-    parser.add_argument("--api-key", help="OpenAI API Key。")
+    parser.add_argument("--base-url", help="Provider API 的 base_url。")
+    parser.add_argument("--api-key", help="Provider API Key。")
     parser.add_argument("--model", help="调用的模型名称。")
+    parser.add_argument(
+        "--provider",
+        choices=(
+            openai_config.PROVIDER_OPENAI,
+            openai_config.PROVIDER_OPENCODE_GO,
+            openai_config.PROVIDER_OPENAI_COMPATIBLE,
+        ),
+        help="API 提供商。",
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=(openai_config.PROTOCOL_RESPONSES, openai_config.PROTOCOL_OPENAI_COMPATIBLE),
+        help="API 协议。",
+    )
     parser.add_argument("--volume", help="指定处理某一卷，例如 001。")
     parser.add_argument("--chapter", help="指定处理某一章，例如 0001。")
     parser.add_argument(

@@ -112,8 +112,11 @@ def main() -> int:
             config_path=GLOBAL_CONFIG_PATH,
         )
         openai_settings, global_config = openai_config.resolve_openai_settings(
+            cli_provider=getattr(args, "provider", None),
+            cli_protocol=getattr(args, "protocol", None),
             cli_base_url=args.base_url,
             cli_model=args.model,
+            api_key=api_key,
             global_config=global_config,
             config_path=GLOBAL_CONFIG_PATH,
             legacy_settings=manifest.get("openai") if isinstance(manifest, dict) else None,

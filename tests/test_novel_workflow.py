@@ -391,6 +391,10 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             workflow_entry.STARTUP_MODE_LABELS,
         )
 
+    def test_startup_mode_labels_use_provider_wording(self) -> None:
+        self.assertIn("Provider 设置", workflow_entry.STARTUP_MODE_LABELS[workflow_entry.STARTUP_MODE_CONFIG_AND_WORKFLOW])
+        self.assertIn("Provider 设置", workflow_entry.STARTUP_MODE_LABELS[workflow_entry.STARTUP_MODE_CONFIG_ONLY])
+
     def test_interrupted_workflow_continue_scope_skips_adaptation(self) -> None:
         args = self.build_args()
         args.rewrite_volume = None
@@ -548,6 +552,12 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             openai_config.PROVIDER_LABELS,
         )
 
+    def test_openai_provider_labels_cover_opencode_go(self) -> None:
+        self.assertIn(
+            openai_config.PROVIDER_OPENCODE_GO,
+            openai_config.PROVIDER_LABELS,
+        )
+
     def test_global_config_loads_and_migrates_legacy_config_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -567,6 +577,63 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             openai_config.PROTOCOL_OPENAI_COMPATIBLE,
         )
 
+    def test_provider_default_protocol_for_opencode_go(self) -> None:
+        self.assertEqual(
+            openai_config.provider_default_protocol(openai_config.PROVIDER_OPENCODE_GO),
+            openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+        )
+
+    def test_resolve_provider_protocol_metadata_for_opencode_go_forces_openai_compatible(self) -> None:
+        provider, protocol = openai_config.resolve_provider_protocol_metadata(
+            cli_provider=openai_config.PROVIDER_OPENCODE_GO,
+            cli_protocol=openai_config.PROTOCOL_RESPONSES,
+            global_config={},
+            legacy_settings=None,
+            force_prompt=False,
+        )
+        self.assertEqual(provider, openai_config.PROVIDER_OPENCODE_GO)
+        self.assertEqual(protocol, openai_config.PROTOCOL_OPENAI_COMPATIBLE)
+
+    def test_force_prompt_with_opencode_go_skips_protocol_prompt(self) -> None:
+        with (
+            mock.patch.object(openai_config.sys, "stdin", self.TtyInput()),
+            mock.patch.object(
+                openai_config,
+                "prompt_choice",
+                side_effect=[openai_config.PROVIDER_OPENCODE_GO],
+            ) as prompt_choice,
+        ):
+            provider, protocol = openai_config.resolve_provider_protocol_metadata(
+                cli_provider=None,
+                cli_protocol=None,
+                global_config={},
+                legacy_settings=None,
+                force_prompt=True,
+            )
+        self.assertEqual(provider, openai_config.PROVIDER_OPENCODE_GO)
+        self.assertEqual(protocol, openai_config.PROTOCOL_OPENAI_COMPATIBLE)
+        self.assertEqual(prompt_choice.call_count, 1)
+
+    def test_provider_defaults_for_opencode_go(self) -> None:
+        self.assertEqual(
+            openai_config.provider_default_base_url(openai_config.PROVIDER_OPENCODE_GO),
+            openai_config.DEFAULT_OPENCODE_GO_BASE_URL,
+        )
+        self.assertEqual(
+            openai_config.provider_default_model(openai_config.PROVIDER_OPENCODE_GO),
+            openai_config.DEFAULT_OPENCODE_GO_MODEL,
+        )
+
+    def test_infer_provider_from_base_url_detects_opencode_go(self) -> None:
+        self.assertEqual(
+            openai_config.infer_provider_from_base_url("https://opencode.ai/zen/go/v1"),
+            openai_config.PROVIDER_OPENCODE_GO,
+        )
+        self.assertEqual(
+            openai_config.infer_provider_from_base_url("https://opencode.ai/zen/go/v1/chat/completions"),
+            openai_config.PROVIDER_OPENCODE_GO,
+        )
+
     def test_resolve_openai_settings_loads_openai_compatible_options_from_global_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -582,6 +649,7 @@ class WorkflowCliArgumentTests(unittest.TestCase):
                 openai_config.OPENAI_COMPATIBLE_CACHE_READ_PATHS_CONFIG_KEY: [
                     "nim_cache.hit_tokens",
                 ],
+                openai_config.OPENAI_COMPATIBLE_REASONING_EFFORT_CONFIG_KEY: "HIGH",
             }
 
             settings, _ = openai_config.resolve_openai_settings(
@@ -602,6 +670,154 @@ class WorkflowCliArgumentTests(unittest.TestCase):
             settings["openai_compatible_options"]["cache_read_paths"],
             [["nim_cache", "hit_tokens"]],
         )
+        self.assertEqual(settings["openai_compatible_options"]["reasoning_effort"], "high")
+
+    def test_resolve_openai_settings_uses_opencode_go_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / ".novel_adaptation" / "config.json"
+            with mock.patch.object(openai_config, "select_opencode_go_model", return_value=openai_config.DEFAULT_OPENCODE_GO_MODEL):
+                settings, updated = openai_config.resolve_openai_settings(
+                    cli_provider=openai_config.PROVIDER_OPENCODE_GO,
+                    cli_protocol=openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+                    cli_base_url=None,
+                    cli_model=None,
+                    global_config={},
+                    config_path=config_path,
+                )
+
+        self.assertEqual(settings["provider"], openai_config.PROVIDER_OPENCODE_GO)
+        self.assertEqual(settings["protocol"], openai_config.PROTOCOL_OPENAI_COMPATIBLE)
+        self.assertEqual(settings["base_url"], openai_config.DEFAULT_OPENCODE_GO_BASE_URL)
+        self.assertEqual(settings["model"], openai_config.DEFAULT_OPENCODE_GO_MODEL)
+        self.assertEqual(
+            settings["openai_compatible_options"]["extra_body"]["prompt_cache_key"],
+            "{{prompt_cache_key}}",
+        )
+        self.assertEqual(updated["last_provider"], openai_config.PROVIDER_OPENCODE_GO)
+        self.assertEqual(updated["last_protocol"], openai_config.PROTOCOL_OPENAI_COMPATIBLE)
+        self.assertEqual(updated["last_base_url"], openai_config.DEFAULT_OPENCODE_GO_BASE_URL)
+        self.assertEqual(updated["last_model"], openai_config.DEFAULT_OPENCODE_GO_MODEL)
+
+    def test_resolve_openai_settings_switching_to_opencode_go_ignores_saved_openai_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / ".novel_adaptation" / "config.json"
+            global_config = {
+                "last_provider": openai_config.PROVIDER_OPENAI,
+                "last_protocol": openai_config.PROTOCOL_RESPONSES,
+                "last_base_url": "https://api.openai.com/v1",
+                "last_model": "gpt-5.1",
+            }
+            with mock.patch.object(
+                openai_config,
+                "select_opencode_go_model",
+                return_value=openai_config.DEFAULT_OPENCODE_GO_MODEL,
+            ) as model_selector:
+                settings, _ = openai_config.resolve_openai_settings(
+                    cli_provider=openai_config.PROVIDER_OPENCODE_GO,
+                    cli_protocol=openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+                    cli_base_url=None,
+                    cli_model=None,
+                    global_config=global_config,
+                    config_path=config_path,
+                )
+
+        self.assertEqual(settings["base_url"], openai_config.DEFAULT_OPENCODE_GO_BASE_URL)
+        self.assertEqual(settings["model"], openai_config.DEFAULT_OPENCODE_GO_MODEL)
+        self.assertEqual(model_selector.call_count, 1)
+
+    def test_force_reconfigure_opencode_go_skips_base_url_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / ".novel_adaptation" / "config.json"
+            with (
+                mock.patch.object(openai_config.sys, "stdin", self.TtyInput()),
+                mock.patch.object(
+                    openai_config,
+                    "prompt_choice",
+                    side_effect=[openai_config.PROVIDER_OPENCODE_GO],
+                ),
+                mock.patch.object(
+                    openai_config,
+                    "prompt_text",
+                    side_effect=["ocgo-key"],
+                ) as prompt_text,
+                mock.patch.object(
+                    openai_config,
+                    "select_opencode_go_model",
+                    return_value=openai_config.DEFAULT_OPENCODE_GO_MODEL,
+                ) as model_selector,
+            ):
+                api_key, settings, _ = openai_config.force_reconfigure_openai(
+                    cli_provider=None,
+                    cli_protocol=None,
+                    cli_base_url=None,
+                    cli_api_key=None,
+                    cli_model=None,
+                    global_config={},
+                    config_path=config_path,
+                )
+
+        self.assertEqual(api_key, "ocgo-key")
+        self.assertEqual(settings["provider"], openai_config.PROVIDER_OPENCODE_GO)
+        self.assertEqual(settings["protocol"], openai_config.PROTOCOL_OPENAI_COMPATIBLE)
+        self.assertEqual(settings["base_url"], openai_config.DEFAULT_OPENCODE_GO_BASE_URL)
+        self.assertEqual(settings["model"], openai_config.DEFAULT_OPENCODE_GO_MODEL)
+        self.assertEqual(prompt_text.call_count, 1)
+        self.assertEqual(model_selector.call_count, 1)
+        self.assertFalse(any("base_url" in str(call.args[0]) for call in prompt_text.call_args_list))
+
+    def test_select_opencode_go_model_prefers_api_models(self) -> None:
+        with (
+            mock.patch.object(
+                openai_config,
+                "fetch_opencode_go_model_ids",
+                return_value=["glm-5", "kimi-k2.6"],
+            ),
+            mock.patch.object(openai_config, "prompt_choice", return_value="kimi-k2.6") as prompt_choice,
+        ):
+            selected = openai_config.select_opencode_go_model(
+                api_key="sk-test",
+                base_url=openai_config.DEFAULT_OPENCODE_GO_BASE_URL,
+                preferred_model="kimi-k2.6",
+            )
+        self.assertEqual(selected, "kimi-k2.6")
+        self.assertEqual(prompt_choice.call_count, 1)
+        options = prompt_choice.call_args.args[1]
+        self.assertEqual(options[0][0], "kimi-k2.6")
+
+    def test_select_opencode_go_model_filters_messages_protocol_models(self) -> None:
+        with (
+            mock.patch.object(
+                openai_config,
+                "fetch_opencode_go_model_ids",
+                return_value=["minimax-m2.7", "kimi-k2.6"],
+            ),
+            mock.patch.object(openai_config, "prompt_choice", return_value="kimi-k2.6") as prompt_choice,
+        ):
+            selected = openai_config.select_opencode_go_model(
+                api_key="sk-test",
+                base_url=openai_config.DEFAULT_OPENCODE_GO_BASE_URL,
+            )
+        self.assertEqual(selected, "kimi-k2.6")
+        options = prompt_choice.call_args.args[1]
+        model_ids = [item[0] for item in options]
+        self.assertIn("kimi-k2.6", model_ids)
+        self.assertNotIn("minimax-m2.7", model_ids)
+
+    def test_select_opencode_go_model_falls_back_to_builtin_models(self) -> None:
+        with (
+            mock.patch.object(openai_config, "fetch_opencode_go_model_ids", return_value=[]),
+            mock.patch.object(openai_config, "prompt_choice", return_value=openai_config.DEFAULT_OPENCODE_GO_MODEL) as prompt_choice,
+        ):
+            selected = openai_config.select_opencode_go_model(
+                api_key="sk-test",
+                base_url=openai_config.DEFAULT_OPENCODE_GO_BASE_URL,
+            )
+        self.assertEqual(selected, openai_config.DEFAULT_OPENCODE_GO_MODEL)
+        options = prompt_choice.call_args.args[1]
+        self.assertTrue(any(item[0] == openai_config.DEFAULT_OPENCODE_GO_MODEL for item in options))
 
     def test_openai_compatible_cache_summary_lines_without_provider_specific_config(self) -> None:
         settings = {
@@ -614,7 +830,7 @@ class WorkflowCliArgumentTests(unittest.TestCase):
         self.assertEqual(len(lines), 3)
         self.assertIn("未配置 provider-specific 缓存参数", lines[0])
         self.assertIn("未配置自定义 usage 路径", lines[1])
-        self.assertIn("默认使用非流式", lines[2])
+        self.assertIn("默认使用流式", lines[2])
 
     def test_openai_compatible_cache_summary_lines_with_prompt_cache_passthrough_and_custom_usage(self) -> None:
         settings = {
@@ -634,7 +850,22 @@ class WorkflowCliArgumentTests(unittest.TestCase):
         self.assertIn("透传 {{prompt_cache_key}}", lines[0])
         self.assertIn("read=1", lines[1])
         self.assertIn("write=1", lines[1])
-        self.assertIn("默认使用非流式", lines[2])
+        self.assertIn("默认使用流式", lines[2])
+
+    def test_openai_compatible_cache_summary_lines_for_opencode_go_mentions_default_cache_key(self) -> None:
+        settings = {
+            "provider": openai_config.PROVIDER_OPENCODE_GO,
+            "protocol": openai_config.PROTOCOL_OPENAI_COMPATIBLE,
+            "openai_compatible_options": {
+                "extra_body": {"prompt_cache_key": "{{prompt_cache_key}}"},
+                "transport": "stream",
+            },
+        }
+        lines = openai_config.openai_compatible_cache_summary_lines(settings)
+        self.assertEqual(len(lines), 4)
+        self.assertIn("透传 {{prompt_cache_key}}", lines[0])
+        self.assertIn("OpenCode Go：默认开启 prompt_cache_key 透传", lines[2])
+        self.assertIn("默认使用流式", lines[3])
 
 
 if __name__ == "__main__":

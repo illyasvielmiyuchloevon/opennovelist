@@ -22,8 +22,8 @@ STARTUP_MODE_CONFIG_AND_WORKFLOW = "configure_and_workflow"
 STARTUP_MODE_CONFIG_ONLY = "configure_only"
 STARTUP_MODE_LABELS = {
     STARTUP_MODE_WORKFLOW: "直接进入统一工作流",
-    STARTUP_MODE_CONFIG_AND_WORKFLOW: "先重新配置 OpenAI 设置，再进入统一工作流",
-    STARTUP_MODE_CONFIG_ONLY: "只重新配置 OpenAI 设置",
+    STARTUP_MODE_CONFIG_AND_WORKFLOW: "先重新配置 Provider 设置，再进入统一工作流",
+    STARTUP_MODE_CONFIG_ONLY: "只重新配置 Provider 设置",
 }
 WORKFLOW_SCOPE_FULL = "full"
 WORKFLOW_SCOPE_CONTINUE_INTERRUPTED = "continue_interrupted"

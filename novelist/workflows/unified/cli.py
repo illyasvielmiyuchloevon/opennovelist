@@ -43,12 +43,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adaptation-volume", help="只让 novel_adaptation 处理指定卷，例如 001。")
     parser.add_argument("--rewrite-volume", help="只让 novel_chapter_rewrite 处理指定卷，例如 001。")
     parser.add_argument("--rewrite-chapter", help="只让 novel_chapter_rewrite 处理指定章，例如 0001。")
-    parser.add_argument("--base-url", help="OpenAI Responses API 的 base_url。")
-    parser.add_argument("--api-key", help="OpenAI API Key。")
+    parser.add_argument("--base-url", help="Provider API 的 base_url。")
+    parser.add_argument("--api-key", help="Provider API Key。")
     parser.add_argument("--model", help="调用的模型名称。")
     parser.add_argument(
         "--provider",
-        choices=(openai_config.PROVIDER_OPENAI, openai_config.PROVIDER_OPENAI_COMPATIBLE),
+        choices=(
+            openai_config.PROVIDER_OPENAI,
+            openai_config.PROVIDER_OPENCODE_GO,
+            openai_config.PROVIDER_OPENAI_COMPATIBLE,
+        ),
         help="API 提供商。",
     )
     parser.add_argument(
@@ -59,14 +63,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--startup-mode",
         choices=(STARTUP_MODE_WORKFLOW, STARTUP_MODE_CONFIG_AND_WORKFLOW, STARTUP_MODE_CONFIG_ONLY),
-        help="启动方式：直接进入工作流、先重新配置 OpenAI 再进入工作流、或只重新配置 OpenAI。",
+        help="启动方式：直接进入工作流、先重新配置 Provider 设置再进入工作流、或只重新配置 Provider 设置。",
     )
     parser.add_argument(
+        "--reconfigure-provider",
+        "--reset-provider-settings",
         "--reconfigure-openai",
         "--reset-openai-settings",
         dest="reconfigure_openai",
         action="store_true",
-        help="重新设置并记住 base_url、api_key、model。",
+        help="重新设置并记住 provider、base_url、api_key、model。",
     )
     parser.add_argument("--skip-split", action="store_true", help="跳过 split_novel 阶段。")
     parser.add_argument("--skip-adaptation", action="store_true", help="跳过 novel_adaptation 阶段。")

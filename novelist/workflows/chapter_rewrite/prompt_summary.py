@@ -27,17 +27,14 @@ def chapter_shared_prefix_summary_lines(
             f"固定项目上下文：新书《{manifest['new_book_title']}》 / 目标世界观："
             f"{manifest.get('target_worldview', '') or '未设置'} / 当前卷：{volume_material['volume_number']} / 当前章：{chapter_number}。"
         ),
-        f"固定工作流规则：章节工作流规则 {6} 条。",
+        "固定工作流规则：章节工作流规则 4 条（参考源注入策略改为由 Dynamic Request 显式声明）。",
     ]
     if chapter_phase_uses_source_bundle(phase_key):
-        lines.extend(
-            [
-                f"固定参考源文件清单：当前源章节 1 个（{chapter['file_name']}）；卷内补充文件不注入章节工作流。",
-                f"固定参考源原文：当前章 source bundle，字符数约 {source_char_count}。",
-            ]
+        lines.append(
+            f"当前阶段参考源策略：在 Dynamic Request 尾段附带当前源章节（{chapter['file_name']}，字符数约 {source_char_count}）。"
         )
     else:
-        lines.append("固定参考源策略：当前阶段不注入参考源章节原文，改由章纲与注入文档驱动。")
+        lines.append("当前阶段参考源策略：不附带参考源原文，改由章纲与注入文档驱动。")
     return lines
 
 def group_review_shared_prefix_summary_lines(
@@ -126,6 +123,10 @@ def payload_dynamic_suffix_summary_lines(payload: dict[str, Any]) -> list[str]:
 
     doc_bucket_labels = {
         "rolling_injected_chapter_docs": "滚动章级注入文档",
+        "source_files": "参考源文件清单",
+        "source_char_count": "参考源字符数",
+        "current_chapter_source_bundle": "参考源章节原文",
+        "source_bundle_policy": "参考源注入策略",
         "writing_skill_reference": "写作规范 skill 参考",
         "review_skill_reference": "审核 skill 参考",
         "update_target_files": "待更新目标文件清单",

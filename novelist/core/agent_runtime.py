@@ -176,22 +176,23 @@ def _append_chat_tool_messages(
     raw_arguments = result.raw_arguments
     if not raw_arguments:
         raw_arguments = result.parsed.model_dump_json()
-    messages.append(
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": result.tool_name,
-                        "arguments": raw_arguments,
-                    },
-                }
-            ],
-        }
-    )
+    assistant_message: dict[str, Any] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": result.tool_name,
+                    "arguments": raw_arguments,
+                },
+            }
+        ],
+    }
+    if result.assistant_reasoning_content is not None:
+        assistant_message["reasoning_content"] = result.assistant_reasoning_content
+    messages.append(assistant_message)
     messages.append(
         {
             "role": "tool",

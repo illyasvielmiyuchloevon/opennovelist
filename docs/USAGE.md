@@ -24,7 +24,7 @@ pip install openai pydantic
 准备：
 
 - 原始小说 `.txt`，或已经拆分好的书名目录，或已有工程目录。
-- OpenAI 或 OpenAI Compatible 接口。
+- OpenAI、OpenAI Compatible，或 OpenCode Go 接口。
 - `api_key`、`base_url`、`model`。
 
 配置会保存到：
@@ -53,17 +53,28 @@ pip install openai pydantic
     "input_tokens_details.cache_write_tokens",
     "nim_cache.write_tokens"
   ],
-  "openai_compatible_transport": "nonstream"
+  "openai_compatible_transport": "stream",
+  "openai_compatible_reasoning_effort": "high"
 }
 ```
 
 说明：
 
 - `OpenAI Compatible` 协议本身没有统一的提示词缓存请求字段，是否支持缓存取决于上游兼容服务。
-- `openai_compatible_extra_body` / `openai_compatible_extra_headers` 会原样并入 Chat Completions 请求；其中 `{{prompt_cache_key}}` 会在运行时替换成当前章节或审核阶段的缓存键。
+- `openai_compatible_extra_body` / `openai_compatible_extra_headers` 会原样并入 Chat Completions 请求；兼容协议现在直接走 HTTP `/chat/completions`，所以 `extra_body` 会合并到最终 JSON 顶层，而不是继续嵌成 SDK 的 `extra_body` 字段。其中 `{{prompt_cache_key}}` 会在运行时替换成当前章节或审核阶段的缓存键。
 - `openai_compatible_cache_read_paths` / `openai_compatible_cache_write_paths` 用于告诉 CLI 去哪里读取兼容提供商返回的缓存命中和缓存写入 token 统计。
-- `openai_compatible_transport` 可选 `nonstream` 或 `stream`。默认是 `nonstream`，更适合当前工作流这种“只关心最终工具结果”的调用；如果某个兼容服务只在 SSE 下表现正常，再显式切回 `stream`。
+- `openai_compatible_transport` 可选 `stream` 或 `nonstream`。默认是 `stream`，与 opencode 主会话链路一致；如果某个兼容服务的 SSE 特别不稳定，再显式切到 `nonstream`。当请求体很大且兼容网关在首选 transport 上直接断连时，运行时会自动再试另一种 transport 一次。
+- `openai_compatible_reasoning_effort` 会透传为顶层 `reasoning_effort`。DeepSeek V4 默认会落到 `high`；如果 base URL 是 `https://api.deepseek.com`，运行时还会补 `thinking: {"type": "enabled"}`。
 - 如果不配置这些字段，兼容服务只有在本身返回标准缓存 usage 字段时，CLI 才能显示非 0 的缓存命中。
+
+OpenCode Go 说明（官方文档）：`https://opencode.ai/docs/go/`
+
+- `--provider opencode_go` 时默认 `protocol=openai_compatible`。
+- 默认 `base_url`：`https://opencode.ai/zen/go/v1`（不需要手动输入，运行时会自动拼接 `/chat/completions`）。
+- 默认会透传 `prompt_cache_key`（对齐 opencode 的缓存键策略，提升提示词缓存命中稳定性）。
+- 配置 API Key 后会调用 `https://opencode.ai/zen/go/v1/models` 获取可用模型并让你选择，不再要求手输模型名。
+- 官方文档标记为 `/messages`（Anthropic 协议）的模型会在当前运行时自动隐藏（当前运行时仅走 `chat/completions`）。
+- 官方模型列表端点：`https://opencode.ai/zen/go/v1/models`
 
 ## 3. 统一入口
 
@@ -77,6 +88,12 @@ python F:\novelist\novel_workflow.py
 
 ```text
 start_workflow.bat
+```
+
+可选 provider 参数：
+
+```powershell
+python F:\novelist\novel_workflow.py --provider opencode_go --protocol openai_compatible
 ```
 
 统一入口可以识别：

@@ -107,11 +107,83 @@ class _StreamToNonstreamFallbackChatCompletions:
         )
 
 
+class _NonstreamToStreamFallbackChatCompletions:
+    def __init__(self, stream_chunks: list[dict]) -> None:
+        self._stream_chunks = stream_chunks
+        self.requests: list[dict] = []
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        if kwargs.get("stream") is True:
+            return _FakeStream(self._stream_chunks)
+        raise openai.APIConnectionError(
+            request=httpx.Request("POST", "https://example.com/v1/chat/completions")
+        )
+
+
 class _FakeClient:
     def __init__(self, stream_chunks: list[dict], compatible_options: dict | None = None) -> None:
         self._codex_protocol = llm_runtime.PROTOCOL_OPENAI_COMPATIBLE
         self._codex_openai_compatible_options = {"transport": "stream", **(compatible_options or {})}
         self.chat = SimpleNamespace(completions=_FakeChatCompletions(stream_chunks))
+
+
+class _FakeDirectHttpClient:
+    def __init__(self, post_response: httpx.Response) -> None:
+        self._post_response = post_response
+        self.post_calls: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def post(self, url: str, *, headers: dict[str, str] | None = None, json: dict | None = None):
+        self.post_calls.append({"url": url, "headers": headers or {}, "json": json or {}})
+        return self._post_response
+
+
+class _FakeStreamContext:
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+
+    def __enter__(self):
+        return self._response
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self._response.close()
+        return False
+
+
+class _FakeDirectStreamHttpClient:
+    def __init__(self, stream_response: httpx.Response) -> None:
+        self._stream_response = stream_response
+        self.stream_calls: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def stream(self, method: str, url: str, *, headers: dict[str, str] | None = None, json: dict | None = None):
+        self.stream_calls.append({"method": method, "url": url, "headers": headers or {}, "json": json or {}})
+        return _FakeStreamContext(self._stream_response)
+
+
+class _ErroringDirectHttpClient:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def post(self, url: str, *, headers: dict[str, str] | None = None, json: dict | None = None):
+        raise self._error
 
 
 class _FakeNonStreamChatCompletions:
@@ -713,7 +785,7 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
             "接口响应未完成",
         )
 
-    def test_call_function_tool_uses_auto_tool_choice_for_compatible(self) -> None:
+    def test_call_function_tool_uses_named_function_tool_choice_for_compatible(self) -> None:
         stream_chunks = [
             {
                 "id": "chatcmpl_auto",
@@ -759,7 +831,10 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         )
 
         self.assertEqual(result.parsed.value, "ok")
-        self.assertEqual(client.chat.completions.last_request["tool_choice"], "auto")
+        self.assertEqual(
+            client.chat.completions.last_request["tool_choice"],
+            {"type": "function", "function": {"name": "submit_tool"}},
+        )
 
     def test_call_function_tools_supports_openai_compatible_tool_calls(self) -> None:
         stream_chunks = [
@@ -931,6 +1006,184 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
             client.chat.completions.last_request["extra_headers"],
             {"x-cache-key": "chapter-rewrite-cache-key"},
         )
+
+    def test_call_function_tools_opencode_go_defaults_prompt_cache_key_passthrough(self) -> None:
+        stream_chunks = [
+            {
+                "id": "chatcmpl_test",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_tool",
+                                        "arguments": "{\"value\": \"ok\"}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_test",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        client = _FakeClient(stream_chunks)
+        client._codex_provider = "opencode_go"
+
+        llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="kimi-k2.6",
+            instructions="system instruction",
+            user_input="user input",
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            prompt_cache_key="chapter-rewrite-cache-key",
+            retries=1,
+        )
+        self.assertEqual(
+            client.chat.completions.last_request["extra_body"]["prompt_cache_key"],
+            "chapter-rewrite-cache-key",
+        )
+
+    def test_call_function_tools_openai_compatible_adds_deepseek_reasoning_defaults(self) -> None:
+        stream_chunks = [
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_tool",
+                                        "arguments": "{\"value\": \"ok\"}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        client = _FakeClient(stream_chunks)
+        client._codex_base_url = "https://api.deepseek.com"
+
+        result = llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="deepseek-v4-pro",
+            instructions="system instruction",
+            user_input="user input",
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            retries=1,
+        )
+
+        self.assertEqual(client.chat.completions.last_request["reasoning_effort"], "high")
+        self.assertEqual(result.assistant_reasoning_content, "")
+        self.assertEqual(
+            client.chat.completions.last_request["extra_body"],
+            {"thinking": {"type": "enabled"}},
+        )
+
+    def test_call_function_tools_extracts_deepseek_reasoning_content_from_stream(self) -> None:
+        stream_chunks = [
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "alpha ",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_tool",
+                                        "arguments": "{\"value\": \"ok\"}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "beta",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        client = _FakeClient(stream_chunks)
+        client._codex_provider = "opencode_go"
+
+        result = llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="deepseek-v4-pro",
+            instructions="system instruction",
+            user_input="user input",
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            retries=1,
+        )
+
+        self.assertEqual(result.assistant_reasoning_content, "alpha beta")
 
     def test_call_function_tools_openai_compatible_parses_provider_specific_cache_usage_paths(self) -> None:
         stream_chunks = [
@@ -1281,36 +1534,45 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
                 retries=10,
             )
 
-        self.assertEqual(failing.call_count, 1)
+        self.assertEqual(failing.call_count, 2)
         self.assertIn("openai_compatible", str(context.exception))
         self.assertIn("大载荷", str(context.exception))
+        self.assertIn("已尝试传输=stream -> nonstream", str(context.exception))
 
-    def test_compatible_defaults_to_nonstream_chat_completion(self) -> None:
-        response_payload = {
-            "id": "chatcmpl_default_nonstream",
-            "object": "chat.completion",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "call_1",
-                                "type": "function",
-                                "function": {
-                                    "name": "submit_tool",
-                                    "arguments": "{\"value\": \"ok\"}",
-                                },
-                            }
-                        ],
-                    },
-                    "finish_reason": "tool_calls",
-                }
-            ],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
-        }
-        completions = _FakeNonStreamChatCompletions(response_payload)
+    def test_compatible_defaults_to_stream_chat_completion(self) -> None:
+        stream_chunks = [
+            {
+                "id": "chatcmpl_default_stream",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_tool",
+                                        "arguments": "{\"value\": \"ok\"}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_default_stream",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
+            },
+        ]
+        completions = _FakeChatCompletions(stream_chunks)
         client = SimpleNamespace(
             _codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE,
             chat=SimpleNamespace(completions=completions),
@@ -1333,8 +1595,8 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
 
         self.assertEqual(result.tool_name, "submit_tool")
         self.assertEqual(result.parsed.value, "ok")
-        self.assertFalse(completions.last_request["stream"])
-        self.assertNotIn("stream_options", completions.last_request)
+        self.assertTrue(completions.last_request["stream"])
+        self.assertEqual(completions.last_request["stream_options"], {"include_usage": True})
 
     def test_large_compatible_connection_error_falls_back_to_nonstream_chat_completion(self) -> None:
         response_payload = {
@@ -1389,6 +1651,260 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertTrue(fallback.requests[0]["stream"])
         self.assertFalse(fallback.requests[1]["stream"])
         self.assertNotIn("stream_options", fallback.requests[1])
+
+    def test_large_compatible_connection_error_falls_back_from_nonstream_to_stream_chat_completion(self) -> None:
+        stream_chunks = [
+            {
+                "id": "chatcmpl_stream",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "submit_tool",
+                                        "arguments": "{\"value\": \"ok\"}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_stream",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        fallback = _NonstreamToStreamFallbackChatCompletions(stream_chunks)
+        client = SimpleNamespace(
+            _codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE,
+            _codex_openai_compatible_options={"transport": "nonstream"},
+            chat=SimpleNamespace(completions=fallback),
+        )
+
+        result = llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="test-model",
+            instructions="system instruction",
+            user_input="x" * 130000,
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            retries=1,
+        )
+
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(len(fallback.requests), 2)
+        self.assertFalse(fallback.requests[0]["stream"])
+        self.assertTrue(fallback.requests[1]["stream"])
+        self.assertEqual(fallback.requests[1]["stream_options"], {"include_usage": True})
+
+    def test_openai_compatible_direct_http_merges_extra_body_into_top_level_body(self) -> None:
+        response_payload = {
+            "id": "chatcmpl_http",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "submit_tool",
+                                    "arguments": "{\"value\": \"ok\"}",
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+        request = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/chat/completions")
+        response = httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            json=response_payload,
+        )
+        fake_http = _FakeDirectHttpClient(response)
+        client = SimpleNamespace(
+            _codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE,
+            _codex_base_url="https://integrate.api.nvidia.com/v1",
+            _codex_api_key="test-key",
+            _codex_openai_compatible_options={
+                "transport": "nonstream",
+                "extra_body": {"prompt_cache_key": "{{prompt_cache_key}}"},
+            },
+        )
+
+        with patch("novelist.core.responses_runtime._build_openai_compatible_http_client", return_value=fake_http):
+            result = llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="deepseek-ai/deepseek-v4-pro",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                prompt_cache_key="chapter-rewrite-cache-key",
+                retries=1,
+            )
+
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(len(fake_http.post_calls), 1)
+        sent = fake_http.post_calls[0]["json"]
+        self.assertEqual(sent["prompt_cache_key"], "chapter-rewrite-cache-key")
+        self.assertEqual(sent["reasoning_effort"], "high")
+        self.assertFalse(sent["stream"])
+        self.assertNotIn("extra_body", sent)
+        self.assertNotIn("thinking", sent)
+        self.assertEqual(
+            fake_http.post_calls[0]["headers"]["Authorization"],
+            "Bearer test-key",
+        )
+
+    def test_openai_compatible_direct_http_stream_sets_stream_body_param(self) -> None:
+        request = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/chat/completions")
+        response = httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream; charset=utf-8"},
+            content=(
+                b'data: {"id":"chatcmpl_http_stream","object":"chat.completion.chunk",'
+                b'"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,'
+                b'"id":"call_1","type":"function","function":{"name":"submit_tool",'
+                b'"arguments":"{\\"value\\": \\"ok\\"}"}}]},"finish_reason":null}]}\n\n'
+                b'data: {"id":"chatcmpl_http_stream","object":"chat.completion.chunk",'
+                b'"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+        fake_http = _FakeDirectStreamHttpClient(response)
+        client = SimpleNamespace(
+            _codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE,
+            _codex_base_url="https://integrate.api.nvidia.com/v1",
+            _codex_api_key="test-key",
+            _codex_openai_compatible_options={"transport": "stream"},
+        )
+
+        with patch("novelist.core.responses_runtime._build_openai_compatible_http_client", return_value=fake_http):
+            result = llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="deepseek-ai/deepseek-v4-pro",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                retries=1,
+            )
+
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(len(fake_http.stream_calls), 1)
+        sent = fake_http.stream_calls[0]["json"]
+        self.assertTrue(sent["stream"])
+        self.assertEqual(sent["stream_options"], {"include_usage": True})
+        self.assertEqual(fake_http.stream_calls[0]["headers"]["Accept"], "text/event-stream")
+
+    def test_openai_compatible_direct_http_retries_without_env_proxy_on_tls_corruption(self) -> None:
+        response_payload = {
+            "id": "chatcmpl_http_retry",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "submit_tool",
+                                    "arguments": "{\"value\": \"ok\"}",
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+        request = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/chat/completions")
+        tls_error = httpx.ReadError(
+            "[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] decryption failed or bad record mac (_ssl.c:2648)",
+            request=request,
+        )
+        success_response = httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            json=response_payload,
+        )
+        success_client = _FakeDirectHttpClient(success_response)
+        build_calls: list[bool | None] = []
+
+        def fake_builder(base_url: str, *, trust_env_override: bool | None = None):
+            build_calls.append(trust_env_override)
+            if trust_env_override is None:
+                return _ErroringDirectHttpClient(tls_error)
+            return success_client
+
+        client = SimpleNamespace(
+            _codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE,
+            _codex_base_url="https://integrate.api.nvidia.com/v1",
+            _codex_api_key="test-key",
+            _codex_openai_compatible_options={"transport": "nonstream"},
+        )
+
+        with patch("novelist.core.responses_runtime._build_openai_compatible_http_client", side_effect=fake_builder):
+            result = llm_runtime.call_function_tools(
+                client,  # type: ignore[arg-type]
+                model="deepseek-ai/deepseek-v4-pro",
+                instructions="system instruction",
+                user_input="user input",
+                tool_specs=[
+                    llm_runtime.FunctionToolSpec(
+                        model=_CompatToolPayload,
+                        name="submit_tool",
+                        description="test tool",
+                    )
+                ],
+                retries=1,
+            )
+
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(build_calls, [None, False])
+        self.assertEqual(len(success_client.post_calls), 1)
 
     def test_small_compatible_connection_error_retries_once_before_stopping(self) -> None:
         error = openai.APIConnectionError(
@@ -1653,6 +2169,92 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
             self.assertIn("initial request", serialized_followup)
             self.assertIn("next request", serialized_followup)
             self.assertIn("call_submit", serialized_followup)
+
+    def test_agent_stage_replays_reasoning_content_for_openai_compatible_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "target.md"
+            tool_arguments = json.dumps(
+                {
+                    "files": [
+                        {
+                            "file_key": "target",
+                            "content": "工具写入正文。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            tool_result = llm_runtime.MultiFunctionToolResult(
+                tool_name=document_ops.DOCUMENT_WRITE_TOOL_NAME,
+                parsed=document_ops.DocumentWritePayload(
+                    files=[
+                        document_ops.DocumentWriteFile(
+                            file_key="target",
+                            content="工具写入正文。",
+                        )
+                    ]
+                ),
+                response_id="resp_tool",
+                status="completed",
+                output_types=["chat.completion", "tool_calls"],
+                preview="tool",
+                raw_body_text="",
+                raw_json={},
+                call_id="call_doc",
+                raw_arguments=tool_arguments,
+                assistant_reasoning_content="alpha beta",
+            )
+            submit_result = llm_runtime.MultiFunctionToolResult(
+                tool_name=workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME,
+                parsed=workflow_tools.WorkflowSubmissionPayload(
+                    summary="完成。",
+                    generated_files=["target"],
+                ),
+                response_id="resp_submit",
+                status="completed",
+                output_types=["chat.completion", "tool_calls"],
+                preview="submit",
+                raw_body_text="",
+                raw_json={},
+                call_id="call_submit",
+                raw_arguments="{}",
+            )
+            calls: list[dict[str, object]] = []
+
+            def fake_call_function_tools(*args, **kwargs):
+                calls.append(dict(kwargs))
+                if len(calls) == 1:
+                    return tool_result
+                return submit_result
+
+            client = SimpleNamespace(_codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE)
+            with patch.object(agent_runtime.llm_runtime, "call_function_tools", side_effect=fake_call_function_tools):
+                result = agent_runtime.run_agent_stage(
+                    client,  # type: ignore[arg-type]
+                    model="deepseek-v4-pro",
+                    instructions="instructions",
+                    user_input="initial request",
+                    allowed_files={"target": target},
+                    retries=1,
+                )
+
+            self.assertEqual(result.response_id, "resp_submit")
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0]["previous_response_id"], None)
+            self.assertEqual(calls[1]["previous_response_id"], "resp_tool")
+            self.assertTrue(calls[0]["store"])
+            self.assertTrue(calls[1]["store"])
+            second_chat_messages = calls[1]["chat_messages"]
+            assert isinstance(second_chat_messages, list)
+            assistant_tool_messages = [
+                message
+                for message in second_chat_messages
+                if isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and isinstance(message.get("tool_calls"), list)
+            ]
+            self.assertTrue(assistant_tool_messages)
+            self.assertEqual(assistant_tool_messages[0].get("reasoning_content"), "alpha beta")
 
     def test_compatible_database_internal_server_error_aborts_immediately(self) -> None:
         request = httpx.Request("POST", "https://example.com/v1/chat/completions")

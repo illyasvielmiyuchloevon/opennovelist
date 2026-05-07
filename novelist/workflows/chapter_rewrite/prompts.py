@@ -193,6 +193,16 @@ def build_phase_request_payload(
     omitted_docs = [*omitted_globals, *omitted_volumes, *omitted_chapters, *omitted_five_reviews]
     reference_chapter = get_chapter_material(volume_material, chapter_number)
     reference_char_count = len(reference_chapter["text"])
+    source_file_path = str(reference_chapter.get("file_path") or reference_chapter.get("file_name") or f"{chapter_number}.txt")
+    source_bundle = "\n".join(
+        [
+            f"[章节文件 {reference_chapter['file_name']}]",
+            f"章节编号：{reference_chapter['chapter_number']}",
+            f"文件路径：{source_file_path}",
+            str(reference_chapter["text"]),
+        ]
+    )
+    source_char_count = len(source_bundle)
     min_target_chars = max(1, reference_char_count - 300)
     max_target_chars = max(min_target_chars, reference_char_count + 300)
 
@@ -230,6 +240,10 @@ def build_phase_request_payload(
             },
             trailing_doc_fields={
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
+                "source_bundle_policy": "当前阶段显式注入参考源章节原文，供章纲映射、篇幅与节奏参照。",
+                "source_files": source_context_inventory(volume_material, chapter_number),
+                "source_char_count": source_char_count,
+                "current_chapter_source_bundle": source_bundle,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：只生成当前章的章纲 Markdown。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -439,6 +453,10 @@ def build_phase_request_payload(
             },
             trailing_doc_fields={
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
+                "source_bundle_policy": "当前阶段显式注入参考源章节原文，供对照审核（仅用于审核判断，不得照搬名词或桥段）。",
+                "source_files": source_context_inventory(volume_material, chapter_number),
+                "source_char_count": source_char_count,
+                "current_chapter_source_bundle": source_bundle,
                 "review_skill_reference": review_skill,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：审核当前章全部产物并提交章级审核结果。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",

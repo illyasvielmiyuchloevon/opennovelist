@@ -9,7 +9,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "基于 split_novel 拆分后的书名文件夹或已有工程目录，逐卷生成改编规划文档，"
-            "使用 OpenAI Responses API。"
+            "使用 OpenAI Responses API / OpenAI Compatible（含 OpenCode Go）。"
         )
     )
     parser.add_argument(
@@ -22,9 +22,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--new-title", help="新书名。")
     parser.add_argument("--target-worldview", help="目标世界观。")
-    parser.add_argument("--base-url", help="OpenAI Responses API 的 base_url。")
-    parser.add_argument("--api-key", help="OpenAI API Key。")
+    parser.add_argument("--base-url", help="Provider API 的 base_url。")
+    parser.add_argument("--api-key", help="Provider API Key。")
     parser.add_argument("--model", help="调用的模型名称。")
+    parser.add_argument(
+        "--provider",
+        choices=(
+            openai_config.PROVIDER_OPENAI,
+            openai_config.PROVIDER_OPENCODE_GO,
+            openai_config.PROVIDER_OPENAI_COMPATIBLE,
+        ),
+        help="API 提供商。",
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=(openai_config.PROTOCOL_RESPONSES, openai_config.PROTOCOL_OPENAI_COMPATIBLE),
+        help="API 协议。",
+    )
     parser.add_argument(
         "--style-mode",
         choices=(STYLE_MODE_CUSTOM, STYLE_MODE_SOURCE),
