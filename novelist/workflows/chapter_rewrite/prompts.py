@@ -12,6 +12,7 @@ def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> 
             "file_path": str(paths["rewritten_chapter"]),
             "exists": paths["rewritten_chapter"].exists(),
             "preferred_mode": "edit_or_patch" if current_text.strip() else "write",
+            "tool_argument_policy": "工具参数使用固定字段：write/edit 用 filePath；apply_patch 只接受 patchText（*** Begin Patch ... *** End Patch）；不要传 file_key。",
             "write_policy": "no_write_if_exists",
             "structure_mode": "existing_chapter_text_revision",
             "tool_selection_policy": (
@@ -63,6 +64,7 @@ def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, An
                 "file_path": str(path),
                 "exists": path.exists(),
                 "preferred_mode": "edit_or_patch" if current_content else "write",
+                "tool_argument_policy": "工具参数使用固定字段：write/edit 用 filePath；apply_patch 只接受 patchText（*** Begin Patch ... *** End Patch）；不要传 file_key。",
                 "write_policy": "no_write_if_exists",
                 "structure_mode": "fixed_title_expandable_sections_document",
                 "tool_selection_policy": (
@@ -245,7 +247,7 @@ def build_phase_request_payload(
                 "source_char_count": source_char_count,
                 "current_chapter_source_bundle": source_bundle,
                 "latest_work_target": latest_work_target(
-                    "这是本次请求的最新工作目标：只生成当前章的章纲 Markdown。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
+                    "这是本次请求的最新工作目标：只生成当前章的章纲 Markdown。必须调用 result，不要调用 write/edit/apply_patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                 ),
             },
@@ -308,7 +310,7 @@ def build_phase_request_payload(
                         chapter_text,
                     ),
                     "latest_work_target": latest_work_target(
-                        "这是本次请求的最新工作目标：对当前章现有正文做增量修订。必须先调用 write/edit/patch 文档工具落盘修订，然后调用 submit_workflow_result 提交阶段完成摘要。",
+                        "这是本次请求的最新工作目标：对当前章现有正文做增量修订。必须先调用 write/edit/apply_patch 文档工具落盘修订，然后调用 result 提交阶段完成摘要。",
                         required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                     ),
                 },
@@ -351,7 +353,7 @@ def build_phase_request_payload(
             trailing_doc_fields={
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
                 "latest_work_target": latest_work_target(
-                    "这是本次请求的最新工作目标：只生成当前章的完整仿写章节正文。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
+                    "这是本次请求的最新工作目标：只生成当前章的完整仿写章节正文。必须调用 result，不要调用 write/edit/apply_patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                 ),
             },
@@ -397,7 +399,7 @@ def build_phase_request_payload(
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
                 "update_target_files": support_update_target_inventory(paths),
                 "latest_work_target": latest_work_target(
-                    "这是本次请求的最新工作目标：根据刚写完的章节按需更新配套状态文档。若有必要更新，必须先调用 write/edit/patch 文档工具落盘；随后调用 submit_workflow_result 提交阶段完成摘要。",
+                    "这是本次请求的最新工作目标：根据刚写完的章节按需更新配套状态文档。若有必要更新，必须先调用 write/edit/apply_patch 文档工具落盘；随后调用 result 提交阶段完成摘要。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                 ),
             },
@@ -459,7 +461,7 @@ def build_phase_request_payload(
                 "current_chapter_source_bundle": source_bundle,
                 "review_skill_reference": review_skill,
                 "latest_work_target": latest_work_target(
-                    "这是本次请求的最新工作目标：审核当前章全部产物并提交章级审核结果。必须调用 submit_workflow_result，不要调用 write/edit/patch 文档工具。",
+                    "这是本次请求的最新工作目标：审核当前章全部产物并提交章级审核结果。必须调用 result，不要调用 write/edit/apply_patch 文档工具。",
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                 ),
             },
@@ -513,7 +515,7 @@ def build_volume_review_payload(
                 "需要检查卷内章节的文风是否稳定符合文笔写作风格文档，尤其是爽点铺垫、剧情转折、叙事节奏、情节结构、段落分割、对话密度、句长与收尾方式是否持续一致。",
                 "卷级审核以已生成章节、卷纲、全局注入和必要的章节审核记录为准。",
                 "如果不通过，chapters_to_revise 必须列出需要返工的章节编号。",
-                "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
+                "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/apply_patch 修复，再继续审核并最终提交 result。",
                 *review_output_contract_lines("volume"),
             ],
         },
@@ -523,7 +525,7 @@ def build_volume_review_payload(
             "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
-                "这是本次请求的最新工作目标：审核当前卷所有已生成章节与卷级文档。可以先调用 write/edit/patch 原地修复允许目标，最终必须调用 submit_workflow_result 提交卷级审核结果。",
+                "这是本次请求的最新工作目标：审核当前卷所有已生成章节与卷级文档。可以先调用 write/edit/apply_patch 原地修复允许目标，最终必须调用 result 提交卷级审核结果。",
                 required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
             ),
         },
@@ -603,7 +605,7 @@ def build_five_chapter_review_payload(
                 "重点检查文体风险是否已经影响组通过；只有当语言问题明显破坏阅读流畅度、角色辨识度、叙事稳定性或世界观表达时，才作为组审阻塞项。",
                 "组审依据为卷级/全局注入、相关状态文档和已生成正文，不以参考源贴近度作为通过标准。",
                 "如果不通过，chapters_to_revise 必须只列当前区间内需要返工的章节编号。",
-                "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
+                "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/apply_patch 修复，再继续审核并最终提交 result。",
                 *review_output_contract_lines("group"),
             ],
         },
@@ -613,7 +615,7 @@ def build_five_chapter_review_payload(
             "rolling_injected_group_docs": five_chapter_review_docs,
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
-                f"这是本次请求的最新工作目标：审核当前组区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。当前组只包含 {len(chapter_numbers)} 章，不得涉及下一卷章节。可以先调用 write/edit/patch 原地修复允许目标，最终必须调用 submit_workflow_result 提交组审查结果。",
+                f"这是本次请求的最新工作目标：审核当前组区间 {chapter_numbers[0]}-{chapter_numbers[-1]} 是否沿着正确方向推进。当前组只包含 {len(chapter_numbers)} 章，不得涉及下一卷章节。可以先调用 write/edit/apply_patch 原地修复允许目标，最终必须调用 result 提交组审查结果。",
                 required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
             ),
         },

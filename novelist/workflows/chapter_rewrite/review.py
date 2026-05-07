@@ -100,7 +100,7 @@ def build_review_fix_payload(
         "update_target_files": document_operation_target_snapshot(allowed_files),
         "requirements": [
             "这是审核不通过后的原地修复步骤，不要返回新的审核报告。",
-            "必须调用目标文件 write/edit/patch 工具提交修改；已有非空文件按修改意图选择 edit 或 patch，禁止无理由整篇覆盖。",
+            "必须调用目标文件 write/edit/apply_patch 工具提交修改；已有非空文件按修改意图选择 edit 或 patch，禁止无理由整篇覆盖。",
             "由返修 agent 自行判断修复策略、修改范围和工具调用次数；可以一次工具调用完成，也可以多次工具调用完成。",
             "替换、改写、补强已有章节正文或状态文档内容时优先使用 edit；当段落存在冗余、矛盾、重复或确需移除的信息时，也允许删除或重组对应内容；插入新段落、追加新记录或按标题补充小节时使用 patch。",
             "返修的重点是优化问题段落和内容，修复语言、节奏、逻辑、衔接、信息表达与人物状态，而不是只做机械删减。",
@@ -112,13 +112,13 @@ def build_review_fix_payload(
             "如果返修涉及章节正文，修复后的内容仍必须承接当前章章纲、卷纲、全局大纲、世界模型、文笔写作风格文档与当前状态文档；人物关系、术语、世界观和剧情推进不得偏离这些注入文档。",
             "如果上一轮审核上下文里提供了 reference_chapter_metrics.target_char_count_range 或 source_char_count，返修后的正文字符数应尽量控制在接近该目标区间的范围内；如果进行了删除或重组，也要保持总体篇幅不要明显缩水或明显扩写。",
             "修复后仍必须符合原审核阶段的风格、连续性、反 AI 痕迹和参考源转换要求。",
-            "完成全部必要文件修改后，必须调用 submit_workflow_result 提交返修完成摘要。",
+            "完成全部必要文件修改后，必须调用 result 提交返修完成摘要。",
         ],
         "latest_work_target": {
             "type": "latest_user_input",
             "instruction": (
                 f"这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修{label}指出的问题。"
-                "必须先调用 write/edit/patch 文档工具提交修改，然后调用 submit_workflow_result 提交返修完成摘要；"
+                "必须先调用 write/edit/apply_patch 文档工具提交修改，然后调用 result 提交返修完成摘要；"
                 "不要重新生成章纲、正文或配套文档阶段。"
                 "如果 failed_review_result 列出多个章节或多个 rewrite_targets，必须在本次返修阶段处理全部目标，"
                 "不能只修其中一章就结束。"
@@ -579,7 +579,7 @@ def run_five_chapter_review(
             payload=payload,
             user_input_char_count=len(shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
             session_status_line=(
-                "会话：OpenCode 风格本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                "会话：本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
                 "不依赖 provider previous_response_id。"
             ),
         )
@@ -609,7 +609,7 @@ def run_five_chapter_review(
             )
             if review.passed is None or not review.review_md.strip():
                 raise llm_runtime.ModelOutputError(
-                    "组审查 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
+                    "组审查 agent 未通过 result 返回完整 passed / review_md。",
                     preview=agent_result.submission.summary or agent_result.submission.content_md,
                 )
             print_agent_application_summary(
@@ -871,7 +871,7 @@ def run_volume_review(
                 payload=payload,
                 user_input_char_count=len(shared_prompt + json.dumps(payload, ensure_ascii=False, indent=2)),
                 session_status_line=(
-                    "会话：OpenCode 风格本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+                    "会话：本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
                     "不依赖 provider previous_response_id。"
                 ),
             )
@@ -900,7 +900,7 @@ def run_volume_review(
             )
             if volume_review.passed is None or not volume_review.review_md.strip():
                 raise llm_runtime.ModelOutputError(
-                    "卷级审核 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
+                    "卷级审核 agent 未通过 result 返回完整 passed / review_md。",
                     preview=agent_result.submission.summary or agent_result.submission.content_md,
                 )
             print_agent_application_summary(

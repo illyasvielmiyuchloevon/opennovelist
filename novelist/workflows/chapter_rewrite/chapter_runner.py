@@ -273,7 +273,7 @@ def run_chapter_workflow(
                 outline_md = _submission_content_or_file(
                     outline_result.submission.content_md,
                     paths["chapter_outline"],
-                    error_message="章纲生成 agent 未通过 submit_workflow_result 返回 Markdown，也未写入章纲文件。",
+                    error_message="章纲生成 agent 未通过 result 返回 Markdown，也未写入章纲文件。",
                 )
                 chapter_outline_changed = write_artifact(paths["chapter_outline"], outline_md)
                 print_call_artifact_report(
@@ -382,7 +382,7 @@ def run_chapter_workflow(
                     chapter_txt = _submission_content_or_file(
                         chapter_text_result.submission.chapter_txt,
                         paths["rewritten_chapter"],
-                        error_message="正文生成 agent 未通过 submit_workflow_result 返回章节正文，也未写入正文文件。",
+                        error_message="正文生成 agent 未通过 result 返回章节正文，也未写入正文文件。",
                     )
                     chapter_text_changed = write_artifact(paths["rewritten_chapter"], chapter_txt)
                     current_chapter_text = chapter_txt
@@ -563,7 +563,7 @@ def run_chapter_workflow(
                         reference_char_count=reference_text_char_count,
                     )
                     if chapter_review.passed is None or not chapter_review.review_md.strip():
-                        raise llm_runtime.ModelOutputError("章级审核 agent 未通过 submit_workflow_result 返回完整的 passed / review_md。")
+                        raise llm_runtime.ModelOutputError("章级审核 agent 未通过 result 返回完整的 passed / review_md。")
                     chapter_review_changed = write_artifact(paths["chapter_review"], chapter_review.review_md)
                     print_call_artifact_report(
                         f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用",
@@ -662,7 +662,7 @@ def run_chapter_workflow(
                         allowed_files=chapter_review_fix_target_paths(paths),
                     )
                     fix_payload["latest_work_target"] = latest_work_target(
-                        "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修章级审核指出的问题。必须先调用 write/edit/patch 文档工具提交修改，然后调用 submit_workflow_result 提交返修完成摘要。",
+                        "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修章级审核指出的问题。必须先调用 write/edit/patch 文档工具提交修改，然后调用 result 提交返修完成摘要。",
                         required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                     )
                     fix_user_input = review_shared_prompt + json.dumps(fix_payload, ensure_ascii=False, indent=2)

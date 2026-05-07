@@ -517,8 +517,8 @@ class ChapterStageToolContractTests(unittest.TestCase):
             rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS,
         )
         self.assertIn("Dynamic Request", rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
-        self.assertIn("submit_workflow_result", rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
-        self.assertIn("write/edit/patch", rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
+        self.assertIn("result", rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
+        self.assertIn("write/edit/apply_patch", rewrite_workflow.COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS)
 
     def test_chapter_stage_exposes_only_unified_four_tools(self) -> None:
         tool_names = [spec.name for spec in rewrite_workflow.chapter_rewrite_stage_tool_specs()]
@@ -1121,11 +1121,11 @@ class ReviewFixLoopTests(unittest.TestCase):
         for payload in [chapter_review_payload, group_payload, volume_payload]:
             self.assertEqual(list(payload.keys())[-1], "latest_work_target")
             self.assertEqual(payload["latest_work_target"]["required_tool"], rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
-            self.assertIn("必须调用 submit_workflow_result", payload["latest_work_target"]["instruction"])
+            self.assertIn("必须调用 result", payload["latest_work_target"]["instruction"])
 
         self.assertEqual(list(fix_payload.keys())[-1], "latest_work_target")
         self.assertEqual(fix_payload["latest_work_target"]["required_tool"], rewrite_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
-        self.assertIn("必须先调用 write/edit/patch", fix_payload["latest_work_target"]["instruction"])
+        self.assertIn("必须先调用 write/edit/apply_patch", fix_payload["latest_work_target"]["instruction"])
         fix_requirements = "\n".join(str(item) for item in fix_payload["requirements"])
         self.assertIn("优化问题段落和内容", fix_requirements)
         self.assertIn("优先改写原段、补强衔接、重写句群", fix_requirements)

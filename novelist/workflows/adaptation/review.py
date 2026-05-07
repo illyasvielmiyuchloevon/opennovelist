@@ -141,8 +141,8 @@ def build_adaptation_review_request(
             "检查全局资料之间是否重复承载同一信息；世界规则应在世界模型，卷内推进应在卷级剧情进程，章节细节应留给章纲、正文和审核文档。",
             "检查文风文档是否可执行，且只提炼写法与节奏，不复制参考源实体内容；文风文档只在第 001 卷生成和定稿，后续卷只能读取与审核，不得把 style_guide 写入 rewrite_targets。",
             "如果不通过，rewrite_targets 必须只填写需要修复的 file_key，例如 world_model、book_outline、volume_outline。",
-            "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/patch 修复，再继续审核并最终提交 submit_workflow_result。",
-            "如果问题不可安全修复，最终 submit_workflow_result 必须 passed=false，并列出 blocking_issues 与 rewrite_targets。",
+            "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/apply_patch 修复，再继续审核并最终提交 result。",
+            "如果问题不可安全修复，最终 result 必须 passed=false，并列出 blocking_issues 与 rewrite_targets。",
         ],
         "adaptation_documents": adaptation_review_target_snapshot(allowed_files),
         "output_contract": {
@@ -155,7 +155,7 @@ def build_adaptation_review_request(
             "type": "latest_user_input",
             "instruction": (
                 "这是本次请求的最新工作目标：执行 adaptation_volume_review 卷资料审核。"
-                "可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须调用 submit_workflow_result 提交结构化审核结果。"
+                "可以先调用 write/edit/apply_patch 原地修复允许范围内的问题，最终必须调用 result 提交结构化审核结果。"
             ),
             "required_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
         },
@@ -222,12 +222,12 @@ def build_adaptation_review_fix_request(
         "update_target_files": adaptation_review_target_snapshot(allowed_files),
         "requirements": [
             "这是卷资料审核不通过后的原地修复步骤，不要返回新的审核报告。",
-            "必须调用目标文件 write/edit/patch 工具提交修改；已有非空文件按修改意图选择 edit 或 patch，禁止无理由整篇覆盖。",
+            "必须调用目标文件 write/edit/apply_patch 工具提交修改；已有非空文件按修改意图选择 edit 或 patch，禁止无理由整篇覆盖。",
             "替换已有正文、清理参考源残留人物名/地名/术语/事件名时，优先使用 edit，可按需要使用 replace_all。",
             "插入新条目、追加新段落、按标题补充或替换小节正文时，使用 patch。",
             "只修改 failed_review_result 指出的阻塞问题直接影响的文件和局部。",
             "如果修复目标包含伏笔文档，只能修复资料适配设计索引相关内容；已有章节工作流写入的运行时记录是受保护内容，禁止删除、归并或改写。",
-            "所有 file_key 或 file_path 必须来自 update_target_files，禁止修改未授权文件。",
+            "工具参数优先使用 file_path，file_key 仅兼容旧调用；且二者都必须来自 update_target_files，禁止修改未授权文件。",
             "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
             "不得把审核失败降级为重新跑整卷资料生成阶段。",
             "修复后仍必须符合目标世界观、实体改名、事件改名、术语映射、时间线和故事线整理要求。",
@@ -237,7 +237,7 @@ def build_adaptation_review_fix_request(
             "type": "latest_user_input",
             "instruction": (
                 "这是本次请求的最新工作目标：根据 failed_review_result 直接原地返修资料文档。"
-                "必须调用 write/edit/patch 文档工具提交修改，不要调用 submit_workflow_result，"
+                "必须调用 write/edit/apply_patch 文档工具提交修改，不要调用 result，"
                 "不要重新生成整卷资料阶段。"
             ),
             "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
@@ -430,7 +430,7 @@ def run_adaptation_review_until_passed(
         )
         if review.passed is None or not review.review_md.strip():
             raise llm_runtime.ModelOutputError(
-                "资料审核 agent 未通过 submit_workflow_result 返回完整 passed / review_md。",
+                "资料审核 agent 未通过 result 返回完整 passed / review_md。",
                 preview=workflow_payload.summary or workflow_payload.content_md,
             )
         summarize_agent_applications(agent_result)

@@ -147,15 +147,15 @@ LEGACY_GLOBAL_FILE_RENAMES = {
 
 COMMON_CHAPTER_STAGE_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
-    "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
-    "组审和卷审阶段可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须调用 submit_workflow_result 提交审核结论。"
-    "修订已有章节正文、状态文档、审核文档或修正 old_text / match_text 定位时，必须使用文档 write/edit/patch 工具。"
+    "本工作流固定提供 result 与文档 write/edit/apply_patch 工具。"
+    "组审和卷审阶段可以先调用 write/edit/apply_patch 原地修复允许范围内的问题，最终必须调用 result 提交审核结论。"
+    "修订已有章节正文、状态文档、审核文档或修正 old_text / match_text 定位时，必须使用文档 write/edit/apply_patch 工具。"
 )
 COMMON_CHAPTER_STAGE_TOOL_RULE = (
-    "本工作流固定提供 submit_workflow_result 与文档 write/edit/patch 工具。"
+    "本工作流固定提供 result 与文档 write/edit/apply_patch 工具。"
     "章节组模式只负责确定当前组范围；组内必须回到单章工作流逐章生成、逐章审核。"
     "章节正文阶段读取当前章参考源、卷级注入和全局注入。"
-    "审核阶段可先返修，再用 submit_workflow_result 提交 passed/review_md。"
+    "审核阶段可先返修，再用 result 提交 passed/review_md。"
 )
 COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
     "你是资深网络小说章节洗稿仿写作者、连续性编辑与审稿编辑。"

@@ -81,18 +81,18 @@ def build_document_operation_repair_payload(
         },
         "update_target_files": document_operation_target_snapshot(allowed_files),
         "requirements": [
-            "只修正上一次工具调用中无法定位的 old_text 或 match_text，不要改成整篇写入。",
-            "所有 old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制。",
-            "replace、insert_before、insert_after 的定位文本必须在当前文件中唯一匹配。",
+            "只修正上一次工具调用中无法定位的 oldString 或 patch 锚点，不要改成整篇写入。",
+            "edit 的 oldString 必须从 update_target_files.current_content 中逐字复制。",
+            "apply_patch 的 patchText 必须使用合法 Begin/End 格式，并确保定位片段来自当前文件。",
             "如果短句无法唯一定位，必须扩大到包含前后连续段落的稳定上下文块。",
             "保留原本的修改意图，只修正定位与必要的新文本，不要额外改写无关内容。",
         ],
         "latest_work_target": {
             "type": "latest_user_input",
             "instruction": (
-                "这是本次请求的最新工作目标：修正上一轮无法定位的 old_text 或 match_text。"
-                "必须调用 write/edit/patch 文档工具重新提交可应用的局部编辑，"
-                "不要调用 submit_workflow_result。"
+                "这是本次请求的最新工作目标：修正上一轮无法定位的 oldString 或 patch 锚点。"
+                "必须调用 write/edit/apply_patch 文档工具重新提交可应用的局部编辑，"
+                "不要调用 result。"
             ),
             "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
         },

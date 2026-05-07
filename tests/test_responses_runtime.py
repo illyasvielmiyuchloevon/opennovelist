@@ -1294,16 +1294,16 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         )
 
         self.assertEqual(result.tool_name, document_ops.DOCUMENT_WRITE_TOOL_NAME)
-        self.assertEqual(result.parsed.files[0].file_path, "F:/novelist/out.txt")
-        self.assertEqual(result.parsed.files[0].content, "hello")
+        self.assertEqual(result.parsed.file_path, "F:/novelist/out.txt")
+        self.assertEqual(result.parsed.content, "hello")
         request_tool_names = [tool["function"]["name"] for tool in client.chat.completions.last_request["tools"]]
         self.assertIn(document_ops.DOCUMENT_WRITE_TOOL_NAME, request_tool_names)
         self.assertIn("write", request_tool_names)
 
-    def test_call_function_tools_openai_compatible_accepts_alias_result_tool_name(self) -> None:
+    def test_call_function_tools_openai_compatible_uses_canonical_workflow_tool_name(self) -> None:
         stream_chunks = [
             {
-                "id": "chatcmpl_alias_result",
+                "id": "chatcmpl_submit_result",
                 "object": "chat.completion.chunk",
                 "choices": [
                     {
@@ -1316,7 +1316,7 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
                                     "id": "call_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "result",
+                                        "name": workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME,
                                         "arguments": "{\"content\": \"阶段摘要\", \"files\": [\"rewritten_chapter\"], \"summary\": \"ok\"}",
                                     },
                                 }
@@ -1327,7 +1327,7 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
                 ],
             },
             {
-                "id": "chatcmpl_alias_result",
+                "id": "chatcmpl_submit_result",
                 "object": "chat.completion.chunk",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
             },
@@ -1347,8 +1347,7 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertEqual(result.parsed.content_md, "阶段摘要")
         self.assertEqual(result.parsed.generated_files, ["rewritten_chapter"])
         request_tool_names = [tool["function"]["name"] for tool in client.chat.completions.last_request["tools"]]
-        self.assertIn(workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME, request_tool_names)
-        self.assertIn("result", request_tool_names)
+        self.assertEqual(request_tool_names, [workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME])
 
     def test_call_function_tools_supports_legacy_function_call_stream_shape(self) -> None:
         stream_chunks = [
@@ -2092,7 +2091,7 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
                 any(
                     item.get("type") == "function_call_output"
                     and item.get("call_id") == "call_submit"
-                    and '"tool": "submit_workflow_result"' in str(item.get("output") or "")
+                    and '"tool": "result"' in str(item.get("output") or "")
                     for item in final_transcript
                     if isinstance(item, dict)
                 )

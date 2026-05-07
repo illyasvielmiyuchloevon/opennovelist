@@ -479,6 +479,44 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertIn("试炼结束后开始戒严", read_text_if_exists(world_state))
             self.assertIn("## 事件状态", read_text_if_exists(world_state))
 
+    def test_apply_document_operation_accepts_patch_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            world_state = root / "07_world_state.md"
+            world_state.write_text(
+                "# 世界状态\n\n## 地点状态\n- 青岚城：表面平静。\n",
+                encoding="utf-8",
+            )
+            patch_text = (
+                "*** Begin Patch\n"
+                f"*** Update File: {world_state}\n"
+                "@@\n"
+                "-## 地点状态\n"
+                "-- 青岚城：表面平静。\n"
+                "+## 地点状态\n"
+                "+- 青岚城：试炼结束后开始戒严。\n"
+                "*** End Patch\n"
+            )
+            operation = document_ops.DocumentOperationCallResult(
+                mode="patch",
+                response_id="resp_patch_text",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                patch_text=patch_text,
+            )
+
+            applied = document_ops.apply_document_operation(
+                operation,
+                allowed_files={"world_state": world_state},
+            )
+
+            self.assertEqual(applied.mode, "patch")
+            self.assertEqual(applied.changed_keys, ["world_state"])
+            self.assertIn("青岚城：试炼结束后开始戒严", read_text_if_exists(world_state))
+
     def test_apply_document_operation_write_creates_new_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -698,22 +736,17 @@ class DocumentToolCallMappingTests(unittest.TestCase):
         self.assertEqual(result.edit_payload.files[0].file_key, "volume_plot_progress")
 
     def test_call_document_operation_tools_maps_patch_tool_result(self) -> None:
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: F:/project/07_world_state.md\n"
+            "@@\n"
+            "-旧状态\n"
+            "+新状态\n"
+            "*** End Patch\n"
+        )
         fake_result = llm_runtime.MultiFunctionToolResult(
             tool_name=document_ops.DOCUMENT_PATCH_TOOL_NAME,
-            parsed=document_ops.DocumentPatchPayload(
-                files=[
-                    document_ops.DocumentPatchFile(
-                        file_key="world_state",
-                        edits=[
-                            document_ops.DocumentPatchEdit(
-                                action="append",
-                                match_text="",
-                                new_text="## 事件状态\n- 测试事件。",
-                            )
-                        ],
-                    )
-                ]
-            ),
+            parsed=document_ops.DocumentApplyPatchToolArgs(patch_text=patch_text),
             response_id="resp_patch",
             status="completed",
             output_types=["function_call"],
@@ -731,8 +764,7 @@ class DocumentToolCallMappingTests(unittest.TestCase):
             )
 
         self.assertEqual(result.mode, "patch")
-        self.assertIsNotNone(result.patch_payload)
-        self.assertEqual(result.patch_payload.files[0].file_key, "world_state")
+        self.assertEqual(result.patch_text, patch_text)
 
     def test_call_document_operation_tools_maps_write_tool_result(self) -> None:
         fake_result = llm_runtime.MultiFunctionToolResult(

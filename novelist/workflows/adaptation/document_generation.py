@@ -68,7 +68,7 @@ def document_operation_result_from_stage_tool_result(
         )
     if result.tool_name == WORKFLOW_SUBMISSION_TOOL_NAME:
         raise llm_runtime.ModelOutputError(
-            "当前资料生成/修复步骤必须调用文档 write/edit/patch 工具，不能调用 submit_workflow_result。",
+            "当前资料生成/修复步骤必须调用文档 write/edit/apply_patch 工具，不能调用 result。",
             preview=result.preview,
             raw_body_text=result.raw_body_text,
         )
@@ -300,7 +300,7 @@ def run_adaptation_generation_agent(
         user_input_char_count=len(user_input),
         allowed_files=allowed_files,
         session_status_line=(
-            "会话：OpenCode 风格本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
+            "会话：本地 agent transcript；工具轮会重发本阶段完整上下文和工具历史，"
             "不依赖 provider previous_response_id。"
         ),
     )
@@ -488,8 +488,8 @@ def build_document_operation_repair_payload(
             "type": "latest_user_input",
             "instruction": (
                 "这是本次请求的最新工作目标：修正上一轮无法定位的 old_text 或 match_text。"
-                "必须调用 write/edit/patch 文档工具重新提交可应用的局部编辑，"
-                "不要调用 submit_workflow_result。"
+                "必须调用 write/edit/apply_patch 文档工具重新提交可应用的局部编辑，"
+                "不要调用 result。"
             ),
             "forbidden_tool": WORKFLOW_SUBMISSION_TOOL_NAME,
         },

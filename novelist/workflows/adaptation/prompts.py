@@ -403,6 +403,7 @@ def adaptation_generation_target_inventory(
                 "current_char_count": len(current_content),
                 "current_content": current_content,
                 "preferred_mode": "edit_or_patch" if current_content else "write",
+                "tool_argument_policy": "工具参数使用固定字段：write/edit 用 filePath；apply_patch 只接受 patchText（*** Begin Patch ... *** End Patch）；不要传 file_key。",
                 "document_request": build_document_request(doc_key),
                 "tool_selection_policy": (
                     "按修改意图选择工具：已有正文局部修订、名称术语清理、替换已有段落用 edit；"
@@ -447,12 +448,12 @@ def build_adaptation_generation_agent_request(
             "参考源只能作为功能映射来源，不能把参考源人物、地点、势力、事件、术语、等级体系或话语体系直接写成新书主体。",
             "世界模型只承载全书世界观和世界知识；全书大纲承载卷级方向；伏笔文档只承载合格伏笔设计索引；卷级大纲只承载当前卷仿写结构。",
             "第 001 卷需要生成并定稿文笔写作风格文档；后续卷不应改写 style_guide。",
-            "每次调用 write/edit/patch 可以处理一个或多个目标文件。全部目标文件处理完成并确认存在正文后，必须调用 submit_workflow_result 结束生成阶段。",
+            "每次调用 write/edit/apply_patch 可以处理一个或多个目标文件。全部目标文件处理完成并确认存在正文后，必须调用 result 结束生成阶段。",
         ],
         "target_files": targets,
         "existing_global_docs": build_injected_global_docs(current_docs, exclude_keys=target_doc_keys),
         "output_contract": {
-            "completion_tool": "submit_workflow_result",
+            "completion_tool": "result",
             "summary": "说明本次生成/修订了哪些文件，以及是否有文件无变化。",
             "generated_files": "列出已处理的 file_key。",
         },
@@ -460,9 +461,9 @@ def build_adaptation_generation_agent_request(
             "type": "latest_user_input",
             "instruction": (
                 "这是本阶段 agent 会话的工作目标：完成当前卷所有资料文档。"
-                "先按需调用 write/edit/patch 写入 target_files，全部完成后调用 submit_workflow_result。"
+                "先按需调用 write/edit/apply_patch 写入 target_files，全部完成后调用 result。"
             ),
-            "required_final_tool": "submit_workflow_result",
+            "required_final_tool": "result",
         },
     }
 
@@ -479,6 +480,7 @@ def build_target_file_context(
         "exists": output_path.exists(),
         "current_content": current_content.strip(),
         "preferred_mode": "edit_or_patch" if current_content.strip() else "write",
+        "tool_argument_policy": "工具参数使用固定字段：write/edit 用 filePath；apply_patch 只接受 patchText（*** Begin Patch ... *** End Patch）；不要传 file_key。",
         "tool_selection_policy": (
             "按修改意图选择工具：改已有正文、清理名称术语或替换已有段落用 edit；"
             "插入新段落、追加新条目、按标题补充或替换小节正文用 patch；"
@@ -527,8 +529,8 @@ def generate_document_operation(
                 "injected_global_docs": injected_globals,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订文笔写作风格文档。"
-                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                "不要调用 submit_workflow_result。"
+                    "必须按目标文件状态调用 write/edit/apply_patch 文档工具，"
+                "不要调用 result。"
                 ),
             },
         )
@@ -568,8 +570,8 @@ def generate_document_operation(
                 "injected_global_docs": injected_globals,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订全书大纲文档。"
-                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                "不要调用 submit_workflow_result。"
+                    "必须按目标文件状态调用 write/edit/apply_patch 文档工具，"
+                "不要调用 result。"
                 ),
             },
         )
@@ -608,8 +610,8 @@ def generate_document_operation(
                 "injected_global_docs": injected_globals,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订伏笔文档。"
-                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                "不要调用 submit_workflow_result。"
+                    "必须按目标文件状态调用 write/edit/apply_patch 文档工具，"
+                "不要调用 result。"
                 ),
             },
         )
@@ -654,8 +656,8 @@ def generate_document_operation(
                 "injected_global_docs": injected_globals,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订世界模型文档。"
-                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                "不要调用 submit_workflow_result。"
+                    "必须按目标文件状态调用 write/edit/apply_patch 文档工具，"
+                "不要调用 result。"
                 ),
             },
         )
@@ -690,8 +692,8 @@ def generate_document_operation(
                 "injected_global_docs": injected_globals,
                 "latest_work_target": latest_work_target(
                     "这是本次请求的最新工作目标：生成或增量修订当前卷的卷级大纲文档。"
-                    "必须按目标文件状态调用 write/edit/patch 文档工具，"
-                "不要调用 submit_workflow_result。"
+                    "必须按目标文件状态调用 write/edit/apply_patch 文档工具，"
+                "不要调用 result。"
                 ),
             },
         )

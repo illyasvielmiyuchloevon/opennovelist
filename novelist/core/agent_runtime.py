@@ -56,40 +56,7 @@ class AgentTranscriptState:
 def document_operation_from_tool_result(
     result: llm_runtime.MultiFunctionToolResult,
 ) -> document_ops.DocumentOperationCallResult:
-    if result.tool_name == document_ops.DOCUMENT_WRITE_TOOL_NAME:
-        return document_ops.DocumentOperationCallResult(
-            mode="write",
-            response_id=result.response_id,
-            status=result.status,
-            output_types=result.output_types,
-            preview=result.preview,
-            raw_body_text=result.raw_body_text,
-            raw_json=result.raw_json,
-            write_payload=document_ops.DocumentWritePayload.model_validate(result.parsed),
-        )
-    if result.tool_name == document_ops.DOCUMENT_EDIT_TOOL_NAME:
-        return document_ops.DocumentOperationCallResult(
-            mode="edit",
-            response_id=result.response_id,
-            status=result.status,
-            output_types=result.output_types,
-            preview=result.preview,
-            raw_body_text=result.raw_body_text,
-            raw_json=result.raw_json,
-            edit_payload=document_ops.DocumentEditPayload.model_validate(result.parsed),
-        )
-    if result.tool_name == document_ops.DOCUMENT_PATCH_TOOL_NAME:
-        return document_ops.DocumentOperationCallResult(
-            mode="patch",
-            response_id=result.response_id,
-            status=result.status,
-            output_types=result.output_types,
-            preview=result.preview,
-            raw_body_text=result.raw_body_text,
-            raw_json=result.raw_json,
-            patch_payload=document_ops.DocumentPatchPayload.model_validate(result.parsed),
-        )
-    raise llm_runtime.ModelOutputError(f"当前 agent 阶段不支持工具：{result.tool_name}", preview=result.preview)
+    return document_ops.document_operation_result_from_tool_result(result)
 
 
 def _tool_output_json(payload: dict[str, Any]) -> str:
@@ -138,8 +105,9 @@ def _document_tool_output(
                 "tool": result.tool_name,
                 "error": str(error),
                 "repair_instruction": (
-                    "请根据当前错误修正上一轮工具参数。old_text 或 match_text 必须从已授权目标文件当前内容中逐字复制，"
-                    "然后重新调用 write/edit/patch。"
+                    "请根据当前错误修正上一轮工具参数。write/edit 必须使用 filePath；"
+                    "edit 的 oldString 需从目标文件当前内容逐字复制；"
+                    "apply_patch 必须提供 patchText。"
                 ),
             }
         )
@@ -290,7 +258,7 @@ def run_agent_stage(
             {"role": "user", "content": user_input},
         ]
     else:
-        # Match OpenCode's agent loop shape: keep the transcript locally and
+        # Keep the transcript locally and
         # resend it each tool turn instead of treating provider state as the
         # only source of conversation truth.
         responses_transcript = [_responses_user_message(user_input)]

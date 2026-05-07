@@ -23,7 +23,7 @@ def render_dry_run_summary(
     print(
         f"请求模式：资料生成 agent 会话覆盖 {len(plan)} 个目标文档，随后进入卷资料审核；"
         "卷资料审核通过后直接完成当前卷资料适配。"
-        "生成和审核阶段都使用 OpenCode 风格本地 transcript，多轮工具调用会重发本阶段上下文与工具历史。"
+        "生成和审核阶段都使用本地 transcript，多轮工具调用会重发本阶段上下文与工具历史。"
     )
     print(f"运行方式：{RUN_MODE_LABELS.get(run_mode, run_mode)}")
     print("本次 dry-run 不调用 API，也不会生成文档正文。")

@@ -235,7 +235,7 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
         self.assertIn(adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME, review_instructions)
         self.assertIn("Dynamic Request", review_instructions)
         self.assertIn("adaptation_volume_review", review_instructions)
-        self.assertIn("write/edit/patch", review_instructions)
+        self.assertIn("write/edit/apply_patch", review_instructions)
 
     def test_adaptation_review_appends_workflow_tool_after_document_tools(self) -> None:
         result = adaptation_workflow.llm_runtime.MultiFunctionToolResult(
@@ -428,8 +428,8 @@ class SourceContaminationGuardrailTests(unittest.TestCase):
                     adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME,
                 )
                 self.assertIn("最新工作目标", payload["latest_work_target"]["instruction"])
-                self.assertIn("write/edit/patch", payload["latest_work_target"]["instruction"])
-                self.assertIn("不要调用 submit_workflow_result", payload["latest_work_target"]["instruction"])
+                self.assertIn("write/edit/apply_patch", payload["latest_work_target"]["instruction"])
+                self.assertIn("不要调用 result", payload["latest_work_target"]["instruction"])
                 self.assertIn("参考源只提供", boundary_text)
                 self.assertIn("不是新书资料正文", boundary_text)
                 self.assertIn("参考源功能 -> 新书设计", boundary_text)
@@ -1176,11 +1176,11 @@ class AdaptationVolumeReviewTests(unittest.TestCase):
 
         self.assertEqual(list(review_request.keys())[-1], "latest_work_target")
         self.assertEqual(review_request["latest_work_target"]["required_tool"], adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
-        self.assertIn("调用 submit_workflow_result", review_request["latest_work_target"]["instruction"])
+        self.assertIn("调用 result", review_request["latest_work_target"]["instruction"])
 
         self.assertEqual(list(fix_request.keys())[-1], "latest_work_target")
         self.assertEqual(fix_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)
-        self.assertIn("必须调用 write/edit/patch", fix_request["latest_work_target"]["instruction"])
+        self.assertIn("必须调用 write/edit/apply_patch", fix_request["latest_work_target"]["instruction"])
 
         self.assertEqual(list(repair_request.keys())[-1], "latest_work_target")
         self.assertEqual(repair_request["latest_work_target"]["forbidden_tool"], adaptation_workflow.WORKFLOW_SUBMISSION_TOOL_NAME)

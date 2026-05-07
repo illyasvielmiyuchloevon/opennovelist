@@ -8,13 +8,12 @@ from . import document_ops
 from . import responses_runtime as llm_runtime
 
 
-WORKFLOW_SUBMISSION_TOOL_NAME = "submit_workflow_result"
-WORKFLOW_SUBMISSION_TOOL_COMPATIBLE_ALIAS = "result"
+WORKFLOW_SUBMISSION_TOOL_NAME = "result"
 WORKFLOW_SUBMISSION_TOOL_DESCRIPTION = (
     "提交当前 agent 阶段的最终结果。生成阶段用它提交阶段完成摘要；"
     "审核阶段用它提交 passed、review_md、blocking_issues、rewrite_targets、chapters_to_revise。"
-    "正文或 Markdown 文件内容应优先通过 submit_document_writes / submit_document_edits / "
-    "submit_document_patches 落盘；只有阶段结束或审核结论才调用本工具。"
+    "正文或 Markdown 文件内容应优先通过 write / edit / apply_patch 落盘；"
+    "只有阶段结束或审核结论才调用本工具。"
 )
 
 
@@ -69,7 +68,7 @@ def workflow_submission_tool_spec() -> llm_runtime.FunctionToolSpec[Any]:
         model=WorkflowSubmissionPayload,
         name=WORKFLOW_SUBMISSION_TOOL_NAME,
         description=WORKFLOW_SUBMISSION_TOOL_DESCRIPTION,
-        compatible_aliases=(WORKFLOW_SUBMISSION_TOOL_COMPATIBLE_ALIAS,),
+        compatible_aliases=(),
     )
 
 

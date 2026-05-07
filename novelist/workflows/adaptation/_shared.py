@@ -117,14 +117,14 @@ RUN_MODE_LABELS = {
 }
 COMMON_STAGE_TOOL_OUTPUT_RULE = (
     "不要直接输出普通文本答案。"
-    "本卷资料适配阶段固定提供 submit_workflow_result 与 write/edit/patch 文档工具。"
-    "生成资料文档、审核不通过后的原地返修、修正 old_text/match_text 定位时，必须使用 write/edit/patch 文档工具提交结果。"
+    "本卷资料适配阶段固定提供 result 与 write/edit/apply_patch 文档工具。"
+    "生成资料文档、审核不通过后的原地返修、修正 old_text/match_text 定位时，必须使用 write/edit/apply_patch 文档工具提交结果。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_volume_review 时，"
-    "可以先调用 write/edit/patch 原地修复允许范围内的问题，最终必须使用 submit_workflow_result 提交 passed/review_md/blocking_issues/rewrite_targets。"
+    "可以先调用 write/edit/apply_patch 原地修复允许范围内的问题，最终必须使用 result 提交 passed/review_md/blocking_issues/rewrite_targets。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_review_fix 或 adaptation_review_fix_locator_repair 时，"
-    "必须使用 write/edit/patch 文档工具，不要调用 submit_workflow_result。"
+    "必须使用 write/edit/apply_patch 文档工具，不要调用 result。"
     "当 Dynamic Request 中的 document_request.phase=adaptation_generation_agent 时，"
-    "可以多次调用 write/edit/patch 写入所有目标文件，全部完成后必须调用 submit_workflow_result 结束阶段。"
+    "可以多次调用 write/edit/apply_patch 写入所有目标文件，全部完成后必须调用 result 结束阶段。"
 )
 COMMON_ADAPTATION_STAGE_BASE_INSTRUCTIONS = (
     "你是资深网络小说改编规划编辑。"
