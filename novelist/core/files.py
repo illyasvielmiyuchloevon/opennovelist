@@ -377,6 +377,10 @@ _QUOTE_NORMALIZATION_MAP = str.maketrans(
         "”": '"',
         "„": '"',
         "‟": '"',
+        "「": '"',
+        "」": '"',
+        "『": '"',
+        "』": '"',
         "’": "'",
         "‘": "'",
         "‚": "'",
@@ -387,6 +391,36 @@ _QUOTE_NORMALIZATION_MAP = str.maketrans(
 
 def _normalize_quotes_for_edit_match(text: str) -> str:
     return text.translate(_QUOTE_NORMALIZATION_MAP)
+
+
+_UNICODE_PUNCT_NORMALIZATION_MAP = str.maketrans(
+    {
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+        "‛": "'",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "「": '"',
+        "」": '"',
+        "『": '"',
+        "』": '"',
+        "‐": "-",
+        "‑": "-",
+        "‒": "-",
+        "–": "-",
+        "—": "-",
+        "―": "-",
+        "…": "...",
+        "\u00A0": " ",
+    }
+)
+
+
+def _normalize_unicode_punctuation_for_edit_match(text: str) -> str:
+    return text.translate(_UNICODE_PUNCT_NORMALIZATION_MAP)
 
 
 def _quote_normalized_candidates(content: str, find: str) -> list[str]:
@@ -409,6 +443,69 @@ def _quote_normalized_candidates(content: str, find: str) -> list[str]:
         if _normalize_quotes_for_edit_match(_unescape_for_edit_match(block)) == normalized_find:
             candidates.append(block)
     return candidates
+
+
+def _unicode_punctuation_normalized_candidates(content: str, find: str) -> list[str]:
+    normalized_find = _normalize_unicode_punctuation_for_edit_match(_unescape_for_edit_match(find)).strip()
+    if not normalized_find:
+        return []
+    lines = content.split("\n")
+    find_lines = find.split("\n")
+    if find_lines and find_lines[-1] == "":
+        find_lines.pop()
+    block_len = max(1, len(find_lines))
+
+    candidates: list[str] = []
+    for start in range(0, len(lines) - block_len + 1):
+        block = "\n".join(lines[start : start + block_len])
+        normalized_block = _normalize_unicode_punctuation_for_edit_match(_unescape_for_edit_match(block)).strip()
+        if normalized_block == normalized_find:
+            candidates.append(block)
+    return candidates
+
+
+def _line_sequence_comparator_candidates(content: str, find: str) -> list[str]:
+    find_lines = find.split("\n")
+    if find_lines and find_lines[-1] == "":
+        find_lines.pop()
+    if not find_lines:
+        return []
+
+    content_lines = content.split("\n")
+    pattern_len = len(find_lines)
+    if len(content_lines) < pattern_len:
+        return []
+
+    def exact_compare(left: str, right: str) -> bool:
+        return left == right
+
+    def rstrip_compare(left: str, right: str) -> bool:
+        return left.rstrip() == right.rstrip()
+
+    def trim_compare(left: str, right: str) -> bool:
+        return left.strip() == right.strip()
+
+    def unicode_trim_compare(left: str, right: str) -> bool:
+        normalized_left = _normalize_unicode_punctuation_for_edit_match(left).strip()
+        normalized_right = _normalize_unicode_punctuation_for_edit_match(right).strip()
+        return normalized_left == normalized_right
+
+    comparators = [
+        exact_compare,
+        rstrip_compare,
+        trim_compare,
+        unicode_trim_compare,
+    ]
+
+    for comparator in comparators:
+        candidates: list[str] = []
+        for start in range(0, len(content_lines) - pattern_len + 1):
+            if all(comparator(content_lines[start + offset], find_lines[offset]) for offset in range(pattern_len)):
+                candidates.append(_line_block_text(content_lines, start, start + pattern_len - 1))
+        if candidates:
+            return candidates
+
+    return []
 
 
 def _trimmed_boundary_candidates(content: str, find: str) -> list[str]:
@@ -473,6 +570,8 @@ def _edit_match_candidates(content: str, find: str) -> list[str]:
         + _indentation_flexible_candidates(content, find)
         + _escape_normalized_candidates(content, find)
         + _quote_normalized_candidates(content, find)
+        + _unicode_punctuation_normalized_candidates(content, find)
+        + _line_sequence_comparator_candidates(content, find)
         + _trimmed_boundary_candidates(content, find)
         + _context_aware_candidates(content, find)
         + ([find] if find in content else [])

@@ -73,6 +73,30 @@ class FilesPatchTests(unittest.TestCase):
         self.assertIn("已跨过新门槛", updated)
         self.assertNotIn("已初启“神纹承影”", updated)
 
+    def test_replace_text_with_fallbacks_matches_corner_quote_to_ascii_quote(self) -> None:
+        content = "站桩站了两年多，他从没觉得「站稳」是一件可以不用想的事。"
+        old_text = '站桩站了两年多，他从没觉得"站稳"是一件可以不用想的事。'
+        new_text = "站桩站了两年多，他第一次觉得站稳不必刻意。"
+
+        updated = replace_text_with_fallbacks(content, old_text, new_text)
+
+        self.assertIn("第一次觉得站稳不必刻意", updated)
+        self.assertNotIn("「站稳」", updated)
+
+    def test_apply_patch_insert_after_matches_unicode_punctuation_line_sequence(self) -> None:
+        content = "# 世界状态\n\n- 神纹承影…暂未公开。\n"
+        edits = [
+            document_ops.DocumentPatchEdit(
+                action="insert_after",
+                match_text="- 神纹承影...暂未公开。",
+                new_text="\n- 已登记到观察清单。",
+            )
+        ]
+
+        updated = document_ops.apply_patch_edits_to_text(content, edits)
+
+        self.assertIn("- 已登记到观察清单。", updated)
+
     def test_migrate_numbered_injection_dirs_moves_legacy_dirs_into_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -451,6 +475,28 @@ class DocumentOperationTests(unittest.TestCase):
         self.assertEqual(payload.files[0].file_path, "0006.txt")
         self.assertEqual(payload.files[0].edits[0].old_text, "旧句。")
 
+    def test_document_patch_payload_accepts_old_text_alias(self) -> None:
+        payload = document_ops.DocumentPatchPayload.model_validate(
+            {
+                "files": [
+                    {
+                        "filePath": "F:/books/0007.txt",
+                        "edits": [
+                            {
+                                "action": "replace",
+                                "old_text": "旧段落。",
+                                "newString": "新段落。",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(payload.files[0].file_path, "F:/books/0007.txt")
+        self.assertEqual(payload.files[0].edits[0].match_text, "旧段落。")
+        self.assertEqual(payload.files[0].edits[0].new_text, "新段落。")
+
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -637,6 +683,42 @@ class DocumentOperationTests(unittest.TestCase):
 
             self.assertEqual(applied.changed_keys, ["world_state"])
             self.assertEqual(read_text_if_exists(world_state), "玄穹修行馆。\n")
+
+    def test_apply_document_operation_patch_rejects_heading_actions_for_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            chapter_txt = root / "0032.txt"
+            chapter_txt.write_text("# 第0032章\n\n正文。\n", encoding="utf-8")
+
+            operation = document_ops.DocumentOperationCallResult(
+                mode="patch",
+                response_id="resp_txt_heading",
+                status="completed",
+                output_types=["function_call"],
+                preview="",
+                raw_body_text="",
+                raw_json={},
+                patch_payload=document_ops.DocumentPatchPayload(
+                    files=[
+                        document_ops.DocumentPatchFile(
+                            file_key="rewritten_chapter",
+                            edits=[
+                                document_ops.DocumentPatchEdit(
+                                    action="append_under_heading",
+                                    match_text="## 小节",
+                                    new_text="新增内容",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+            )
+
+            with self.assertRaises(ValueError):
+                document_ops.apply_document_operation(
+                    operation,
+                    allowed_files={"rewritten_chapter": chapter_txt},
+                )
 
     def test_apply_document_operation_write_rejects_existing_file_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

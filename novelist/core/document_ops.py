@@ -166,7 +166,7 @@ class DocumentPatchEdit(BaseModel):
     )
     match_text: str = Field(
         "",
-        validation_alias=AliasChoices("match_text", "matchText", "oldString"),
+        validation_alias=AliasChoices("match_text", "matchText", "old_text", "oldString"),
         description=(
             "replace/insert_before/insert_after 时用于定位原文片段；"
             "append_under_heading/replace_section_body 时用于定位 Markdown 标题；"
@@ -219,7 +219,10 @@ class DocumentPatchPayload(BaseModel):
                     "edits": [
                         {
                             "action": action,
-                            "match_text": value.get("match_text", value.get("matchText", value.get("oldString", ""))),
+                            "match_text": value.get(
+                                "match_text",
+                                value.get("matchText", value.get("old_text", value.get("oldString", ""))),
+                            ),
                             "new_text": new_text,
                             "replace_all": value.get("replace_all", value.get("replaceAll", False)),
                             "description": value.get("description", ""),
@@ -581,6 +584,24 @@ def _apply_replace_section_body(content: str, match_text: str, new_text: str) ->
     return convert_to_line_ending("\n".join(updated_lines), original_ending)
 
 
+def _validate_patch_actions_for_target(path: Path, edits: list[DocumentPatchEdit]) -> None:
+    if path.suffix.lower() != ".txt":
+        return
+    disallowed_actions = sorted(
+        {
+            edit.action
+            for edit in edits
+            if edit.action in {"append_under_heading", "replace_section_body"}
+        }
+    )
+    if not disallowed_actions:
+        return
+    raise ValueError(
+        f"{path.name} 是 txt 正文文件，不支持标题锚点动作：{', '.join(disallowed_actions)}。"
+        "请改用 replace/insert_before/insert_after/append/prepend。"
+    )
+
+
 def apply_patch_edits_to_text(content: str, edits: list[DocumentPatchEdit]) -> str:
     updated = content
     for edit in edits:
@@ -705,6 +726,7 @@ def apply_document_operation(
         )
         path = target.path
         current = read_text_if_exists(path)
+        _validate_patch_actions_for_target(path, item.edits)
         updated = apply_patch_edits_to_text(current, item.edits)
         _validate_protected_target_update(
             target=target,

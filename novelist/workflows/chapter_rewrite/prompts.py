@@ -25,6 +25,7 @@ def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> 
                 "当前文件已存在时，只能基于现有正文做局部改写、增删、替换与重组。",
                 "不要把整章当成全新生成任务推倒重写。",
                 "未变化段落应尽量保留，优先只修改受审核意见影响的局部。",
+                "当前目标是 txt 正文文件，不要使用 append_under_heading 或 replace_section_body；优先使用 replace/insert_before/insert_after/append/prepend。",
             ],
             "current_char_count": len(current_content),
         }
