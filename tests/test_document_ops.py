@@ -53,6 +53,26 @@ class FilesPatchTests(unittest.TestCase):
 
         self.assertEqual(updated, content)
 
+    def test_replace_text_with_fallbacks_matches_curly_quote_to_ascii_quote(self) -> None:
+        content = "识海残纹已初启“神纹承影”，当前仍未公开。"
+        old_text = '识海残纹已初启"神纹承影"，当前仍未公开。'
+        new_text = "识海残纹已跨过新门槛，当前仍未公开。"
+
+        updated = replace_text_with_fallbacks(content, old_text, new_text)
+
+        self.assertIn("已跨过新门槛", updated)
+        self.assertNotIn("已初启“神纹承影”", updated)
+
+    def test_replace_text_with_fallbacks_matches_double_escaped_quotes(self) -> None:
+        content = "识海残纹已初启“神纹承影”，当前仍未公开。"
+        old_text = '识海残纹已初启\\\\\\"神纹承影\\\\\\"，当前仍未公开。'
+        new_text = "识海残纹已跨过新门槛，当前仍未公开。"
+
+        updated = replace_text_with_fallbacks(content, old_text, new_text)
+
+        self.assertIn("已跨过新门槛", updated)
+        self.assertNotIn("已初启“神纹承影”", updated)
+
     def test_migrate_numbered_injection_dirs_moves_legacy_dirs_into_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -168,7 +188,7 @@ class FilesPatchTests(unittest.TestCase):
 class DocumentOperationTests(unittest.TestCase):
     def test_document_operation_rule_selects_tools_by_intent(self) -> None:
         self.assertIn("按本次修改意图选择工具", document_ops.DOCUMENT_OPERATION_RULE)
-        self.assertIn("优先使用 edit 工具", document_ops.DOCUMENT_OPERATION_RULE)
+        self.assertIn("自行选择 edit 或 apply_patch", document_ops.DOCUMENT_OPERATION_RULE)
         self.assertNotIn("目标文件已经存在，请优先使用 patch", document_ops.DOCUMENT_OPERATION_RULE)
 
     def test_apply_document_operation_edits_existing_file_precisely(self) -> None:
@@ -411,6 +431,26 @@ class DocumentOperationTests(unittest.TestCase):
         self.assertEqual(payload.files[0].edits[0].new_text, "新句子。")
         self.assertTrue(payload.files[0].edits[0].replace_all)
 
+    def test_document_edit_payload_accepts_file_name_alias(self) -> None:
+        payload = document_ops.DocumentEditPayload.model_validate(
+            {
+                "files": [
+                    {
+                        "fileName": "0006.txt",
+                        "edits": [
+                            {
+                                "oldString": "旧句。",
+                                "newString": "新句。",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(payload.files[0].file_path, "0006.txt")
+        self.assertEqual(payload.files[0].edits[0].old_text, "旧句。")
+
     def test_apply_document_operation_patches_multiple_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -478,44 +518,6 @@ class DocumentOperationTests(unittest.TestCase):
             self.assertIn("异常玉符线索", read_text_if_exists(book_outline))
             self.assertIn("试炼结束后开始戒严", read_text_if_exists(world_state))
             self.assertIn("## 事件状态", read_text_if_exists(world_state))
-
-    def test_apply_document_operation_accepts_patch_text(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            world_state = root / "07_world_state.md"
-            world_state.write_text(
-                "# 世界状态\n\n## 地点状态\n- 青岚城：表面平静。\n",
-                encoding="utf-8",
-            )
-            patch_text = (
-                "*** Begin Patch\n"
-                f"*** Update File: {world_state}\n"
-                "@@\n"
-                "-## 地点状态\n"
-                "-- 青岚城：表面平静。\n"
-                "+## 地点状态\n"
-                "+- 青岚城：试炼结束后开始戒严。\n"
-                "*** End Patch\n"
-            )
-            operation = document_ops.DocumentOperationCallResult(
-                mode="patch",
-                response_id="resp_patch_text",
-                status="completed",
-                output_types=["function_call"],
-                preview="",
-                raw_body_text="",
-                raw_json={},
-                patch_text=patch_text,
-            )
-
-            applied = document_ops.apply_document_operation(
-                operation,
-                allowed_files={"world_state": world_state},
-            )
-
-            self.assertEqual(applied.mode, "patch")
-            self.assertEqual(applied.changed_keys, ["world_state"])
-            self.assertIn("青岚城：试炼结束后开始戒严", read_text_if_exists(world_state))
 
     def test_apply_document_operation_write_creates_new_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -736,17 +738,22 @@ class DocumentToolCallMappingTests(unittest.TestCase):
         self.assertEqual(result.edit_payload.files[0].file_key, "volume_plot_progress")
 
     def test_call_document_operation_tools_maps_patch_tool_result(self) -> None:
-        patch_text = (
-            "*** Begin Patch\n"
-            "*** Update File: F:/project/07_world_state.md\n"
-            "@@\n"
-            "-旧状态\n"
-            "+新状态\n"
-            "*** End Patch\n"
-        )
         fake_result = llm_runtime.MultiFunctionToolResult(
             tool_name=document_ops.DOCUMENT_PATCH_TOOL_NAME,
-            parsed=document_ops.DocumentApplyPatchToolArgs(patch_text=patch_text),
+            parsed=document_ops.DocumentPatchPayload(
+                files=[
+                    document_ops.DocumentPatchFile(
+                        file_key="world_state",
+                        edits=[
+                            document_ops.DocumentPatchEdit(
+                                action="append",
+                                match_text="",
+                                new_text="## 事件状态\n- 测试事件。",
+                            )
+                        ],
+                    )
+                ]
+            ),
             response_id="resp_patch",
             status="completed",
             output_types=["function_call"],
@@ -764,7 +771,8 @@ class DocumentToolCallMappingTests(unittest.TestCase):
             )
 
         self.assertEqual(result.mode, "patch")
-        self.assertEqual(result.patch_text, patch_text)
+        self.assertIsNotNone(result.patch_payload)
+        self.assertEqual(result.patch_payload.files[0].file_key, "world_state")
 
     def test_call_document_operation_tools_maps_write_tool_result(self) -> None:
         fake_result = llm_runtime.MultiFunctionToolResult(

@@ -12,13 +12,13 @@ def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> 
             "file_path": str(paths["rewritten_chapter"]),
             "exists": paths["rewritten_chapter"].exists(),
             "preferred_mode": "edit_or_patch" if current_text.strip() else "write",
-            "tool_argument_policy": "工具参数使用固定字段：write/edit 用 filePath；apply_patch 只接受 patchText（*** Begin Patch ... *** End Patch）；不要传 file_key。",
+            "tool_argument_policy": "工具参数可使用 file_key 与 file_path（或 file_name）定位文件；write 使用 content；edit/patch 使用 files[].edits，并确保 old_text 或 match_text 来自当前内容。",
             "write_policy": "no_write_if_exists",
             "structure_mode": "existing_chapter_text_revision",
             "tool_selection_policy": (
-                "按修改意图选择工具：替换、改写、补强已有正文段落用 edit；"
-                "当段落存在冗余、矛盾、重复或确需移除的信息时，也可以删除或重组对应内容，并继续使用 edit；"
-                "插入新段落、移动前后衔接块或追加过渡内容用 patch；"
+                "按修改意图与可定位性自行选择 edit 或 patch；"
+                "当段落存在冗余、矛盾、重复或确需移除的信息时，可以删除或重组对应内容；"
+                "插入新段落、移动前后衔接块或追加过渡内容时，优先选择定位更稳定、改动更小的工具；"
                 "当前文件为空时才用 write。"
             ),
             "update_rules": [
@@ -35,7 +35,7 @@ def support_update_general_rules() -> list[str]:
         "这是长期知识文档更新步骤，只更新当前章节真实发生变化且确有必要更新的文档。",
         "无变化的文档不要返回，也不要为了统一措辞重写旧内容。",
         "已有非空文件默认禁止整篇写入，必须按修改意图选择 edit 或 patch 做局部增量更新。",
-        "修改已有句段、条目、状态、名称或术语时优先使用 edit；插入新条目、追加新段落或按标题补充小节时使用 patch。",
+        "修改已有句段、条目、状态、名称或术语，或插入新条目、追加新段落、按标题补充小节时，按可定位性与最小改动原则自行选择 edit 或 patch。",
         "如果只是给某一段、某条记录或某个小块后面补充新内容，可以使用 patch 的 insert_after 直接追加，不要改写整段。",
         "长期知识文档采用“固定标题 + 可扩展二级标题”的管理方式，不要写成数据库字段表、代码 schema 或过度表格化文档。",
         "一级标题固定；二级标题用于管理不同类型的信息。已有二级标题结构如果已经适合本书，应优先沿用。",
@@ -64,12 +64,12 @@ def support_update_target_inventory(paths: dict[str, Path]) -> list[dict[str, An
                 "file_path": str(path),
                 "exists": path.exists(),
                 "preferred_mode": "edit_or_patch" if current_content else "write",
-                "tool_argument_policy": "工具参数使用固定字段：write/edit 用 filePath；apply_patch 只接受 patchText（*** Begin Patch ... *** End Patch）；不要传 file_key。",
+                "tool_argument_policy": "工具参数可使用 file_key 与 file_path（或 file_name）定位文件；write 使用 content；edit/patch 使用 files[].edits，并确保 old_text 或 match_text 来自当前内容。",
                 "write_policy": "no_write_if_exists",
                 "structure_mode": "fixed_title_expandable_sections_document",
                 "tool_selection_policy": (
-                    "按修改意图选择工具：改已有条目、状态、名称或术语用 edit；"
-                    "插入新条目、追加新段落、按 Markdown 标题补充或替换小节正文用 patch；"
+                    "按修改意图与可定位性自行选择 edit 或 patch；"
+                    "优先采用改动范围更小、定位更稳定的方式完成目标；"
                     "文件为空或首次创建时才用 write。"
                 ),
                 "template": rule.get("template", []),
@@ -289,7 +289,7 @@ def build_phase_request_payload(
                         "必须把注入的写作规范 skill 作为当前章正文修订的主写作规则。",
                         "这是基于现有正文的修订任务，不是从零整篇重写任务。",
                         "如果当前文件已经存在，必须按修改意图使用 edit 或 patch 对现有正文做局部或分段修改；不要用整篇写入覆盖旧正文。",
-                        "替换、改写、补强已有正文段落时优先使用 edit；当段落存在冗余、矛盾、重复或确需移除的信息时，也允许删除或重组对应内容；插入新段落、追加过渡或按块补充内容时使用 patch。",
+                        "替换、改写、补强、删除、重组或插入内容时，按可定位性与最小改动原则自行选择 edit 或 patch。",
                         "正文返修的重点是优化问题段落和内容，修复语言、节奏、逻辑、衔接、信息表达与人物状态，而不是只做机械删减。",
                         "如果问题主要是语言、节奏、AI 感或表达不稳，优先改写原段、补强衔接、重写句群和调整节奏；如果需要删除，也应同步保证对应场景功能、人物动机、信息揭露和收尾作用仍然完整。",
                         "优先保留未变化段落，只修改受审核意见影响的局部；只有在局部无法修正时，才扩大修改范围。",
@@ -635,3 +635,4 @@ __all__ = [
     'build_volume_review_payload',
     'build_five_chapter_review_payload',
 ]
+

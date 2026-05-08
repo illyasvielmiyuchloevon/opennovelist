@@ -345,7 +345,15 @@ def _unescape_for_edit_match(text: str) -> str:
         }
         return replacements.get(captured, match.group(0))
 
-    return re.sub(r"\\(n|t|r|'|\"|`|\\|\n|\$)", replace_match, text)
+    # Some providers may over-escape tool arguments (for example `\\\"`).
+    # Apply unescape repeatedly so multi-layer escaping can converge.
+    previous = text
+    for _ in range(4):
+        current = re.sub(r"\\(n|t|r|'|\"|`|\\|\n|\$)", replace_match, previous)
+        if current == previous:
+            break
+        previous = current
+    return previous
 
 
 def _escape_normalized_candidates(content: str, find: str) -> list[str]:
@@ -359,6 +367,46 @@ def _escape_normalized_candidates(content: str, find: str) -> list[str]:
     for start in range(0, len(lines) - len(find_lines) + 1):
         block = "\n".join(lines[start : start + len(find_lines)])
         if _unescape_for_edit_match(block) == unescaped_find:
+            candidates.append(block)
+    return candidates
+
+
+_QUOTE_NORMALIZATION_MAP = str.maketrans(
+    {
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "’": "'",
+        "‘": "'",
+        "‚": "'",
+        "‛": "'",
+    }
+)
+
+
+def _normalize_quotes_for_edit_match(text: str) -> str:
+    return text.translate(_QUOTE_NORMALIZATION_MAP)
+
+
+def _quote_normalized_candidates(content: str, find: str) -> list[str]:
+    normalized_find = _normalize_quotes_for_edit_match(_unescape_for_edit_match(find))
+    if not normalized_find:
+        return []
+    normalized_content = _normalize_quotes_for_edit_match(content)
+    if normalized_find not in normalized_content:
+        return []
+
+    find_lines = find.split("\n")
+    if find_lines and find_lines[-1] == "":
+        find_lines.pop()
+    block_len = max(1, len(find_lines))
+
+    lines = content.split("\n")
+    candidates: list[str] = []
+    for start in range(0, len(lines) - block_len + 1):
+        block = "\n".join(lines[start : start + block_len])
+        if _normalize_quotes_for_edit_match(_unescape_for_edit_match(block)) == normalized_find:
             candidates.append(block)
     return candidates
 
@@ -424,6 +472,7 @@ def _edit_match_candidates(content: str, find: str) -> list[str]:
         + _whitespace_normalized_candidates(content, find)
         + _indentation_flexible_candidates(content, find)
         + _escape_normalized_candidates(content, find)
+        + _quote_normalized_candidates(content, find)
         + _trimmed_boundary_candidates(content, find)
         + _context_aware_candidates(content, find)
         + ([find] if find in content else [])

@@ -1294,8 +1294,8 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         )
 
         self.assertEqual(result.tool_name, document_ops.DOCUMENT_WRITE_TOOL_NAME)
-        self.assertEqual(result.parsed.file_path, "F:/novelist/out.txt")
-        self.assertEqual(result.parsed.content, "hello")
+        self.assertEqual(result.parsed.files[0].file_path, "F:/novelist/out.txt")
+        self.assertEqual(result.parsed.files[0].content, "hello")
         request_tool_names = [tool["function"]["name"] for tool in client.chat.completions.last_request["tools"]]
         self.assertIn(document_ops.DOCUMENT_WRITE_TOOL_NAME, request_tool_names)
         self.assertIn("write", request_tool_names)
