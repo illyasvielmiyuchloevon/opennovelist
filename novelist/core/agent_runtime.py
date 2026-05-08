@@ -9,7 +9,6 @@ from openai import OpenAI
 
 from . import document_ops
 from . import responses_runtime as llm_runtime
-from .files import read_text_if_exists
 from .workflow_tools import (
     WORKFLOW_SUBMISSION_TOOL_NAME,
     WorkflowSubmissionPayload,
@@ -97,23 +96,6 @@ def _tool_output_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _allowed_file_snapshot(allowed_files: dict[str, Path | document_ops.DocumentTarget]) -> list[dict[str, Any]]:
-    snapshots: list[dict[str, Any]] = []
-    for file_key, target in allowed_files.items():
-        path = target.path if isinstance(target, document_ops.DocumentTarget) else target
-        current_content = read_text_if_exists(path).strip()
-        snapshots.append(
-            {
-                "file_key": file_key,
-                "file_path": str(path),
-                "exists": path.exists(),
-                "current_char_count": len(current_content),
-                "current_content": current_content,
-            }
-        )
-    return snapshots
-
-
 def _document_tool_output(
     result: llm_runtime.MultiFunctionToolResult,
     *,
@@ -156,10 +138,9 @@ def _document_tool_output(
                 "tool": result.tool_name,
                 "error": str(error),
                 "repair_instruction": (
-                    "请根据当前错误修正上一轮工具参数。old_text 或 match_text 必须从 update_target_files.current_content 中逐字复制，"
+                    "请根据当前错误修正上一轮工具参数。old_text 或 match_text 必须从目标文件当前内容逐字复制，"
                     "然后重新调用 write/edit/apply_patch。"
                 ),
-                "update_target_files": _allowed_file_snapshot(allowed_files),
             }
         )
         return AgentToolApplication(
