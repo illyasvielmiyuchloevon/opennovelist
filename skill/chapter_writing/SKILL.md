@@ -97,6 +97,7 @@ description: Use when rewriting the full text of a Chinese webnovel chapter in t
 - 不要写成总结式、解释式、AI 常见腔调的正文。
 - 不要堆砌华丽意象、对称排比、诗化抒情。
 - 不要出现审核 skill 会重点打回的典型 AI 痕迹。
+- 正文中禁止使用 `——` 符号。
 - 用词要服务于小说叙事，不要写成设定说明书、游戏面板说明或数据库条目。
 
 ## 正文生成时的工作顺序

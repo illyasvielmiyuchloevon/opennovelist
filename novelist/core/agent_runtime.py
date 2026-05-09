@@ -104,6 +104,12 @@ def _document_tool_output(
     try:
         operation = document_operation_from_tool_result(result)
         applied = document_ops.apply_document_operation(operation, allowed_files=allowed_files)
+        if (
+            result.tool_name in {document_ops.DOCUMENT_EDIT_TOOL_NAME, document_ops.DOCUMENT_PATCH_TOOL_NAME}
+            and applied.emitted_keys
+            and not applied.changed_keys
+        ):
+            raise ValueError("工具调用未产生任何内容变化，请扩大 old_text 或 match_text 上下文后重试。")
         output = _tool_output_json(
             {
                 "ok": True,

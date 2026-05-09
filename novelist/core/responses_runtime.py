@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -713,15 +714,33 @@ def to_plain_data(value: Any) -> Any:
 
 
 def safe_json_loads(text: str) -> dict[str, Any] | list[Any] | None:
-    stripped = text.strip()
+    stripped = str(text or "").strip()
     if not stripped:
         return None
-    try:
-        loaded = json.loads(stripped)
-    except Exception:
-        return None
-    if isinstance(loaded, (dict, list)):
-        return loaded
+
+    candidates = [stripped]
+    fenced_match = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped, re.IGNORECASE)
+    if fenced_match:
+        fenced_payload = fenced_match.group(1).strip()
+        if fenced_payload:
+            candidates.append(fenced_payload)
+
+    for candidate in candidates:
+        current = candidate
+        for _ in range(3):
+            try:
+                loaded = json.loads(current)
+            except Exception:
+                break
+            if isinstance(loaded, (dict, list)):
+                return loaded
+            if isinstance(loaded, str):
+                next_candidate = loaded.strip()
+                if not next_candidate or next_candidate == current:
+                    break
+                current = next_candidate
+                continue
+            break
     return None
 
 
@@ -2054,6 +2073,16 @@ class MultiFunctionToolResult:
     assistant_reasoning_content: str | None = None
 
 
+def _coerce_tool_arguments_dict(arguments: Any) -> dict[str, Any] | None:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        loaded = safe_json_loads(arguments)
+        if isinstance(loaded, dict):
+            return loaded
+    return None
+
+
 def _coerce_function_tool_arguments(
     response: Any,
     tool_model: type[T],
@@ -2077,13 +2106,12 @@ def _coerce_function_tool_arguments(
             except Exception:
                 pass
         arguments = getattr(item, "arguments", None)
-        if isinstance(arguments, str):
-            loaded = safe_json_loads(arguments)
-            if isinstance(loaded, dict):
-                try:
-                    return tool_model.model_validate(loaded), "function_call.arguments"
-                except Exception:
-                    pass
+        loaded = _coerce_tool_arguments_dict(arguments)
+        if isinstance(loaded, dict):
+            try:
+                return tool_model.model_validate(loaded), "function_call.arguments"
+            except Exception:
+                pass
 
     plain = to_plain_data(raw_json)
     if isinstance(plain, dict):
@@ -2095,13 +2123,12 @@ def _coerce_function_tool_arguments(
                 if item.get("type") != "function_call" or item.get("name") != tool_name:
                     continue
                 arguments = item.get("arguments")
-                if isinstance(arguments, str):
-                    loaded = safe_json_loads(arguments)
-                    if isinstance(loaded, dict):
-                        try:
-                            return tool_model.model_validate(loaded), "raw_json.output.function_call.arguments"
-                        except Exception:
-                            pass
+                loaded = _coerce_tool_arguments_dict(arguments)
+                if isinstance(loaded, dict):
+                    try:
+                        return tool_model.model_validate(loaded), "raw_json.output.function_call.arguments"
+                    except Exception:
+                        pass
 
         choices = plain.get("choices")
         if isinstance(choices, list):
@@ -2114,17 +2141,14 @@ def _coerce_function_tool_arguments(
                 function_call = message.get("function_call")
                 if isinstance(function_call, dict):
                     item_name = function_call.get("name")
-                    if isinstance(item_name, str):
-                        spec = tool_specs_by_name.get(item_name)
-                        if spec is not None:
-                            arguments = function_call.get("arguments")
-                            if isinstance(arguments, str):
-                                loaded = safe_json_loads(arguments)
-                                if isinstance(loaded, dict):
-                                    try:
-                                        return spec.model.model_validate(loaded), item_name, "raw_json.choices.message.function_call.arguments"
-                                    except Exception:
-                                        pass
+                    if item_name == tool_name:
+                        arguments = function_call.get("arguments")
+                        loaded = _coerce_tool_arguments_dict(arguments)
+                        if isinstance(loaded, dict):
+                            try:
+                                return tool_model.model_validate(loaded), "raw_json.choices.message.function_call.arguments"
+                            except Exception:
+                                pass
                 tool_calls = message.get("tool_calls")
                 if not isinstance(tool_calls, list):
                     continue
@@ -2137,13 +2161,12 @@ def _coerce_function_tool_arguments(
                     if function.get("name") != tool_name:
                         continue
                     arguments = function.get("arguments")
-                    if isinstance(arguments, str):
-                        loaded = safe_json_loads(arguments)
-                        if isinstance(loaded, dict):
-                            try:
-                                return tool_model.model_validate(loaded), "raw_json.choices.message.tool_calls.arguments"
-                            except Exception:
-                                pass
+                    loaded = _coerce_tool_arguments_dict(arguments)
+                    if isinstance(loaded, dict):
+                        try:
+                            return tool_model.model_validate(loaded), "raw_json.choices.message.tool_calls.arguments"
+                        except Exception:
+                            pass
 
     return None, ""
 
@@ -2180,13 +2203,13 @@ def _coerce_any_function_tool_arguments(
                 except Exception:
                     pass
             arguments = item.get("arguments")
-            if isinstance(arguments, str):
-                loaded = safe_json_loads(arguments)
-                if isinstance(loaded, dict):
-                    try:
-                        return spec.model.model_validate(loaded), canonical_name, "function_call.arguments", call_id, arguments
-                    except Exception:
-                        pass
+            loaded = _coerce_tool_arguments_dict(arguments)
+            if isinstance(loaded, dict):
+                try:
+                    raw_arguments = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                    return spec.model.model_validate(loaded), canonical_name, "function_call.arguments", call_id, raw_arguments
+                except Exception:
+                    pass
 
     plain = to_plain_data(raw_json)
     if isinstance(plain, dict):
@@ -2206,13 +2229,19 @@ def _coerce_any_function_tool_arguments(
                 canonical_name = (canonical_name_by_lookup or {}).get(item_name, spec.name)
                 call_id = str(item.get("call_id") or item.get("id") or "")
                 arguments = item.get("arguments")
-                if isinstance(arguments, str):
-                    loaded = safe_json_loads(arguments)
-                    if isinstance(loaded, dict):
-                        try:
-                            return spec.model.model_validate(loaded), canonical_name, "raw_json.output.function_call.arguments", call_id, arguments
-                        except Exception:
-                            pass
+                loaded = _coerce_tool_arguments_dict(arguments)
+                if isinstance(loaded, dict):
+                    try:
+                        raw_arguments = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                        return (
+                            spec.model.model_validate(loaded),
+                            canonical_name,
+                            "raw_json.output.function_call.arguments",
+                            call_id,
+                            raw_arguments,
+                        )
+                    except Exception:
+                        pass
 
         choices = plain.get("choices")
         if isinstance(choices, list):
@@ -2240,13 +2269,19 @@ def _coerce_any_function_tool_arguments(
                     canonical_name = (canonical_name_by_lookup or {}).get(item_name, spec.name)
                     call_id = str(tool_call.get("id") or "")
                     arguments = function.get("arguments")
-                    if isinstance(arguments, str):
-                        loaded = safe_json_loads(arguments)
-                        if isinstance(loaded, dict):
-                            try:
-                                return spec.model.model_validate(loaded), canonical_name, "raw_json.choices.message.tool_calls.arguments", call_id, arguments
-                            except Exception:
-                                pass
+                    loaded = _coerce_tool_arguments_dict(arguments)
+                    if isinstance(loaded, dict):
+                        try:
+                            raw_arguments = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                            return (
+                                spec.model.model_validate(loaded),
+                                canonical_name,
+                                "raw_json.choices.message.tool_calls.arguments",
+                                call_id,
+                                raw_arguments,
+                            )
+                        except Exception:
+                            pass
 
     return None, "", "", "", ""
 

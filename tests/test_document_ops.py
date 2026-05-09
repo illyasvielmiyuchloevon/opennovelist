@@ -83,6 +83,16 @@ class FilesPatchTests(unittest.TestCase):
         self.assertIn("第一次觉得站稳不必刻意", updated)
         self.assertNotIn("「站稳」", updated)
 
+    def test_replace_text_with_fallbacks_matches_cn_punctuation_to_ascii(self) -> None:
+        content = "他说，已经锁定目标（第三区）。"
+        old_text = "他说,已经锁定目标(第三区)."
+        new_text = "他说，已经锁定目标（第三区），并通知了队伍。"
+
+        updated = replace_text_with_fallbacks(content, old_text, new_text)
+
+        self.assertIn("并通知了队伍", updated)
+        self.assertNotIn("已经锁定目标（第三区）。", updated)
+
     def test_apply_patch_insert_after_matches_unicode_punctuation_line_sequence(self) -> None:
         content = "# 世界状态\n\n- 神纹承影…暂未公开。\n"
         edits = [

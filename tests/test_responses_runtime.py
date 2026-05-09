@@ -413,6 +413,138 @@ class ResponsesRuntimeCompatibleTests(unittest.TestCase):
         self.assertIn("发送=100", llm_runtime.token_usage_summary(usage))
         self.assertIn("缓存命中=40", llm_runtime.token_usage_summary(usage))
 
+    def test_safe_json_loads_accepts_fenced_double_encoded_payload(self) -> None:
+        loaded = llm_runtime.safe_json_loads('```json\n"{\\"value\\": \\"ok\\"}"\n```')
+        self.assertEqual(loaded, {"value": "ok"})
+
+    def test_call_function_tools_parses_dict_arguments_from_compatible_tool_calls(self) -> None:
+        response_payload = {
+            "id": "chatcmpl_dict_args",
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_dict",
+                                "type": "function",
+                                "function": {
+                                    "name": "submit_tool",
+                                    "arguments": {"value": "ok"},
+                                },
+                            }
+                        ]
+                    }
+                }
+            ],
+        }
+        client = SimpleNamespace(
+            _codex_protocol=llm_runtime.PROTOCOL_OPENAI_COMPATIBLE,
+            _codex_openai_compatible_options={"transport": "nonstream"},
+            chat=SimpleNamespace(completions=_FakeNonStreamChatCompletions(response_payload)),
+        )
+
+        result = llm_runtime.call_function_tools(
+            client,  # type: ignore[arg-type]
+            model="test-model",
+            instructions="system instruction",
+            user_input="user input",
+            tool_specs=[
+                llm_runtime.FunctionToolSpec(
+                    model=_CompatToolPayload,
+                    name="submit_tool",
+                    description="test tool",
+                )
+            ],
+            retries=1,
+        )
+
+        self.assertEqual(result.tool_name, "submit_tool")
+        self.assertEqual(result.parsed.value, "ok")
+        self.assertEqual(result.raw_arguments, '{"value": "ok"}')
+
+    def test_agent_stage_marks_edit_noop_as_failed_tool_application(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "target.md"
+            target.write_text("保持原文。\n", encoding="utf-8")
+
+            tool_arguments = json.dumps(
+                {
+                    "files": [
+                        {
+                            "file_key": "target",
+                            "edits": [
+                                {
+                                    "old_text": "保持原文。",
+                                    "new_text": "保持原文。",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            noop_result = llm_runtime.MultiFunctionToolResult(
+                tool_name=document_ops.DOCUMENT_EDIT_TOOL_NAME,
+                parsed=document_ops.DocumentEditPayload(
+                    files=[
+                        document_ops.DocumentEditFile(
+                            file_key="target",
+                            edits=[
+                                document_ops.DocumentEditEdit(
+                                    old_text="保持原文。",
+                                    new_text="保持原文。",
+                                )
+                            ],
+                        )
+                    ]
+                ),
+                response_id="resp_noop",
+                status="completed",
+                output_types=["function_call"],
+                preview="noop",
+                raw_body_text="",
+                raw_json={},
+                call_id="call_noop",
+                raw_arguments=tool_arguments,
+            )
+            submit_result = llm_runtime.MultiFunctionToolResult(
+                tool_name=workflow_tools.WORKFLOW_SUBMISSION_TOOL_NAME,
+                parsed=workflow_tools.WorkflowSubmissionPayload(summary="完成。"),
+                response_id="resp_submit",
+                status="completed",
+                output_types=["function_call"],
+                preview="submit",
+                raw_body_text="",
+                raw_json={},
+                call_id="call_submit",
+                raw_arguments="{}",
+            )
+            call_count = {"value": 0}
+
+            def fake_call_function_tools(*args, **kwargs):
+                call_count["value"] += 1
+                if call_count["value"] == 1:
+                    return noop_result
+                return submit_result
+
+            client = SimpleNamespace(_codex_protocol=llm_runtime.PROTOCOL_RESPONSES)
+            with patch.object(agent_runtime.llm_runtime, "call_function_tools", side_effect=fake_call_function_tools):
+                result = agent_runtime.run_agent_stage(
+                    client,  # type: ignore[arg-type]
+                    model="test-model",
+                    instructions="instructions",
+                    user_input="initial request",
+                    allowed_files={"target": target},
+                    retries=1,
+                )
+
+            self.assertEqual(result.response_id, "resp_submit")
+            self.assertEqual(len(result.applications), 1)
+            self.assertFalse(result.applications[0].success)
+            self.assertIsNone(result.applications[0].applied)
+            self.assertIn("未产生任何内容变化", result.applications[0].output)
+            self.assertEqual(target.read_text(encoding="utf-8"), "保持原文。\n")
+
     def test_responses_function_tools_use_flat_responses_schema(self) -> None:
         tools = llm_runtime.build_responses_function_tools(
             [

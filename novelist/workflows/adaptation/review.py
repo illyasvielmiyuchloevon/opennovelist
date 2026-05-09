@@ -169,7 +169,7 @@ def adaptation_review_compaction_session_status(previous_response_id: str | None
         return (
             "会话：沿用卷资料适配生成会话进入卷资料审核；"
             f"本次 provider 请求继续携带 previous_response_id={previous_response_id}，"
-            "并重新组装最新落盘资料文档供审核/返修。"
+            "并重新组装最新落盘资料文档供审核与原地修复。"
         )
     return "会话：卷资料审核逻辑会话；本次以最新资料上下文发起本地 agent transcript。"
 
@@ -465,8 +465,7 @@ def run_adaptation_review_until_passed(
 
         if attempt >= MAX_ADAPTATION_REVIEW_ATTEMPTS:
             error_message = (
-                f"卷资料审核连续 {MAX_ADAPTATION_REVIEW_ATTEMPTS} 次审核、"
-                f"原地返修 {MAX_ADAPTATION_REVIEW_FIX_ATTEMPTS} 次后仍未通过。"
+                f"卷资料审核连续 {MAX_ADAPTATION_REVIEW_ATTEMPTS} 次后仍未通过。"
             )
             write_response_debug_snapshot(
                 manifest,
@@ -486,7 +485,7 @@ def run_adaptation_review_until_passed(
             raise llm_runtime.ModelOutputError(error_message, preview=review.review_md)
 
         print_progress(
-            "卷资料审核未通过，将再次进入 agent 审核/返修循环；"
+            "卷资料审核未通过，将再次进入同阶段审核循环并继续原地修复；"
             f"目标：{', '.join(review.rewrite_targets) if review.rewrite_targets else '未返回'}。"
         )
 

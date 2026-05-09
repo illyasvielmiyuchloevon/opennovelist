@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -407,6 +408,21 @@ _UNICODE_PUNCT_NORMALIZATION_MAP = str.maketrans(
         "」": '"',
         "『": '"',
         "』": '"',
+        "（": "(",
+        "）": ")",
+        "【": "[",
+        "】": "]",
+        "《": "<",
+        "》": ">",
+        "〈": "<",
+        "〉": ">",
+        "，": ",",
+        "。": ".",
+        "：": ":",
+        "；": ";",
+        "！": "!",
+        "？": "?",
+        "、": ",",
         "‐": "-",
         "‑": "-",
         "‒": "-",
@@ -420,7 +436,8 @@ _UNICODE_PUNCT_NORMALIZATION_MAP = str.maketrans(
 
 
 def _normalize_unicode_punctuation_for_edit_match(text: str) -> str:
-    return text.translate(_UNICODE_PUNCT_NORMALIZATION_MAP)
+    # Normalize full-width forms first, then unify punctuation variants.
+    return unicodedata.normalize("NFKC", text).translate(_UNICODE_PUNCT_NORMALIZATION_MAP)
 
 
 def _quote_normalized_candidates(content: str, find: str) -> list[str]:
@@ -486,8 +503,8 @@ def _line_sequence_comparator_candidates(content: str, find: str) -> list[str]:
         return left.strip() == right.strip()
 
     def unicode_trim_compare(left: str, right: str) -> bool:
-        normalized_left = _normalize_unicode_punctuation_for_edit_match(left).strip()
-        normalized_right = _normalize_unicode_punctuation_for_edit_match(right).strip()
+        normalized_left = _normalize_unicode_punctuation_for_edit_match(_unescape_for_edit_match(left)).strip()
+        normalized_right = _normalize_unicode_punctuation_for_edit_match(_unescape_for_edit_match(right)).strip()
         return normalized_left == normalized_right
 
     comparators = [

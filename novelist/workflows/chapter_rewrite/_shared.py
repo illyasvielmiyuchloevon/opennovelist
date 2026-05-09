@@ -155,7 +155,7 @@ COMMON_CHAPTER_STAGE_TOOL_RULE = (
     "本工作流固定提供 result 与文档 write/edit/apply_patch 工具。"
     "章节组模式只负责确定当前组范围；组内必须回到单章工作流逐章生成、逐章审核。"
     "章节正文阶段读取当前章参考源、卷级注入和全局注入。"
-    "审核阶段可先返修，再用 result 提交 passed/review_md。"
+    "审核阶段可直接调用 write/edit/apply_patch 修复问题，再用 result 提交 passed/review_md。"
 )
 COMMON_CHAPTER_WORKFLOW_INSTRUCTIONS = (
     "你是资深网络小说章节洗稿仿写作者、连续性编辑与审稿编辑。"

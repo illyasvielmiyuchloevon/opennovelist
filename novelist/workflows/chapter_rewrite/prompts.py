@@ -415,6 +415,49 @@ def build_phase_request_payload(
             chapter_number=chapter_number,
             chapter_text=chapter_text,
         )
+        chapter_outline_content = read_text_if_exists(paths["chapter_outline"]).strip()
+        phase3_update_targets = [
+            {
+                "file_key": "chapter_outline",
+                "file_name": paths["chapter_outline"].name,
+                "file_path": str(paths["chapter_outline"]),
+                "exists": paths["chapter_outline"].exists(),
+                "preferred_mode": "edit_or_patch" if chapter_outline_content else "write",
+                "tool_argument_policy": "工具参数可使用 file_key 与 file_path（或 file_name）定位文件；write 使用 content；edit/patch 使用 files[].edits，并确保 old_text 或 match_text 来自当前内容。",
+                "write_policy": "no_write_if_exists",
+                "structure_mode": "existing_outline_revision",
+                "tool_selection_policy": (
+                    "按修改意图与可定位性自行选择 edit 或 patch；"
+                    "优先采用改动范围更小、定位更稳定的方式完成目标；"
+                    "文件为空或首次创建时才用 write。"
+                ),
+                "current_char_count": len(chapter_outline_content),
+            },
+            *chapter_text_target_inventory(paths, chapter_text),
+            *support_update_target_inventory(paths),
+        ]
+        phase3_requirements = [
+            "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
+            "重点检查参考源原人名地名是否被照搬，若照搬则不合格。",
+            "重点检查章纲标题与正文标题是否和参考源标题同构、近义或只做换词式改名；若近似，直接不合格。",
+            "重点检查正文是否存在近义复述、场景顺序平移、信息揭露顺序镜像、桥段功能一一映射、段落组织机械同构；若明显贴着参考源改写，直接不合格。",
+            "重点检查 AI 感、机械感、逻辑断裂、幻觉错位、风格偏移。",
+            "重点检查是否出现过度修饰的排比、意象堆砌、诗化抒情过量、句式整齐得过头等问题；"
+            "如果语言明显非常符合当前主流大模型常见腔调，例如像 Claude 或 GPT-4 常见的华丽总结式文风，也视为不合格。",
+            "重点检查正文篇幅是否明显偏离参考源当前章；如果出现接近翻倍的扩写、明显灌水、明显缩水，或远离目标区间，也视为不合格。",
+            "如果正文为了规避审核而删掉关键场景、人物动机、关键信息揭露或应有收尾作用，哪怕语言问题有所减少，也视为不合格。",
+            "重点检查正文是否真正符合文笔写作风格文档中对爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式的要求；若显著漂移则不合格。",
+            "如果判定存在标题近似、近义复述或结构平移，review_md 必须明确写出对应标题、场景或段落证据，而不是只给抽象结论。",
+            "如果相似性问题根源已经进入章纲，rewrite_targets 必须同时包含 chapter_outline 与 chapter_text，不能只要求返工正文。",
+            "如果不通过，rewrite_targets 必须写出需要返工的对象，例如 chapter_text、world_state 等。",
+            "本阶段是 agent 审核阶段：如果发现可在允许目标内原地修复的问题，可以先调用 write/edit/apply_patch 修复，再继续审核并最终提交 result。",
+            *review_output_contract_lines("chapter"),
+        ]
+        latest_target_instruction = (
+            "这是本次请求的最新工作目标：审核当前章全部产物。可以先调用 write/edit/apply_patch 原地修复允许目标，"
+            "最终必须调用 result 提交章级审核结果。"
+        )
+
         payload = build_payload_with_cache_layers(
             shared_prefix_fields=chapter_cache_prefix_fields(
                 stable_global_docs=stable_global_docs,
@@ -429,7 +472,7 @@ def build_phase_request_payload(
                 "document_request": {
                     "phase": phase_key,
                     "role": "章级审核编辑",
-                    "task": "审核当前章的全部产物，并判断是否需要返工。",
+                    "task": "审核当前章全部产物；在允许目标内直接修复问题并提交最终审核结论。",
                     "required_file": f"{chapter_number}_chapter_review.md",
                 },
                 "reference_chapter_metrics": {
@@ -437,22 +480,7 @@ def build_phase_request_payload(
                     "source_char_count": reference_char_count,
                     "target_char_count_range": [min_target_chars, max_target_chars],
                 },
-                "requirements": [
-                    "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
-                    "重点检查参考源原人名地名是否被照搬，若照搬则不合格。",
-                    "重点检查章纲标题与正文标题是否和参考源标题同构、近义或只做换词式改名；若近似，直接不合格。",
-                    "重点检查正文是否存在近义复述、场景顺序平移、信息揭露顺序镜像、桥段功能一一映射、段落组织机械同构；若明显贴着参考源改写，直接不合格。",
-                    "重点检查 AI 感、机械感、逻辑断裂、幻觉错位、风格偏移。",
-                    "重点检查是否出现过度修饰的排比、意象堆砌、诗化抒情过量、句式整齐得过头等问题；"
-                    "如果语言明显非常符合当前主流大模型常见腔调，例如像 Claude 或 GPT-4 常见的华丽总结式文风，也视为不合格。",
-                    "重点检查正文篇幅是否明显偏离参考源当前章；如果出现接近翻倍的扩写、明显灌水、明显缩水，或远离目标区间，也视为不合格。",
-                    "如果正文为了规避审核而删掉关键场景、人物动机、关键信息揭露或应有收尾作用，哪怕语言问题有所减少，也视为不合格。",
-                    "重点检查正文是否真正符合文笔写作风格文档中对爽点铺垫、剧情转折、叙事节奏、情节结构、符号使用习惯、段落分割、对话密度、句长、收尾方式的要求；若显著漂移则不合格。",
-                    "如果判定存在标题近似、近义复述或结构平移，review_md 必须明确写出对应标题、场景或段落证据，而不是只给抽象结论。",
-                    "如果相似性问题根源已经进入章纲，rewrite_targets 必须同时包含 chapter_outline 与 chapter_text，不能只要求返工正文。",
-                    "如果不通过，rewrite_targets 必须写出需要返工的对象，例如 chapter_text、world_state 等。",
-                    *review_output_contract_lines("chapter"),
-                ],
+                "requirements": phase3_requirements,
             },
             trailing_doc_fields={
                 "rolling_injected_chapter_docs": rolling_chapter_docs,
@@ -461,8 +489,9 @@ def build_phase_request_payload(
                 "source_char_count": source_char_count,
                 "current_chapter_source_bundle": source_bundle,
                 "review_skill_reference": review_skill,
+                "update_target_files": phase3_update_targets,
                 "latest_work_target": latest_work_target(
-                    "这是本次请求的最新工作目标：审核当前章全部产物并提交章级审核结果。必须调用 result，不要调用 write/edit/apply_patch 文档工具。",
+                    latest_target_instruction,
                     required_tool=WORKFLOW_SUBMISSION_TOOL_NAME,
                 ),
             },
@@ -479,7 +508,6 @@ def build_volume_review_payload(
     catalog: dict[str, dict[str, Any]],
     rewritten_chapters: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], list[str], list[str]]:
-    review_skill = load_chapter_review_skill_reference()
     stable_global_docs, rolling_global_docs, included_globals, omitted_globals = prepare_cache_ordered_injected_docs(
         catalog,
         [
@@ -511,7 +539,6 @@ def build_volume_review_payload(
                 "required_file": f"{volume_number}_volume_review.md",
             },
             "requirements": [
-                "必须把注入的 chapter_review skill 作为主要审查方向。skill 中列出的 AI 痕迹、句法污染、节奏问题、术语一致性规则优先参与判断。",
                 "需要检查与卷级大纲、世界模型、文风规范和全书大纲是否一致。",
                 "需要检查卷内章节的文风是否稳定符合文笔写作风格文档，尤其是爽点铺垫、剧情转折、叙事节奏、情节结构、段落分割、对话密度、句长与收尾方式是否持续一致。",
                 "卷级审核以已生成章节、卷纲、全局注入和必要的章节审核记录为准。",
@@ -523,7 +550,6 @@ def build_volume_review_payload(
         trailing_doc_fields={
             "rolling_injected_global_docs": rolling_global_docs,
             "rolling_injected_volume_docs": rolling_volume_docs,
-            "review_skill_reference": review_skill,
             "rewritten_chapters": rewritten_chapters,
             "latest_work_target": latest_work_target(
                 "这是本次请求的最新工作目标：审核当前卷所有已生成章节与卷级文档。可以先调用 write/edit/apply_patch 原地修复允许目标，最终必须调用 result 提交卷级审核结果。",

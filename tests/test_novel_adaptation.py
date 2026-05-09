@@ -723,7 +723,7 @@ class AdaptationInjectionOrderTests(unittest.TestCase):
         payload = adaptation_workflow.json.loads(str(user_input))
         self.assertIn("target_file", payload)
         self.assertEqual(payload["target_file"]["preferred_mode"], "edit_or_patch")
-        self.assertIn("按修改意图选择工具", payload["target_file"]["tool_selection_policy"])
+        self.assertIn("按修改意图与可定位性", payload["target_file"]["tool_selection_policy"])
         self.assertNotIn("existing_style_guide", payload)
         self.assertNotIn("style_guide", payload["injected_global_docs"])
 
