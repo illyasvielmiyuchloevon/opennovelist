@@ -3,6 +3,11 @@ from __future__ import annotations
 from ._shared import *  # noqa: F401,F403
 from novelist.core.agent_runtime import AgentStageResult, run_agent_stage
 from .review_payloads import build_canonical_review_markdown
+from .state import (
+    chapter_target_char_range,
+    ensure_chapter_length_guard_config,
+    normalize_chapter_length_guard_config,
+)
 
 
 def _append_unique_response_ids(response_ids: list[str], new_response_ids: list[str]) -> None:
@@ -88,11 +93,21 @@ def _enforce_chapter_review_length_guard(
     *,
     chapter_text: str,
     reference_char_count: int,
+    length_guard_config: dict[str, Any] | None = None,
 ) -> WorkflowSubmissionPayload:
+    config = normalize_chapter_length_guard_config(length_guard_config)
+    if not config.get("enabled", True):
+        return review
+
     current_chars = len(chapter_text.strip())
-    min_target_chars = max(1, reference_char_count - 300)
-    max_target_chars = max(min_target_chars, reference_char_count + 300)
+    min_target_chars, max_target_chars = chapter_target_char_range(
+        reference_char_count,
+        length_guard_config=config,
+    )
     if min_target_chars <= current_chars <= max_target_chars:
+        return review
+
+    if bool(review.passed) and config.get("allow_review_pass_override", False):
         return review
 
     issue = (
@@ -133,6 +148,7 @@ def run_chapter_workflow(
     chapter_number: str,
 ) -> None:
     project_root = Path(rewrite_manifest["project_root"])
+    length_guard_config = ensure_chapter_length_guard_config(rewrite_manifest)
     source_chapter = get_chapter_material(volume_material, chapter_number)
     if not str(source_chapter.get("text") or "").strip():
         fail(f"第 {chapter_number} 章参考源正文为空：{source_chapter.get('file_path') or source_chapter.get('file_name')}")
@@ -241,6 +257,7 @@ def run_chapter_workflow(
                     volume_number=volume_material["volume_number"],
                     chapter_number=chapter_number,
                     catalog=catalog,
+                    length_guard_config=length_guard_config,
                 )
                 print_progress(f"第 {step_map[PHASE1_OUTLINE]}/{total_steps} 次调用：生成第 {chapter_number} 章章纲。")
                 print_request_context_summary(
@@ -325,6 +342,7 @@ def run_chapter_workflow(
                     catalog=catalog,
                     chapter_text=current_chapter_text,
                     chapter_text_revision=chapter_text_revision_mode,
+                    length_guard_config=length_guard_config,
                 )
                 print_progress(
                     f"第 {step_map[PHASE2_CHAPTER_TEXT]}/{total_steps} 次调用："
@@ -433,6 +451,7 @@ def run_chapter_workflow(
                     chapter_number=chapter_number,
                     catalog=catalog,
                     chapter_text=current_chapter_text,
+                    length_guard_config=length_guard_config,
                 )
                 print_progress(f"第 {step_map[PHASE2_SUPPORT_UPDATES]}/{total_steps} 次调用：更新第 {chapter_number} 章配套状态文档。")
                 print_request_context_summary(
@@ -521,6 +540,7 @@ def run_chapter_workflow(
                     chapter_number=chapter_number,
                     catalog=catalog,
                     chapter_text=current_chapter_text,
+                    length_guard_config=length_guard_config,
                 )
                 print_progress(
                     f"第 {step_map[PHASE3_REVIEW]}/{total_steps} 次调用："
@@ -568,6 +588,7 @@ def run_chapter_workflow(
                     chapter_review,
                     chapter_text=latest_chapter_text or current_chapter_text,
                     reference_char_count=reference_text_char_count,
+                    length_guard_config=length_guard_config,
                 )
                 if chapter_review.passed is None or not chapter_review.review_md.strip():
                     raise llm_runtime.ModelOutputError("章级审核 agent 未通过 result 返回完整的 passed / review_md。")

@@ -246,6 +246,46 @@ class ReviewPayloadNormalizationTests(unittest.TestCase):
         self.assertIn("## 修改建议", finalized.review_md)
 
 
+class ChapterLengthGuardConfigTests(unittest.TestCase):
+    def test_chapter_target_char_range_defaults_to_plus_minus_300(self) -> None:
+        min_chars, max_chars = rewrite_workflow.chapter_target_char_range(2600)
+        self.assertEqual((min_chars, max_chars), (2300, 2900))
+
+    def test_chapter_target_char_range_supports_ratio_mode(self) -> None:
+        min_chars, max_chars = rewrite_workflow.chapter_target_char_range(
+            2600,
+            length_guard_config={
+                "mode": "ratio",
+                "ratio_tolerance": 0.2,
+            },
+        )
+        self.assertEqual((min_chars, max_chars), (2080, 3120))
+
+    def test_chapter_review_length_guard_can_allow_pass_override(self) -> None:
+        review = rewrite_workflow.WorkflowSubmissionPayload(
+            passed=True,
+            review_md="通过。",
+            blocking_issues=[],
+            rewrite_targets=[],
+        )
+
+        enforced = chapter_runner_module._enforce_chapter_review_length_guard(
+            review,
+            chapter_text="甲" * 5000,
+            reference_char_count=2600,
+            length_guard_config={
+                "enabled": True,
+                "mode": "absolute",
+                "absolute_tolerance_chars": 300,
+                "allow_review_pass_override": True,
+            },
+        )
+
+        self.assertTrue(enforced.passed)
+        self.assertEqual(enforced.blocking_issues, [])
+        self.assertEqual(enforced.rewrite_targets, [])
+
+
 class WritingSkillInjectionTests(unittest.TestCase):
     def test_phase1_outline_requires_differential_reconstruction(self) -> None:
         volume_material = {
@@ -277,6 +317,11 @@ class WritingSkillInjectionTests(unittest.TestCase):
         self.assertIn("差异化重建", requirements)
         self.assertIn("标题必须重新命名", requirements)
         self.assertIn("至少列出 3 处主动拉开与参考源距离的设计", requirements)
+        self.assertIn("本章正文目标篇幅范围", requirements)
+        self.assertIn("target_char_count_range", payload["reference_chapter_metrics"])
+        target_range = payload["reference_chapter_metrics"]["target_char_count_range"]
+        self.assertEqual(len(target_range), 2)
+        self.assertLessEqual(target_range[0], target_range[1])
 
     def test_phase2_chapter_text_includes_writing_skill_reference(self) -> None:
         volume_material = {

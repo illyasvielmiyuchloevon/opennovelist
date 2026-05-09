@@ -3,6 +3,88 @@ from __future__ import annotations
 from ._shared import *  # noqa: F401,F403
 
 
+CHAPTER_LENGTH_GUARD_DEFAULT_MODE = "absolute"
+CHAPTER_LENGTH_GUARD_ALLOWED_MODES = {"absolute", "ratio"}
+
+
+def default_chapter_length_guard_config() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "mode": CHAPTER_LENGTH_GUARD_DEFAULT_MODE,
+        "absolute_tolerance_chars": 300,
+        "ratio_tolerance": 0.12,
+        "allow_review_pass_override": False,
+    }
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def normalize_chapter_length_guard_config(raw: Any) -> dict[str, Any]:
+    normalized = default_chapter_length_guard_config()
+    if not isinstance(raw, dict):
+        return normalized
+
+    normalized["enabled"] = _coerce_bool(raw.get("enabled"), default=normalized["enabled"])
+    normalized["allow_review_pass_override"] = _coerce_bool(
+        raw.get("allow_review_pass_override"),
+        default=normalized["allow_review_pass_override"],
+    )
+
+    mode = str(raw.get("mode") or normalized["mode"]).strip().lower()
+    if mode in CHAPTER_LENGTH_GUARD_ALLOWED_MODES:
+        normalized["mode"] = mode
+
+    try:
+        absolute_tolerance_chars = int(raw.get("absolute_tolerance_chars", normalized["absolute_tolerance_chars"]))
+    except (TypeError, ValueError):
+        absolute_tolerance_chars = int(normalized["absolute_tolerance_chars"])
+    normalized["absolute_tolerance_chars"] = max(1, absolute_tolerance_chars)
+
+    try:
+        ratio_tolerance = float(raw.get("ratio_tolerance", normalized["ratio_tolerance"]))
+    except (TypeError, ValueError):
+        ratio_tolerance = float(normalized["ratio_tolerance"])
+    if ratio_tolerance <= 0:
+        ratio_tolerance = float(normalized["ratio_tolerance"])
+    normalized["ratio_tolerance"] = ratio_tolerance
+    return normalized
+
+
+def ensure_chapter_length_guard_config(manifest: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_chapter_length_guard_config(manifest.get("chapter_length_guard"))
+    manifest["chapter_length_guard"] = normalized
+    return normalized
+
+
+def chapter_target_char_range(
+    reference_char_count: int,
+    *,
+    length_guard_config: dict[str, Any] | None = None,
+) -> tuple[int, int]:
+    config = normalize_chapter_length_guard_config(length_guard_config)
+    base = max(1, int(reference_char_count))
+    mode = str(config.get("mode", CHAPTER_LENGTH_GUARD_DEFAULT_MODE)).strip().lower()
+    if mode == "ratio":
+        ratio = float(config.get("ratio_tolerance", 0.12))
+        tolerance = max(1, int(round(base * ratio)))
+    else:
+        tolerance = max(1, int(config.get("absolute_tolerance_chars", 300)))
+    min_target_chars = max(1, base - tolerance)
+    max_target_chars = max(min_target_chars, base + tolerance)
+    return min_target_chars, max_target_chars
+
+
 def load_rewrite_manifest(project_root: Path) -> dict[str, Any] | None:
     manifest_path = project_root / REWRITE_MANIFEST_NAME
     if not manifest_path.exists():
@@ -52,6 +134,7 @@ def init_or_load_rewrite_manifest(
     if existing is not None:
         existing["total_volumes"] = len(volume_dirs)
         existing["rewrite_output_root"] = str(project_root / REWRITTEN_ROOT_DIRNAME)
+        ensure_chapter_length_guard_config(existing)
         save_rewrite_manifest(existing)
         return existing
 
@@ -71,6 +154,7 @@ def init_or_load_rewrite_manifest(
         "chapter_states": {},
         "volume_review_states": {},
         "five_chapter_review_states": {},
+        "chapter_length_guard": default_chapter_length_guard_config(),
     }
     save_rewrite_manifest(manifest)
     return manifest
@@ -535,6 +619,10 @@ def all_chapters_passed(manifest: dict[str, Any], volume_material: dict[str, Any
     return True
 
 __all__ = [
+    'default_chapter_length_guard_config',
+    'normalize_chapter_length_guard_config',
+    'ensure_chapter_length_guard_config',
+    'chapter_target_char_range',
     'load_rewrite_manifest',
     'ensure_rewrite_dirs',
     'save_rewrite_manifest',

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403
+from .catalog import build_payload_with_cache_layers
+from .state import chapter_target_char_range
 
 
 def chapter_text_target_inventory(paths: dict[str, Path], current_text: str) -> list[dict[str, Any]]:
@@ -168,6 +170,7 @@ def build_phase_request_payload(
     catalog: dict[str, dict[str, Any]],
     chapter_text: str = "",
     chapter_text_revision: bool = False,
+    length_guard_config: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     paths = rewrite_paths(project_root, volume_number, chapter_number)
     selection = PHASE_DOC_SELECTIONS[phase_key]
@@ -206,8 +209,10 @@ def build_phase_request_payload(
         ]
     )
     source_char_count = len(source_bundle)
-    min_target_chars = max(1, reference_char_count - 300)
-    max_target_chars = max(min_target_chars, reference_char_count + 300)
+    min_target_chars, max_target_chars = chapter_target_char_range(
+        reference_char_count,
+        length_guard_config=length_guard_config,
+    )
 
     if phase_key == "phase1_outline":
         payload = build_payload_with_cache_layers(
@@ -229,6 +234,7 @@ def build_phase_request_payload(
                 "reference_chapter_metrics": {
                     "source_title": reference_chapter["source_title"],
                     "source_char_count": reference_char_count,
+                    "target_char_count_range": [min_target_chars, max_target_chars],
                     "target_length_guideline": "章纲粒度应服务于后续正文保持与参考源当前章相近的篇幅和节奏。",
                 },
                 "requirements": [
@@ -239,6 +245,7 @@ def build_phase_request_payload(
                     "章纲 Markdown 必须显式写出“差异化重建要点”或等价小节，至少列出 3 处主动拉开与参考源距离的设计。",
                     "章纲粒度要贴近参考源当前章，不要为了发挥把单章扩成更多场景、更多推进点或更多转折层次。",
                     "章纲应尽量对齐参考源当前章的场景数量、冲突层级、叙事节奏与收尾功能，但开场切入、冲突载体、信息揭露顺序、收尾挂钩中至少要重建其中 2 项，不能整体镜像参考源。",
+                    f"章纲中必须明确写出本章正文目标篇幅范围（字符数区间），区间建议为 {min_target_chars}-{max_target_chars}，用于约束后续正文不要明显超篇幅。",
                 ],
             },
             trailing_doc_fields={
